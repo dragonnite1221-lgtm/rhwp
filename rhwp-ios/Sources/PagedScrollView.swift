@@ -54,7 +54,12 @@ class PagedScrollUIView: UIScrollView, UIScrollViewDelegate {
 
     private func setup() {
         delegate = self
-        backgroundColor = .systemGroupedBackground
+        backgroundColor = UIColor { trait in
+            // 라이트: 중간 회색, 다크: 더 어두운 회색 — 페이지(흰색/어두운)와 툴바(systemBackground) 양쪽과 구분
+            trait.userInterfaceStyle == .dark
+                ? UIColor(white: 0.12, alpha: 1.0)
+                : UIColor(white: 0.82, alpha: 1.0)
+        }
         showsHorizontalScrollIndicator = false
         showsVerticalScrollIndicator = true
         // 줌 설정

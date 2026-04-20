@@ -5,9 +5,15 @@ import UniformTypeIdentifiers
 
 struct DocumentPickerView: UIViewControllerRepresentable {
     let onPick: (Data, String) -> Void
+    let onError: ((RhwpError) -> Void)?
+
+    init(onPick: @escaping (Data, String) -> Void, onError: ((RhwpError) -> Void)? = nil) {
+        self.onPick = onPick
+        self.onError = onError
+    }
 
     func makeCoordinator() -> Coordinator {
-        Coordinator(onPick: onPick)
+        Coordinator(onPick: onPick, onError: onError)
     }
 
     func makeUIViewController(context: Context) -> UIDocumentPickerViewController {
@@ -27,20 +33,30 @@ struct DocumentPickerView: UIViewControllerRepresentable {
 
     class Coordinator: NSObject, UIDocumentPickerDelegate {
         let onPick: (Data, String) -> Void
+        let onError: ((RhwpError) -> Void)?
 
-        init(onPick: @escaping (Data, String) -> Void) {
+        init(onPick: @escaping (Data, String) -> Void, onError: ((RhwpError) -> Void)?) {
             self.onPick = onPick
+            self.onError = onError
         }
 
         func documentPicker(_ controller: UIDocumentPickerViewController, didPickDocumentsAt urls: [URL]) {
             guard let url = urls.first else { return }
+            let filename = url.lastPathComponent
+
             // 보안 범위 접근 시작
-            guard url.startAccessingSecurityScopedResource() else { return }
+            guard url.startAccessingSecurityScopedResource() else {
+                onError?(.accessDenied(filename: filename))
+                return
+            }
             defer { url.stopAccessingSecurityScopedResource() }
 
-            guard let data = try? Data(contentsOf: url) else { return }
-            let filename = url.lastPathComponent
-            onPick(data, filename)
+            do {
+                let data = try Data(contentsOf: url)
+                onPick(data, filename)
+            } catch {
+                onError?(.fileReadFailure(filename: filename))
+            }
         }
     }
 }

@@ -2,13 +2,24 @@ import Foundation
 
 /// Rust FFI 호출 에러
 enum RhwpError: LocalizedError {
-    case parseFailure
+    case parseFailure(filename: String?)
     case invalidData
+    case fileReadFailure(filename: String?)
+    case accessDenied(filename: String?)
 
     var errorDescription: String? {
         switch self {
-        case .parseFailure: return "HWP 파일을 파싱할 수 없습니다."
-        case .invalidData: return "유효하지 않은 데이터입니다."
+        case .parseFailure(let name):
+            let n = name.map { " (\($0))" } ?? ""
+            return "이 파일은 HWP/HWPX 형식이 아니거나 손상되었습니다\(n)."
+        case .invalidData:
+            return "유효하지 않은 데이터입니다."
+        case .fileReadFailure(let name):
+            let n = name.map { " (\($0))" } ?? ""
+            return "파일을 읽을 수 없습니다\(n)."
+        case .accessDenied(let name):
+            let n = name.map { " (\($0))" } ?? ""
+            return "파일에 접근할 수 없습니다\(n). 파일앱에서 다시 선택해 주세요."
         }
     }
 }
@@ -24,7 +35,7 @@ class RhwpDocument {
     private let handle: OpaquePointer
 
     /// HWP/HWPX 파일 데이터를 파싱하여 문서를 연다.
-    init(data: Data) throws {
+    init(data: Data, filename: String? = nil) throws {
         guard !data.isEmpty else {
             throw RhwpError.invalidData
         }
@@ -36,7 +47,7 @@ class RhwpDocument {
             )
         }
         guard let validHandle = result else {
-            throw RhwpError.parseFailure
+            throw RhwpError.parseFailure(filename: filename)
         }
         self.handle = validHandle
     }

@@ -31,26 +31,25 @@ struct DocumentView: View {
     // MARK: - 상단 바
 
     private var headerBar: some View {
-        HStack {
-            Text("알한글")
-                .font(.headline)
-                .fontWeight(.bold)
-            if !viewModel.filename.isEmpty {
-                Text("— \(viewModel.filename)")
-                    .font(.caption)
-                    .foregroundColor(.secondary)
-                    .lineLimit(1)
+        VStack(spacing: 0) {
+            HStack {
+                Text("알한글")
+                    .font(.headline)
+                    .fontWeight(.bold)
+                if !viewModel.filename.isEmpty {
+                    Text("— \(viewModel.filename)")
+                        .font(.caption)
+                        .foregroundColor(.secondary)
+                        .lineLimit(1)
+                }
+                Spacer()
             }
-            Spacer()
-            if viewModel.pageCount > 0 {
-                Text("\(viewModel.currentPage + 1)/\(viewModel.pageCount)쪽")
-                    .font(.caption)
-                    .foregroundColor(.secondary)
-            }
+            .padding(.horizontal, 16)
+            .padding(.vertical, 10)
+            .background(Color(UIColor.systemBackground))
+
+            Divider()
         }
-        .padding(.horizontal, 16)
-        .padding(.vertical, 10)
-        .background(Color(UIColor.systemBackground))
     }
 
     // MARK: - 다중 페이지 스크롤 (UIScrollView 기반 팬/줌)

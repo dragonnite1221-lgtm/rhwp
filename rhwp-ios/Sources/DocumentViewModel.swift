@@ -29,11 +29,15 @@ class DocumentViewModel: ObservableObject {
         pageTrees.removeAll()
 
         do {
-            document = try RhwpDocument(data: data)
+            let nameOpt = filename.isEmpty ? nil : filename
+            document = try RhwpDocument(data: data, filename: nameOpt)
             self.filename = filename
             currentPage = 0
+        } catch let err as RhwpError {
+            errorMessage = err.errorDescription
+            document = nil
         } catch {
-            errorMessage = error.localizedDescription
+            errorMessage = "문서를 열 수 없습니다: \(error.localizedDescription)"
             document = nil
         }
 
