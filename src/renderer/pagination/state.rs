@@ -86,6 +86,7 @@ impl PaginationState {
             zone_layout: self.current_zone_layout.clone(),
             zone_y_offset: self.current_zone_y_offset,
             wrap_around_paras: std::mem::take(&mut self.current_column_wrap_around_paras),
+            used_height: self.current_height,
         };
         if let Some(page) = self.pages.last_mut() {
             page.column_contents.push(col_content);
@@ -102,6 +103,7 @@ impl PaginationState {
             zone_layout: self.current_zone_layout.clone(),
             zone_y_offset: self.current_zone_y_offset,
             wrap_around_paras: std::mem::take(&mut self.current_column_wrap_around_paras),
+            used_height: self.current_height,
         };
         if let Some(page) = self.pages.last_mut() {
             page.column_contents.push(col_content);

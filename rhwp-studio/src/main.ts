@@ -460,11 +460,7 @@ async function loadFile(file: File): Promise<void> {
     const data = new Uint8Array(await file.arrayBuffer());
     await loadBytes(data, file.name, null, startTime);
   } catch (error) {
-    const errMsg = `파일 로드 실패: ${error}`;
-    msg.textContent = errMsg;
-    console.error('[main] 파일 로드 실패:', error);
-    // 모바일에서 상태 메시지가 숨겨질 수 있으므로 alert으로도 표시
-    if (window.innerWidth < 768) alert(errMsg);
+    showLoadError(error);
   }
 }
 
@@ -509,6 +505,50 @@ function notifyHwpxBetaIfNeeded(): void {
   if (sb) sb.textContent = 'HWPX 베타 모드 — 저장은 다음 업데이트에서 지원됩니다';
 }
 
+type DocumentByteKind = 'hwp' | 'hwpx' | 'html' | 'unknown';
+
+const HWP_CFB_SIGNATURE = [0xD0, 0xCF, 0x11, 0xE0, 0xA1, 0xB1, 0x1A, 0xE1] as const;
+const ZIP_SIGNATURES = [
+  [0x50, 0x4B, 0x03, 0x04],
+  [0x50, 0x4B, 0x05, 0x06],
+  [0x50, 0x4B, 0x07, 0x08],
+] as const;
+
+function startsWithBytes(bytes: Uint8Array, signature: readonly number[]): boolean {
+  if (bytes.length < signature.length) return false;
+  return signature.every((byte, index) => bytes[index] === byte);
+}
+
+function detectDocumentByteKind(bytes: Uint8Array, contentType?: string | null): DocumentByteKind {
+  if (startsWithBytes(bytes, HWP_CFB_SIGNATURE)) return 'hwp';
+  if (ZIP_SIGNATURES.some(signature => startsWithBytes(bytes, signature))) return 'hwpx';
+
+  const declaredContentType = contentType?.toLowerCase() ?? '';
+  if (declaredContentType.includes('text/html')) return 'html';
+
+  const prefix = new TextDecoder('utf-8')
+    .decode(bytes.subarray(0, Math.min(bytes.length, 256)))
+    .trimStart()
+    .toLowerCase();
+
+  if (prefix.startsWith('<!doctype') || prefix.startsWith('<html') || prefix.startsWith('<?xml')) {
+    return 'html';
+  }
+
+  return 'unknown';
+}
+
+function assertRemoteDocumentBytes(bytes: Uint8Array, contentType?: string | null): void {
+  const kind = detectDocumentByteKind(bytes, contentType);
+  if (kind === 'hwp' || kind === 'hwpx') return;
+
+  if (kind === 'html') {
+    throw new Error('실제 HWP/HWPX 파일이 아닙니다. 파일 미리보기/오류 페이지가 반환되었습니다.');
+  }
+
+  throw new Error('실제 HWP/HWPX 파일이 아닙니다. 파일 시그니처를 확인할 수 없습니다.');
+}
+
 async function createNewDocument(): Promise<void> {
   const msg = sbMessage();
   try {
@@ -529,7 +569,12 @@ eventBus.on('open-document-bytes', async (payload) => {
     fileName: string;
     fileHandle: typeof wasm.currentFileHandle;
   };
-  await loadBytes(data.bytes, data.fileName, data.fileHandle);
+  try {
+    await loadBytes(data.bytes, data.fileName, data.fileHandle);
+  } catch (error) {
+    // #265: WASM 파서 에러 (예: HWP 3.0 미지원) 를 사용자에게 전파
+    showLoadError(error);
+  }
 });
 
 // 수식 더블클릭 → 수식 편집 대화상자
@@ -564,6 +609,7 @@ async function loadFromUrlParam(): Promise<void> {
         const result = await chrome.runtime.sendMessage({ type: 'fetch-file', url: fileUrl });
         if (result.error) throw new Error(result.error);
         const data = new Uint8Array(result.data);
+        assertRemoteDocumentBytes(data);
         const docInfo = wasm.loadDocument(data, fileName);
         await initializeDocument(docInfo, `${fileName} — ${docInfo.pageCount}페이지`);
         return;
@@ -573,18 +619,38 @@ async function loadFromUrlParam(): Promise<void> {
     }
 
     if (!response.ok) throw new Error(`HTTP ${response.status}: ${response.statusText}`);
+    const contentType = response.headers.get('content-type');
     const buffer = await response.arrayBuffer();
     const data = new Uint8Array(buffer);
+    assertRemoteDocumentBytes(data, contentType);
     const docInfo = wasm.loadDocument(data, fileName);
     await initializeDocument(docInfo, `${fileName} — ${docInfo.pageCount}페이지`);
   } catch (error) {
-    const errMsg = `파일 로드 실패: ${error}`;
-    msg.textContent = errMsg;
-    console.error('[loadFromUrlParam]', error);
+    showLoadError(error);
   }
 }
 
-initialize();
+/**
+ * 파일 로드 실패 시 사용자에게 에러를 명확히 알린다 (#265).
+ *
+ * 상태 표시줄은 22px 한 줄로 긴 에러 메시지가 ellipsis 로 잘리므로,
+ * 우상단 토스트 (긴 메시지 줄바꿈 지원 · 사용자 닫기 · action 링크) 를
+ * 병행 사용한다.
+ */
+function showLoadError(error: unknown): void {
+  const raw = String(error).replace(/^Error:\s*/, '');
+  const errMsg = `파일 로드 실패: ${raw}`;
+  const sb = sbMessage();
+  if (sb) sb.textContent = errMsg;
+  console.error('[main] 파일 로드 실패:', error);
+  showToast({
+    message: errMsg,
+    durationMs: 0, // 에러는 자동 페이드 없음 — 사용자가 읽고 닫기
+    confirmLabel: '확인',
+  });
+}
+
+const initPromise = initialize();
 
 // ── iframe 연동 API (postMessage) ──
 // 부모 페이지에서 postMessage로 에디터를 제어할 수 있다.
@@ -597,6 +663,7 @@ window.addEventListener('message', async (e) => {
   // 기존 hwpctl-load 호환
   if (msg.type === 'hwpctl-load' && msg.data) {
     try {
+      await initPromise;
       const bytes = new Uint8Array(msg.data);
       const docInfo = wasm.loadDocument(bytes, msg.fileName || 'document.hwp');
       await initializeDocument(docInfo, `${msg.fileName || 'document'} — ${docInfo.pageCount}페이지`);
@@ -616,7 +683,13 @@ window.addEventListener('message', async (e) => {
 
   try {
     switch (method) {
+      case 'ready':
+        // wasm 초기화 완료 후에만 true 응답 — race condition 방지 (#522)
+        await initPromise;
+        reply(true);
+        break;
       case 'loadFile': {
+        await initPromise;
         const bytes = new Uint8Array(params.data);
         const docInfo = wasm.loadDocument(bytes, params.fileName || 'document.hwp');
         await initializeDocument(docInfo, `${params.fileName || 'document'} — ${docInfo.pageCount}페이지`);
@@ -624,13 +697,16 @@ window.addEventListener('message', async (e) => {
         break;
       }
       case 'pageCount':
+        await initPromise;
         reply(wasm.pageCount);
         break;
       case 'getPageSvg':
+        await initPromise;
         reply(wasm.renderPageSvg(params.page ?? 0));
         break;
-      case 'ready':
-        reply(true);
+      case 'exportHwp':
+        await initPromise;
+        reply(Array.from(wasm.exportHwp()));
         break;
       default:
         reply(undefined, `Unknown method: ${method}`);

@@ -1,4 +1,5 @@
 import { ModalDialog } from './dialog';
+import { appendSvgMarkup } from './dom-utils';
 import type { WasmBridge } from '@/core/wasm-bridge';
 import type { PageDef } from '@/core/types';
 import type { EventBus } from '@/core/event-bus';
@@ -344,7 +345,7 @@ export class PageSetupDialog extends ModalDialog {
 
     const iconWrap = document.createElement('span');
     iconWrap.className = 'icon-radio-icon';
-    iconWrap.innerHTML = svgHtml;
+    appendSvgMarkup(iconWrap, svgHtml);
 
     const text = document.createElement('span');
     text.className = 'icon-radio-text';

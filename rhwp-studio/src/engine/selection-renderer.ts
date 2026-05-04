@@ -52,7 +52,7 @@ export class SelectionRenderer {
     this.highlights = [];
   }
 
-  /** 레이어가 DOM에 없으면 재부착한다 (loadDocument 후 innerHTML 초기화 대응) */
+  /** 레이어가 DOM에 없으면 재부착한다 (loadDocument 후 컨테이너 교체 대응) */
   private ensureAttached(): void {
     if (this.layer.parentElement) return;
     const scrollContent = this.container.querySelector('#scroll-content');

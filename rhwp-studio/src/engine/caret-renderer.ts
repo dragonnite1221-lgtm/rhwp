@@ -133,7 +133,7 @@ export class CaretRenderer {
     return (contentWidth - pageDisplayWidth) / 2;
   }
 
-  /** 캐럿 엘리먼트가 DOM에 없으면 재부착한다 (loadDocument 후 innerHTML 초기화 대응) */
+  /** 캐럿 엘리먼트가 DOM에 없으면 재부착한다 (loadDocument 후 컨테이너 교체 대응) */
   private ensureAttached(): void {
     const scrollContent = this.container.querySelector('#scroll-content');
     if (this.caretEl.parentElement && this.compEl.parentElement) return;

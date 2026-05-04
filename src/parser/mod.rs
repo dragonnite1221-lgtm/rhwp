@@ -17,6 +17,7 @@
 
 pub mod bin_data;
 pub mod body_text;
+pub mod ole_container;
 pub mod byte_reader;
 pub mod cfb_reader;
 pub mod control;
@@ -24,6 +25,7 @@ pub mod crypto;
 pub mod doc_info;
 pub mod header;
 pub mod hwpx;
+pub mod hwp3;
 pub mod record;
 pub mod tags;
 
@@ -40,6 +42,8 @@ pub enum FileFormat {
     Hwp,
     /// HWPX (XML 기반, ZIP 컨테이너)
     Hwpx,
+    /// HWP 3.0 바이너리 (미지원 — 감지만, Issue #265)
+    Hwp3,
     /// 알 수 없는 포맷
     Unknown,
 }
@@ -56,6 +60,11 @@ pub fn detect_format(data: &[u8]) -> FileFormat {
             return FileFormat::Hwpx;
         }
     }
+    // HWP 3.0 바이너리 (Issue #265): "HWP Document File" 프리픽스.
+    // V3.00 ~ 2.x/초기 한컴 워디안까지 관대하게 포괄.
+    if data.len() >= 17 && &data[0..17] == b"HWP Document File" {
+        return FileFormat::Hwp3;
+    }
     FileFormat::Unknown
 }
 
@@ -68,7 +77,10 @@ pub enum ParseError {
     BodyTextError(body_text::BodyTextError),
     CryptoError(crypto::CryptoError),
     HwpxError(hwpx::HwpxError),
+    Hwp3Error(hwp3::Hwp3Error),
     EncryptedDocument,
+    /// 감지는 되었으나 지원하지 않는 포맷 (Issue #265)
+    UnsupportedFormat { format: &'static str, hint: &'static str },
 }
 
 impl std::fmt::Display for ParseError {
@@ -80,7 +92,10 @@ impl std::fmt::Display for ParseError {
             ParseError::BodyTextError(e) => write!(f, "BodyText 오류: {}", e),
             ParseError::CryptoError(e) => write!(f, "암호 오류: {}", e),
             ParseError::HwpxError(e) => write!(f, "HWPX 오류: {}", e),
+            ParseError::Hwp3Error(e) => write!(f, "HWP 3.0 오류: {}", e),
             ParseError::EncryptedDocument => write!(f, "암호화된 문서는 지원하지 않습니다"),
+            ParseError::UnsupportedFormat { format, hint } =>
+                write!(f, "지원하지 않는 포맷입니다: {format}. {hint}"),
         }
     }
 }
@@ -90,6 +105,12 @@ impl std::error::Error for ParseError {}
 impl From<hwpx::HwpxError> for ParseError {
     fn from(e: hwpx::HwpxError) -> Self {
         ParseError::HwpxError(e)
+    }
+}
+
+impl From<hwp3::Hwp3Error> for ParseError {
+    fn from(e: hwp3::Hwp3Error) -> Self {
+        ParseError::Hwp3Error(e)
     }
 }
 
@@ -305,19 +326,33 @@ fn load_bin_data_content_lenient(
     let mut contents = Vec::new();
 
     for bd in bin_data_list.iter() {
-        if bd.data_type != BinDataType::Embedding {
-            continue;
-        }
+        let is_storage = match bd.data_type {
+            BinDataType::Embedding => false,
+            BinDataType::Storage => true,
+            BinDataType::Link => continue,
+        };
 
-        let ext = bd.extension.as_deref().unwrap_or("dat");
+        let ext = if is_storage {
+            bd.extension.as_deref().unwrap_or("OLE")
+        } else {
+            bd.extension.as_deref().unwrap_or("dat")
+        };
         let storage_name = format!("BIN{:04X}.{}", bd.storage_id, ext);
 
         match lenient.read_stream(&storage_name) {
             Ok(data) => {
-                let decompressed = match cfb_reader::decompress_stream(&data) {
+                let mut decompressed = match cfb_reader::decompress_stream(&data) {
                     Ok(d) => d,
                     Err(_) => data,
                 };
+
+                // Task #195 단계 6: OLE Storage는 CFB 매직 바로 앞의 4-byte size prefix 스킵
+                if is_storage && decompressed.len() > 8 {
+                    let cfb_magic = [0xD0, 0xCF, 0x11, 0xE0, 0xA1, 0xB1, 0x1A, 0xE1];
+                    if decompressed[..8] != cfb_magic && decompressed[4..12] == cfb_magic {
+                        decompressed.drain(..4);
+                    }
+                }
 
                 contents.push(BinDataContent {
                     id: bd.storage_id,
@@ -384,7 +419,6 @@ pub(crate) fn assign_auto_numbers(doc: &mut Document) {
     }
 }
 
-/// 컨트롤 목록에서 AutoNumber를 찾아 번호를 할당한다.
 fn assign_auto_numbers_in_controls(
     controls: &mut [crate::model::control::Control],
     counters: &mut [u16; 6],
@@ -501,10 +535,20 @@ impl DocumentParser for HwpxParser {
     }
 }
 
+/// HWP 3.0 파서
+pub struct Hwp3Parser;
+
+impl DocumentParser for Hwp3Parser {
+    fn parse(&self, data: &[u8]) -> Result<Document, ParseError> {
+        hwp3::parse_hwp3(data).map_err(ParseError::from)
+    }
+}
+
 /// 포맷 자동 감지 후 적절한 파서로 파싱
 pub fn parse_document(data: &[u8]) -> Result<Document, ParseError> {
     match detect_format(data) {
         FileFormat::Hwpx => HwpxParser.parse(data),
+        FileFormat::Hwp3 => Hwp3Parser.parse(data),
         _ => HwpParser.parse(data),
     }
 }
@@ -676,22 +720,39 @@ fn load_bin_data_content(
     let mut contents = Vec::new();
 
     for bd in bin_data_list.iter() {
-        // Embedding 타입만 로드 (Link는 외부 파일, Storage는 OLE)
-        if bd.data_type != BinDataType::Embedding {
-            continue;
-        }
+        // Embedding(이미지)과 Storage(OLE) 로드. Link는 외부 파일 참조이므로 제외
+        let is_storage = match bd.data_type {
+            BinDataType::Embedding => false,
+            BinDataType::Storage => true,
+            BinDataType::Link => continue,
+        };
 
-        // 스토리지 이름 생성: BIN0001.jpg, BIN0002.png, ... (16진수, HWP 규칙)
-        let ext = bd.extension.as_deref().unwrap_or("dat");
+        // 스토리지 이름 생성: BIN0001.jpg (이미지) / BIN0001.OLE (OLE)
+        // Storage 타입은 확장자 정보가 없을 수 있으므로 "OLE"로 기본 폴백
+        let ext = if is_storage {
+            bd.extension.as_deref().unwrap_or("OLE")
+        } else {
+            bd.extension.as_deref().unwrap_or("dat")
+        };
         let storage_name = format!("BIN{:04X}.{}", bd.storage_id, ext);
 
         match cfb.read_bin_data(&storage_name) {
             Ok(data) => {
                 // 압축된 BinData 해제 시도
-                let decompressed = match cfb_reader::decompress_stream(&data) {
+                let mut decompressed = match cfb_reader::decompress_stream(&data) {
                     Ok(d) => d,
                     Err(_) => data, // 압축 해제 실패 시 원본 사용 (비압축 데이터)
                 };
+
+                // Task #195 단계 6: OLE Storage는 해제 후 선두 4바이트 size prefix를 스킵하여
+                // 내부 CFB(`d0cf11e0...`) 시작 바이트부터 노출한다.
+                if is_storage && decompressed.len() > 8 {
+                    // CFB 매직이 바로 시작하면 prefix 없음
+                    let cfb_magic = [0xD0, 0xCF, 0x11, 0xE0, 0xA1, 0xB1, 0x1A, 0xE1];
+                    if decompressed[..8] != cfb_magic && decompressed[4..12] == cfb_magic {
+                        decompressed.drain(..4);
+                    }
+                }
 
                 contents.push(BinDataContent {
                     id: bd.storage_id,
@@ -767,6 +828,27 @@ mod tests {
     }
 
     #[test]
+    fn test_detect_format_hwp3() {
+        // Issue #265: HWP 3.0 바이너리 시그니처
+        let hwp3_header = b"HWP Document File V3.00 \x1a\x01\x02\x03\x04\x05\x00\x00";
+        assert_eq!(detect_format(hwp3_header), FileFormat::Hwp3);
+    }
+
+    #[test]
+    fn test_detect_format_hwp3_exact_17_bytes() {
+        // 경계: 정확히 17바이트 "HWP Document File" 로 감지
+        let exact = b"HWP Document File";
+        assert_eq!(detect_format(exact), FileFormat::Hwp3);
+    }
+
+    #[test]
+    fn test_detect_format_hwp3_too_short() {
+        // 17바이트 미만이면 감지 불가 (Unknown)
+        let short = b"HWP Document Fil"; // 16바이트
+        assert_eq!(detect_format(short), FileFormat::Unknown);
+    }
+
+    #[test]
     fn test_parse_document_dispatches_hwp() {
         // CFB 시그니처 → HwpParser 경로로 디스패치
         let result = parse_document(&[0xD0, 0xCF, 0x11, 0xE0, 0x00, 0x00, 0x00, 0x00]);
@@ -778,6 +860,28 @@ mod tests {
         // ZIP 시그니처 → HwpxParser 경로로 디스패치
         let result = parse_document(&[0x50, 0x4B, 0x03, 0x04, 0x00, 0x00, 0x00, 0x00]);
         assert!(result.is_err()); // 유효하지 않은 ZIP이므로 에러
+    }
+
+    #[test]
+    fn test_parse_document_hwp3_too_short_errors() {
+        // Issue #265 (updated): HWP 3.0 헤더 (now supported, but data is incomplete)
+        let hwp3_header = b"HWP Document File V3.00 \x1a\x01\x02\x03\x04\x05";
+        let err = parse_document(hwp3_header).unwrap_err();
+        match err {
+            ParseError::Hwp3Error(_) => {}
+            other => panic!("expected Hwp3Error, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn test_parse_document_issue_265_sample() {
+        // Issue #265: 실제 제보 파일 samples/issue_265.hwp 가 HWP 3.0 으로
+        // 감지되고 정상적으로 파싱되는지 확인.
+        let data = std::fs::read("samples/issue_265.hwp")
+            .expect("samples/issue_265.hwp should exist in repo");
+        assert_eq!(detect_format(&data), FileFormat::Hwp3);
+        let doc = parse_document(&data).expect("Should successfully parse HWP3 sample");
+        assert!(doc.sections.len() > 0, "Document should have at least one section");
     }
 
     #[test]

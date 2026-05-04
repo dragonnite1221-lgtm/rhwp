@@ -8,6 +8,7 @@ use serde::Serialize;
 use crate::model::{ColorRef, Rect};
 use crate::model::style::ImageFillMode;
 use crate::model::image::ImageEffect;
+use crate::model::shape::TextWrap;
 use super::{TextStyle, ShapeStyle, LineStyle, PathCommand, GradientFillInfo};
 use super::composer::CharOverlapInfo;
 use super::layout::CellContext;
@@ -110,6 +111,8 @@ impl RenderNode {
             RenderNodeType::Group(_) => ("Group", String::new()),
             RenderNodeType::FormObject(_) => ("Form", String::new()),
             RenderNodeType::FootnoteMarker(_) => ("FnMarker", String::new()),
+            RenderNodeType::Placeholder(_) => ("Placeholder", String::new()),
+            RenderNodeType::RawSvg(_) => ("RawSvg", String::new()),
         };
         buf.push_str(&format!("\"type\":\"{}\",\"bbox\":{{\"x\":{:.1},\"y\":{:.1},\"w\":{:.1},\"h\":{:.1}}}",
             type_str, self.bbox.x, self.bbox.y, self.bbox.width, self.bbox.height));
@@ -194,6 +197,28 @@ pub enum RenderNodeType {
     FormObject(FormObjectNode),
     /// 각주/미주 마커 (인라인 위첨자)
     FootnoteMarker(FootnoteMarkerNode),
+    /// 차트/OLE placeholder (배경 rect + 중앙 텍스트 라벨) — Task #195
+    Placeholder(PlaceholderNode),
+    /// 이미 생성된 SVG 조각을 그대로 출력 (OOXML 차트 등) — Task #195 단계 8
+    RawSvg(RawSvgNode),
+}
+
+/// 미리 렌더된 SVG 조각 (Task #195 단계 8)
+#[derive(Debug, Clone, Serialize)]
+pub struct RawSvgNode {
+    /// 삽입할 SVG 조각 (유효한 `<g>...</g>` 또는 개별 요소)
+    pub svg: String,
+}
+
+/// 차트/OLE placeholder 렌더 노드 (Task #195)
+#[derive(Debug, Clone, Serialize)]
+pub struct PlaceholderNode {
+    /// 배경 색상 (ARGB)
+    pub fill_color: u32,
+    /// 테두리 색상 (ARGB)
+    pub stroke_color: u32,
+    /// 표시할 라벨(중앙 정렬)
+    pub label: String,
 }
 
 /// 각주/미주 마커 렌더 노드
@@ -341,17 +366,26 @@ pub struct TextLineNode {
     pub section_index: Option<usize>,
     /// 소속 문단 인덱스 (빈 문단 커서 위치 계산용)
     pub para_index: Option<usize>,
+    /// 문단 내 줄 인덱스 (디버그 오버레이용)
+    pub line_index: Option<u32>,
+    /// LINE_SEG vertical_pos (HWPUNIT, 디버그 오버레이/vpos-reset 검출용)
+    pub vpos: Option<i32>,
 }
 
 impl TextLineNode {
     /// 기본 생성 (문단 식별 정보 없음)
     pub fn new(line_height: f64, baseline: f64) -> Self {
-        Self { line_height, baseline, section_index: None, para_index: None }
+        Self { line_height, baseline, section_index: None, para_index: None, line_index: None, vpos: None }
     }
 
     /// 문단 식별 정보 포함 생성 (커서 위치 계산용)
     pub fn with_para(line_height: f64, baseline: f64, section_index: usize, para_index: usize) -> Self {
-        Self { line_height, baseline, section_index: Some(section_index), para_index: Some(para_index) }
+        Self { line_height, baseline, section_index: Some(section_index), para_index: Some(para_index), line_index: None, vpos: None }
+    }
+
+    /// 문단 식별 + LINE_SEG vpos 정보 포함 생성 (디버그 오버레이용)
+    pub fn with_para_vpos(line_height: f64, baseline: f64, section_index: usize, para_index: usize, line_index: u32, vpos: i32) -> Self {
+        Self { line_height, baseline, section_index: Some(section_index), para_index: Some(para_index), line_index: Some(line_index), vpos: Some(vpos) }
     }
 }
 
@@ -604,8 +638,21 @@ pub struct ImageNode {
     /// 렌더러에서 이미지 원본 px 크기와 비교하여 source rect 계산
     /// None이면 전체 이미지 표시
     pub crop: Option<(i32, i32, i32, i32)>,
+    /// 원본 이미지 크기 (HWPUNIT) — `pic.shape_attr.{original_width, original_height}`.
+    /// crop 좌표를 픽셀로 변환할 때 정확한 HU/px 스케일 계산에 사용.
+    /// None이면 폴백 동작.
+    pub original_size_hu: Option<(u32, u32)>,
     /// 그림 효과 (실사/그레이스케일/흑백/패턴)
     pub effect: ImageEffect,
+    /// 밝기 (-100 ~ +100)
+    pub brightness: i8,
+    /// 명암(대비) (-100 ~ +100)
+    pub contrast: i8,
+    /// 텍스트 흐름 wrap 모드 (Task #516, 다층 레이어 분리용).
+    /// `None` 또는 `Some(Square/TopAndBottom/Tight/Through)` 는 본문 layer 에 포함되고,
+    /// `Some(BehindText)` / `Some(InFrontOfText)` 는 overlay layer 로 분리 후보.
+    /// 기본값 `None` 은 기존 동작 유지.
+    pub text_wrap: Option<TextWrap>,
 }
 
 impl ImageNode {
@@ -616,7 +663,11 @@ impl ImageNode {
             fill_mode: None, original_size: None,
             transform: ShapeTransform::default(),
             crop: None,
+            original_size_hu: None,
             effect: ImageEffect::RealPic,
+            brightness: 0,
+            contrast: 0,
+            text_wrap: None,
         }
     }
 }
@@ -663,8 +714,10 @@ pub struct PageRenderTree {
     /// 루트 노드
     pub root: RenderNode,
     /// 다음 노드 ID 카운터
+    #[serde(skip)]
     next_id: NodeId,
     /// 인라인 Shape 좌표 맵: (section, para, control) → (x, y)
+    #[serde(skip)]
     inline_shape_positions: std::collections::HashMap<(usize, usize, usize), (f64, f64)>,
 }
 

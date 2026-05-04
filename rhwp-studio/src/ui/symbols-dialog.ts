@@ -253,7 +253,7 @@ export class SymbolsDialog {
   }
 
   private renderGrid(block: UnicodeBlock): void {
-    this.charGrid.innerHTML = '';
+    this.charGrid.replaceChildren();
     const count = block.end - block.start + 1;
     const rows = Math.ceil(count / COLS);
 
@@ -335,7 +335,7 @@ export class SymbolsDialog {
   }
 
   private updateRecent(): void {
-    this.recentGrid.innerHTML = '';
+    this.recentGrid.replaceChildren();
     const recents = this.getRecentChars();
     if (recents.length === 0) {
       const msg = document.createElement('span');

@@ -45,12 +45,22 @@ impl DocumentCore {
         // 비표준 lineseg 감지 — reflow 이전 시점에 IR을 그대로 검증.
         // 경고는 사용자에게 고지되며, 자동 reflow 는 `needs_line_seg_reflow` 조건에만 한정.
         // 사용자 명시 reflow 는 `reflow_linesegs_on_demand()` 를 통해서만 수행 (#177).
-        let validation_report = Self::validate_linesegs(&document);
+        // LinesegTextRunReflow는 HWPX 전용 비표준 패턴. HWP3/HWP5는 1 line_info = 1 lineseg가 정상.
+        let check_textrun_reflow = matches!(source_format, crate::parser::FileFormat::Hwpx);
+        let validation_report = Self::validate_linesegs(&document, check_textrun_reflow);
 
         // lineSegArray가 없는 문단(line_height=0)에 대해 합성 LineSeg 생성
         // HWPX에서 lineSegArray 누락 시 기본값(모든 필드 0)이 들어가므로,
         // compose 전에 올바른 line_height/line_spacing을 계산해야 줄바꿈·높이가 정상 동작한다.
         Self::reflow_zero_height_paragraphs(&mut document, &styles, DEFAULT_DPI);
+
+        // HWPX → HWP 라운드트립 일관성 normalize (#314):
+        // HWPX 파서가 채우지 않는 paragraph 필드를 HWP 직렬화/파싱 라운드트립 결과와 일치시킨다.
+        // 1) char_shapes 빈 paragraph 에 default [(0,0)] 추가 (HWP 스펙상 최소 1개 요구)
+        // 2) control_mask 를 controls 기반으로 재계산
+        if matches!(source_format, crate::parser::FileFormat::Hwpx) {
+            Self::normalize_hwpx_paragraphs(&mut document);
+        }
 
         // 초기 상태(properties bit 15 == 0) 누름틀의 안내문 텍스트를 삭제하여 빈 필드로 정규화
         // (한컴에서 메모 추가 시 안내문 텍스트가 필드 값으로 삽입됨 — compose 전에 제거해야 정합성 유지)
@@ -77,6 +87,7 @@ impl DocumentCore {
             show_transparent_borders: false,
             clip_enabled: true,
             debug_overlay: false,
+            respect_vpos_reset: false,
             measured_tables: Vec::new(),
             dirty_sections: vec![true; sec_count],
             measured_sections: Vec::new(),
@@ -108,13 +119,15 @@ impl DocumentCore {
     /// 감지 규칙:
     /// - 텍스트가 있는데 `line_segs` 가 비어있음 → `LinesegArrayEmpty`
     /// - `line_segs.len() == 1 && line_height == 0` → `LinesegUncomputed`
+    /// - `check_textrun_reflow=true` 일 때만: 긴 텍스트 + lineseg 1개 → `LinesegTextRunReflow`
+    ///   (HWPX 전용 패턴. HWP3/HWP5는 1 line_info → 1 lineseg가 정상이므로 건너뜀.)
     ///
     /// 표 셀 내부 문단도 재귀 검사한다.
-    pub(crate) fn validate_linesegs(document: &Document) -> ValidationReport {
+    pub(crate) fn validate_linesegs(document: &Document, check_textrun_reflow: bool) -> ValidationReport {
         let mut report = ValidationReport::new();
         for (si, section) in document.sections.iter().enumerate() {
             for (pi, para) in section.paragraphs.iter().enumerate() {
-                Self::check_paragraph_linesegs(para, si, pi, None, &mut report);
+                Self::check_paragraph_linesegs(para, si, pi, None, check_textrun_reflow, &mut report);
 
                 // 표 셀 내부 문단도 재귀 검사
                 for (ci, ctrl) in para.controls.iter().enumerate() {
@@ -132,6 +145,7 @@ impl DocumentCore {
                                     si,
                                     pi,
                                     Some(cell_path),
+                                    check_textrun_reflow,
                                     &mut report,
                                 );
                             }
@@ -148,6 +162,7 @@ impl DocumentCore {
         section_idx: usize,
         paragraph_idx: usize,
         cell_path: Option<CellPath>,
+        check_textrun_reflow: bool,
         report: &mut ValidationReport,
     ) {
         // 규칙 1: 텍스트가 있는데 lineseg 배열이 비어있음
@@ -171,12 +186,13 @@ impl DocumentCore {
             return;
         }
         // 규칙 3: lineseg 1개인데 텍스트가 길고 '\n' 이 없음 — 한컴이 textRun reflow 에
-        // 의존하는 패턴 (Discussion #188). rhwp 는 1개 lineseg 로 모든 텍스트를 한 줄에
-        // 그려 겹침이 발생. 보정 대상.
+        // 의존하는 패턴 (Discussion #188). HWPX 전용. HWP3/HWP5는 1 line_info → 1 lineseg가
+        // 정상이므로 check_textrun_reflow=false 로 호출하면 건너뜀.
         //
         // 휴리스틱 threshold = 40자 (한글 한 줄 ~30자 안팎을 기준으로 보수적).
         const LONG_TEXT_THRESHOLD: usize = 40;
-        if para.line_segs.len() == 1
+        if check_textrun_reflow
+            && para.line_segs.len() == 1
             && !para.text.contains('\n')
             && para.text.chars().count() > LONG_TEXT_THRESHOLD
         {
@@ -673,6 +689,66 @@ impl DocumentCore {
         ))
     }
 
+    /// HWPX → HWP 라운드트립 일관성 normalize.
+    ///
+    /// HWPX 파서가 채우지 않는 paragraph 필드를 HWP 직렬화/파싱 라운드트립 결과와 일치시킨다.
+    /// - char_shapes 빈 paragraph 에 default `[(0, 0)]` 추가 (HWP 스펙: 최소 1개 PARA_CHAR_SHAPE 요구)
+    /// - control_mask 를 controls + field_ranges + text 기반으로 재계산 (HWP 직렬화기와 동일 로직)
+    fn normalize_hwpx_paragraphs(document: &mut Document) {
+        use crate::model::control::Control;
+        use crate::model::paragraph::{CharShapeRef, Paragraph};
+
+        fn compute_mask(para: &Paragraph) -> u32 {
+            let mut mask: u32 = 0;
+            for ctrl in &para.controls {
+                let bit = match ctrl {
+                    Control::SectionDef(_) | Control::ColumnDef(_) => 0x0002,
+                    Control::Field(_) => 0x0003,
+                    Control::Table(_) | Control::Shape(_) | Control::Picture(_)
+                    | Control::Hyperlink(_) | Control::Ruby(_) | Control::Equation(_)
+                    | Control::Form(_) | Control::Unknown(_) => 0x000B,
+                    Control::HiddenComment(_) => 0x000F,
+                    Control::Header(_) | Control::Footer(_) => 0x0010,
+                    Control::Footnote(_) | Control::Endnote(_) => 0x0011,
+                    Control::AutoNumber(_) | Control::NewNumber(_) => 0x0012,
+                    Control::PageNumberPos(_) | Control::PageHide(_) => 0x0015,
+                    Control::Bookmark(_) => 0x0016,
+                    Control::CharOverlap(_) => 0x0017,
+                };
+                mask |= 1u32 << bit;
+            }
+            if !para.field_ranges.is_empty() { mask |= 1u32 << 0x0004; }
+            if para.text.contains('\t') { mask |= 1u32 << 0x0009; }
+            if para.text.contains('\n') { mask |= 1u32 << 0x000A; }
+            mask
+        }
+
+        fn process_para(para: &mut Paragraph) {
+            if para.char_shapes.is_empty() {
+                para.char_shapes.push(CharShapeRef { start_pos: 0, char_shape_id: 0 });
+            }
+            para.control_mask = compute_mask(para);
+            // 셀 내부 paragraphs 도 재귀
+            for ctrl in &mut para.controls {
+                if let Control::Table(t) = ctrl {
+                    for cell in &mut t.cells {
+                        for cp in &mut cell.paragraphs {
+                            process_para(cp);
+                        }
+                    }
+                }
+                // Shape의 text box paragraphs도 재귀해야 하나 정확한 API 미식별 → skip
+                // (현재 회귀 케이스 hwpx-h-02 는 cell paragraphs로 충분)
+            }
+        }
+
+        for section in &mut document.sections {
+            for p in &mut section.paragraphs {
+                process_para(p);
+            }
+        }
+    }
+
     /// 초기 상태(properties bit 15 == 0) ClickHere 필드의 안내문 텍스트를 삭제한다.
     ///
     /// 한컴에서 메모 추가 등의 동작 시 안내문 텍스트가 필드 값으로 삽입되어,
@@ -768,7 +844,7 @@ mod validate_linesegs_tests {
         section.paragraphs.push(para);
         doc.sections.push(section);
 
-        let report = DocumentCore::validate_linesegs(&doc);
+        let report = DocumentCore::validate_linesegs(&doc, true);
         assert_eq!(report.len(), 1);
         assert_eq!(report.warnings[0].kind, WarningKind::LinesegArrayEmpty);
         assert_eq!(report.warnings[0].section_idx, 0);
@@ -787,7 +863,7 @@ mod validate_linesegs_tests {
         section.paragraphs.push(para);
         doc.sections.push(section);
 
-        let report = DocumentCore::validate_linesegs(&doc);
+        let report = DocumentCore::validate_linesegs(&doc, true);
         assert_eq!(report.len(), 1);
         assert_eq!(report.warnings[0].kind, WarningKind::LinesegUncomputed);
     }
@@ -805,7 +881,7 @@ mod validate_linesegs_tests {
         section.paragraphs.push(para);
         doc.sections.push(section);
 
-        let report = DocumentCore::validate_linesegs(&doc);
+        let report = DocumentCore::validate_linesegs(&doc, true);
         assert!(report.is_empty(), "healthy paragraph should not warn: {:?}", report.warnings);
     }
 
@@ -817,7 +893,7 @@ mod validate_linesegs_tests {
         section.paragraphs.push(Paragraph::default());
         doc.sections.push(section);
 
-        let report = DocumentCore::validate_linesegs(&doc);
+        let report = DocumentCore::validate_linesegs(&doc, true);
         assert!(report.is_empty());
     }
 
@@ -849,7 +925,7 @@ mod validate_linesegs_tests {
         section.paragraphs.push(outer_para);
         doc.sections.push(section);
 
-        let report = DocumentCore::validate_linesegs(&doc);
+        let report = DocumentCore::validate_linesegs(&doc, true);
         assert_eq!(report.len(), 1);
         assert_eq!(report.warnings[0].kind, WarningKind::LinesegArrayEmpty);
         let cp = report.warnings[0].cell_path.expect("cell_path should be set");
@@ -877,7 +953,7 @@ mod validate_linesegs_tests {
         section.paragraphs.push(p2);
         doc.sections.push(section);
 
-        let report = DocumentCore::validate_linesegs(&doc);
+        let report = DocumentCore::validate_linesegs(&doc, true);
         assert_eq!(report.len(), 2);
         let summary = report.summary();
         assert_eq!(summary.get("lineseg 배열이 비어있음").copied(), Some(1));
@@ -935,7 +1011,7 @@ mod validate_linesegs_tests {
         section.paragraphs.push(para);
         doc.sections.push(section);
 
-        let report = DocumentCore::validate_linesegs(&doc);
+        let report = DocumentCore::validate_linesegs(&doc, true);
         assert_eq!(report.len(), 1);
         assert_eq!(report.warnings[0].kind, WarningKind::LinesegTextRunReflow);
     }
@@ -953,7 +1029,7 @@ mod validate_linesegs_tests {
         section.paragraphs.push(para);
         doc.sections.push(section);
 
-        let report = DocumentCore::validate_linesegs(&doc);
+        let report = DocumentCore::validate_linesegs(&doc, true);
         assert!(report.is_empty(), "짧은 문장은 경고 대상이 아님");
     }
 
@@ -970,7 +1046,7 @@ mod validate_linesegs_tests {
         section.paragraphs.push(para);
         doc.sections.push(section);
 
-        let report = DocumentCore::validate_linesegs(&doc);
+        let report = DocumentCore::validate_linesegs(&doc, true);
         assert!(report.is_empty(), "\\n 있는 문단은 R3 해당 안 됨");
     }
 

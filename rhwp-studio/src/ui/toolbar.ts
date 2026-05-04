@@ -480,7 +480,7 @@ export class Toolbar {
   initStyleDropdown(): void {
     try {
       const styles = this.wasm.getStyleList();
-      this.styleName.innerHTML = '';
+      this.styleName.replaceChildren();
       for (const style of styles) {
         const opt = document.createElement('option');
         opt.value = String(style.id);

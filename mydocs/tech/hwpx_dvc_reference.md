@@ -211,7 +211,7 @@ JID_MACRO             = 10000   // 매크로
 ### 장기 — 생태계 영향
 
 - DVC는 Windows 전용 → CI 파이프라인 자동화 불가
-- Rust 포팅판이 **CI 자동화 가능한 유일한 HWPX 검증 도구**가 됨
+- Rust 포팅판이 **크로스-OS CI 자동화가 용이한 드문 HWPX 검증 도구**가 됨
 - 공공기관·학교·출판사가 GitHub Actions·GitLab CI에서 바로 쓸 수 있음
 - DVC 규칙 JSON 자산이 Windows 밖으로 이식되는 첫 경로
 

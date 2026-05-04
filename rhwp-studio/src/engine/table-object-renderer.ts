@@ -1,5 +1,35 @@
 import { VirtualScroll } from '@/view/virtual-scroll';
 
+const SVG_NS = 'http://www.w3.org/2000/svg';
+
+function createSvgRoot(width: string, height: string): SVGSVGElement {
+  const svg = document.createElementNS(SVG_NS, 'svg');
+  svg.style.width = width;
+  svg.style.height = height;
+  svg.style.overflow = 'visible';
+  return svg;
+}
+
+function createSvgLine(
+  x1: number,
+  y1: number,
+  x2: number,
+  y2: number,
+  stroke: string,
+  strokeWidth: number,
+  strokeDasharray?: string,
+): SVGLineElement {
+  const line = document.createElementNS(SVG_NS, 'line');
+  line.setAttribute('x1', String(x1));
+  line.setAttribute('y1', String(y1));
+  line.setAttribute('x2', String(x2));
+  line.setAttribute('y2', String(y2));
+  line.setAttribute('stroke', stroke);
+  line.setAttribute('stroke-width', String(strokeWidth));
+  if (strokeDasharray) line.setAttribute('stroke-dasharray', strokeDasharray);
+  return line;
+}
+
 /** 핸들 방향 */
 export type HandleDirection = 'nw' | 'n' | 'ne' | 'e' | 'se' | 's' | 'sw' | 'w' | 'rotate';
 
@@ -116,10 +146,11 @@ export class TableObjectRenderer {
       // 연결선 (SVG)
       const svgEl = document.createElement('div');
       svgEl.style.cssText = 'position:absolute;left:0;top:0;width:0;height:0;pointer-events:none;';
-      svgEl.innerHTML =
-        `<svg style="position:absolute;overflow:visible;pointer-events:none;">` +
-        `<line x1="${topCx}" y1="${topCy}" x2="${rcx}" y2="${rcy}" stroke="#4CAF50" stroke-width="1"/>` +
-        `</svg>`;
+      const svg = createSvgRoot('', '');
+      svg.style.position = 'absolute';
+      svg.style.pointerEvents = 'none';
+      svg.appendChild(createSvgLine(topCx, topCy, rcx, rcy, '#4CAF50', 1));
+      svgEl.appendChild(svg);
       this.layer.appendChild(svgEl);
       this.extraEls.push(svgEl);
 
@@ -258,7 +289,9 @@ export class TableObjectRenderer {
     if (!midPoint) {
       const svgEl = document.createElement('div');
       svgEl.style.cssText = 'position:absolute;left:0;top:0;width:100%;height:100%;pointer-events:none;';
-      svgEl.innerHTML = `<svg style="width:100%;height:100%;overflow:visible"><line x1="${sx}" y1="${sy}" x2="${ex}" y2="${ey}" stroke="#000" stroke-width="1" stroke-dasharray="4,2"/></svg>`;
+      const svg = createSvgRoot('100%', '100%');
+      svg.appendChild(createSvgLine(sx, sy, ex, ey, '#000', 1, '4,2'));
+      svgEl.appendChild(svg);
       this.layer.appendChild(svgEl);
       this.extraEls.push(svgEl);
     }

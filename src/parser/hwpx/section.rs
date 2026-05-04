@@ -178,6 +178,33 @@ fn parse_paragraph(
                         text_parts.push("\u{0002}".to_string());
                         para.controls.push(pic);
                     }
+                    b"switch" => {
+                        // <hp:switch> — OOXML 차트 또는 OLE fallback
+                        // 구조: <hp:switch>
+                        //         <hp:case hp:required-namespace="...ooxmlchart">
+                        //           <hp:chart chartIDRef="Chart/chartN.xml" .../>
+                        //         </hp:case>
+                        //         <hp:default><hp:ole .../></hp:default>
+                        //       </hp:switch>
+                        if let Some(ctrl) = parse_switch_chart_or_ole(reader)? {
+                            text_parts.push("\u{0002}".to_string());
+                            para.controls.push(ctrl);
+                        }
+                    }
+                    b"chart" => {
+                        // <hp:chart> 직접 출현 (switch 없이) — 아직 보지 못한 변형. 안전 경로.
+                        if let Some(ctrl) = parse_hp_chart_element(ce, reader)? {
+                            text_parts.push("\u{0002}".to_string());
+                            para.controls.push(ctrl);
+                        }
+                    }
+                    b"ole" => {
+                        // <hp:ole> 직접 출현 (switch 없이)
+                        if let Some(ctrl) = parse_hp_ole_element(ce, reader)? {
+                            text_parts.push("\u{0002}".to_string());
+                            para.controls.push(ctrl);
+                        }
+                    }
                     b"secPr" => {
                         // 문단 내 섹션 정의 파싱
                         let mut sd = SectionDef::default();
@@ -296,37 +323,36 @@ fn parse_paragraph(
         buf.clear();
     }
 
-    // 텍스트 조립: 제어 문자(\u{0002})는 HWP와 동일하게 텍스트에서 제외
-    // HWP에서 컨트롤 위치는 char_offsets의 갭으로 표현됨
-    para.text = text_parts.iter()
-        .filter(|s| *s != "\u{0002}")
-        .cloned()
-        .collect::<Vec<_>>()
-        .join("");
-
-    // char_offsets 생성 (각 문자의 UTF-16 위치)
-    // HWP 바이너리에서 탭 문자는 확장 데이터 포함 8 code unit을 차지하므로
-    // LINE_SEG text_start와 올바르게 매핑되려면 탭도 8 code unit으로 계산
+    // 텍스트 조립: 제어 문자(\u{0002}, \u{0003}, \u{0004})는 HWP와 동일하게 텍스트에서 제외
+    // HWP에서 컨트롤 위치는 char_offsets의 갭으로 표현되므로 원본 순서를 유지해 계산한다.
+    let mut visual_text = String::new();
+    let mut char_offsets: Vec<u32> = Vec::new();
     let mut utf16_pos: u32 = 0;
-    let ctrl_offset: u32 = (para.controls.len() as u32) * 8; // 각 컨트롤 = 8 UTF-16 유닛
-    para.char_offsets = para.text.chars().map(|c| {
-        let pos = utf16_pos + ctrl_offset;
-        utf16_pos += if c == '\t' { 8 } else if (c as u32) > 0xFFFF { 2 } else { 1 };
-        pos
-    }).collect();
 
-    // char_count 설정 (텍스트 + 컨트롤 + 끝 마커)
-    let text_utf16_len: u32 = para.text.chars()
-        .map(|c| if c == '\t' { 8u32 } else if (c as u32) > 0xFFFF { 2 } else { 1 })
-        .sum();
-    para.char_count = text_utf16_len + ctrl_offset + 1; // +1 for 끝 마커
+    for part in &text_parts {
+        match part.as_str() {
+            "\u{0002}" | "\u{0003}" | "\u{0004}" => {
+                utf16_pos += 8;
+            }
+            _ => {
+                for c in part.chars() {
+                    char_offsets.push(utf16_pos);
+                    visual_text.push(c);
+                    let width = if c == '\t' { 8 } else if (c as u32) > 0xFFFF { 2 } else { 1 };
+                    utf16_pos += width;
+                }
+            }
+        }
+    }
+
+    para.text = visual_text;
+    para.char_offsets = char_offsets;
+    para.char_count = utf16_pos + 1; // +1 for 끝 마커
     para.has_para_text = !para.text.is_empty() || !para.controls.is_empty();
 
-    // char_shapes 변환
-    // char_shapes의 start_pos에 ctrl_offset 적용 (char_offsets와 동기화, Task #11)
-    let ctrl_offset_for_shapes: u32 = (para.controls.len() as u32) * 8;
+    // char_shapes는 원본 문단 순서(text_parts)를 기준으로 계산한 위치를 그대로 사용한다.
     para.char_shapes = char_shape_changes.into_iter()
-        .map(|(pos, id)| CharShapeRef { start_pos: pos + ctrl_offset_for_shapes, char_shape_id: id })
+        .map(|(pos, id)| CharShapeRef { start_pos: pos, char_shape_id: id })
         .collect();
 
     // 기본 line_seg (빈 문단이라도 최소 1개)
@@ -2664,6 +2690,26 @@ fn parse_equation(
                     }
                 }
             }
+            Ok(Event::GeneralRef(ref r)) => {
+                if in_script {
+                    if let Ok(Some(ch)) = r.resolve_char_ref() {
+                        script.push(ch);
+                    } else if let Ok(name) = r.decode() {
+                        match name.as_ref() {
+                            "lt" => script.push('<'),
+                            "gt" => script.push('>'),
+                            "amp" => script.push('&'),
+                            "quot" => script.push('"'),
+                            "apos" => script.push('\''),
+                            _ => {
+                                script.push('&');
+                                script.push_str(&name);
+                                script.push(';');
+                            }
+                        }
+                    }
+                }
+            }
             Ok(Event::End(ref ee)) => {
                 let eename = ee.name();
                 let local = local_name(eename.as_ref());
@@ -2699,8 +2745,12 @@ fn parse_equation(
 /// 탭 문자는 HWP 바이너리와 동일하게 8 code unit으로 계산
 fn calc_utf16_len_from_parts(parts: &[String]) -> u32 {
     parts.iter()
-        .flat_map(|s| s.chars())
-        .map(|c| if c == '\t' { 8u32 } else if (c as u32) > 0xFFFF { 2 } else { 1 })
+        .map(|s| match s.as_str() {
+            "\u{0002}" | "\u{0003}" | "\u{0004}" => 8,
+            _ => s.chars()
+                .map(|c| if c == '\t' { 8u32 } else if (c as u32) > 0xFFFF { 2 } else { 1 })
+                .sum(),
+        })
         .sum()
 }
 
@@ -2814,6 +2864,241 @@ fn parse_form_object(
     Ok(Control::Form(Box::new(form)))
 }
 
+// ---------------- HWPX switch / chart / ole 핸들러 ----------------
+
+/// `<hp:switch>`를 열고 내부에서 OOXML 차트(hp:chart)를 우선적으로,
+/// 없으면 OLE fallback(hp:ole)을 파싱하여 Control로 반환
+fn parse_switch_chart_or_ole(reader: &mut Reader<&[u8]>) -> Result<Option<Control>, HwpxError> {
+    let mut chart_ctrl: Option<Control> = None;
+    let mut ole_ctrl: Option<Control> = None;
+    let mut buf = Vec::new();
+    let mut in_case = false;
+    loop {
+        match reader.read_event_into(&mut buf) {
+            Ok(Event::Start(ref ce)) | Ok(Event::Empty(ref ce)) => {
+                let cname = ce.name();
+                let local = local_name(cname.as_ref());
+                match local {
+                    b"case" => { in_case = true; }
+                    b"default" => { in_case = false; }
+                    b"chart" => {
+                        if chart_ctrl.is_none() {
+                            chart_ctrl = parse_hp_chart_element(ce, reader)?;
+                        } else {
+                            skip_element(reader, b"chart")?;
+                        }
+                    }
+                    b"ole" => {
+                        if ole_ctrl.is_none() {
+                            ole_ctrl = parse_hp_ole_element(ce, reader)?;
+                        } else {
+                            skip_element(reader, b"ole")?;
+                        }
+                    }
+                    _ => {}
+                }
+                let _ = in_case;
+            }
+            Ok(Event::End(ref ee)) => {
+                if local_name(ee.name().as_ref()) == b"switch" {
+                    break;
+                }
+            }
+            Ok(Event::Eof) => break,
+            Err(e) => return Err(HwpxError::XmlError(format!("switch: {}", e))),
+            _ => {}
+        }
+        buf.clear();
+    }
+    Ok(chart_ctrl.or(ole_ctrl))
+}
+
+/// `<hp:chart chartIDRef="Chart/chartN.xml" zOrder="..." textWrap="..." ...>` 내부를 OLE 모델로 변환
+fn parse_hp_chart_element(
+    e: &quick_xml::events::BytesStart,
+    reader: &mut Reader<&[u8]>,
+) -> Result<Option<Control>, HwpxError> {
+    use crate::model::shape::OleShape;
+
+    let mut common = CommonObjAttr::default();
+    let mut chart_num: u16 = 0;
+
+    for attr in e.attributes().flatten() {
+        match attr.key.as_ref() {
+            b"zOrder" => common.z_order = parse_i32(&attr),
+            b"textWrap" => {
+                common.text_wrap = match attr_str(&attr).as_str() {
+                    "SQUARE" => TextWrap::Square,
+                    "TIGHT" => TextWrap::Tight,
+                    "THROUGH" => TextWrap::Through,
+                    "TOP_AND_BOTTOM" => TextWrap::TopAndBottom,
+                    "BEHIND_TEXT" => TextWrap::BehindText,
+                    "IN_FRONT_OF_TEXT" => TextWrap::InFrontOfText,
+                    _ => TextWrap::Square,
+                };
+            }
+            b"chartIDRef" => {
+                // "Chart/chart1.xml" → 1
+                let s = attr_str(&attr);
+                let digits: String = s.chars().filter(|c| c.is_ascii_digit()).collect();
+                chart_num = digits.parse().unwrap_or(0);
+            }
+            b"instid" => common.instance_id = parse_u32(&attr),
+            _ => {}
+        }
+    }
+
+    parse_common_shape_children(reader, &mut common, b"chart")?;
+
+    if chart_num == 0 {
+        return Ok(None);
+    }
+
+    let mut ole = OleShape::default();
+    ole.common = common;
+    ole.bin_data_id = 60000u32 + chart_num as u32;
+    ole.extent_x = 7200;
+    ole.extent_y = 7200;
+    Ok(Some(Control::Shape(Box::new(ShapeObject::Ole(Box::new(ole))))))
+}
+
+/// `<hp:ole binaryItemIDRef="oleN" ...>` 내부를 OLE 모델로 변환 (fallback용)
+fn parse_hp_ole_element(
+    e: &quick_xml::events::BytesStart,
+    reader: &mut Reader<&[u8]>,
+) -> Result<Option<Control>, HwpxError> {
+    use crate::model::shape::OleShape;
+
+    let mut common = CommonObjAttr::default();
+    let mut bin_id: u32 = 0;
+
+    for attr in e.attributes().flatten() {
+        match attr.key.as_ref() {
+            b"zOrder" => common.z_order = parse_i32(&attr),
+            b"textWrap" => {
+                common.text_wrap = match attr_str(&attr).as_str() {
+                    "SQUARE" => TextWrap::Square,
+                    "TIGHT" => TextWrap::Tight,
+                    "THROUGH" => TextWrap::Through,
+                    "TOP_AND_BOTTOM" => TextWrap::TopAndBottom,
+                    "BEHIND_TEXT" => TextWrap::BehindText,
+                    "IN_FRONT_OF_TEXT" => TextWrap::InFrontOfText,
+                    _ => TextWrap::Square,
+                };
+            }
+            b"binaryItemIDRef" => {
+                let s = attr_str(&attr);
+                let digits: String = s.chars().filter(|c| c.is_ascii_digit()).collect();
+                bin_id = digits.parse().unwrap_or(0);
+            }
+            b"instid" => common.instance_id = parse_u32(&attr),
+            _ => {}
+        }
+    }
+
+    parse_common_shape_children(reader, &mut common, b"ole")?;
+
+    let mut ole = OleShape::default();
+    ole.common = common;
+    ole.bin_data_id = bin_id;
+    ole.extent_x = 7200;
+    ole.extent_y = 7200;
+    Ok(Some(Control::Shape(Box::new(ShapeObject::Ole(Box::new(ole))))))
+}
+
+/// `<hp:sz>`, `<hp:pos>`, `<hp:outMargin>` 등 공통 자식 요소를 공통 속성에 반영한다.
+fn parse_common_shape_children(
+    reader: &mut Reader<&[u8]>,
+    common: &mut CommonObjAttr,
+    end_tag: &[u8],
+) -> Result<(), HwpxError> {
+    let mut buf = Vec::new();
+    loop {
+        match reader.read_event_into(&mut buf) {
+            Ok(Event::Start(ref ce)) | Ok(Event::Empty(ref ce)) => {
+                let cname = ce.name();
+                let local = local_name(cname.as_ref());
+                match local {
+                    b"sz" => {
+                        for attr in ce.attributes().flatten() {
+                            match attr.key.as_ref() {
+                                b"width" => common.width = parse_u32(&attr),
+                                b"height" => common.height = parse_u32(&attr),
+                                _ => {}
+                            }
+                        }
+                    }
+                    b"pos" => {
+                        for attr in ce.attributes().flatten() {
+                            match attr.key.as_ref() {
+                                b"vertRelTo" => {
+                                    common.vert_rel_to = match attr_str(&attr).as_str() {
+                                        "PAPER" => VertRelTo::Paper,
+                                        "PAGE" => VertRelTo::Page,
+                                        _ => VertRelTo::Para,
+                                    };
+                                }
+                                b"horzRelTo" => {
+                                    common.horz_rel_to = match attr_str(&attr).as_str() {
+                                        "PAPER" => HorzRelTo::Paper,
+                                        "PAGE" => HorzRelTo::Page,
+                                        "COLUMN" => HorzRelTo::Column,
+                                        _ => HorzRelTo::Para,
+                                    };
+                                }
+                                b"vertAlign" => {
+                                    common.vert_align = match attr_str(&attr).as_str() {
+                                        "CENTER" => VertAlign::Center,
+                                        "BOTTOM" => VertAlign::Bottom,
+                                        "INSIDE" => VertAlign::Inside,
+                                        "OUTSIDE" => VertAlign::Outside,
+                                        _ => VertAlign::Top,
+                                    };
+                                }
+                                b"horzAlign" => {
+                                    common.horz_align = match attr_str(&attr).as_str() {
+                                        "CENTER" => HorzAlign::Center,
+                                        "RIGHT" => HorzAlign::Right,
+                                        "INSIDE" => HorzAlign::Inside,
+                                        "OUTSIDE" => HorzAlign::Outside,
+                                        _ => HorzAlign::Left,
+                                    };
+                                }
+                                b"vertOffset" => common.vertical_offset = parse_u32(&attr),
+                                b"horzOffset" => common.horizontal_offset = parse_u32(&attr),
+                                b"treatAsChar" => common.treat_as_char = parse_bool(&attr),
+                                _ => {}
+                            }
+                        }
+                    }
+                    b"outMargin" => {
+                        for attr in ce.attributes().flatten() {
+                            match attr.key.as_ref() {
+                                b"left" => common.margin.left = parse_i32(&attr) as i16,
+                                b"right" => common.margin.right = parse_i32(&attr) as i16,
+                                b"top" => common.margin.top = parse_i32(&attr) as i16,
+                                b"bottom" => common.margin.bottom = parse_i32(&attr) as i16,
+                                _ => {}
+                            }
+                        }
+                    }
+                    _ => {}
+                }
+            }
+            Ok(Event::End(ref ee)) => {
+                if local_name(ee.name().as_ref()) == end_tag {
+                    break;
+                }
+            }
+            Ok(Event::Eof) => break,
+            Err(e) => return Err(HwpxError::XmlError(format!("shape_children: {}", e))),
+            _ => {}
+        }
+        buf.clear();
+    }
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -2834,6 +3119,57 @@ mod tests {
         assert_eq!(section.paragraphs.len(), 1);
         assert_eq!(section.paragraphs[0].text, "Hello World");
         assert_eq!(section.paragraphs[0].para_shape_id, 0);
+    }
+
+    #[test]
+    fn test_parse_linebreak_preserves_offsets() {
+        let xml = r#"<?xml version="1.0" encoding="UTF-8"?>
+<hs:sec xmlns:hp="http://www.hancom.co.kr/hwpml/2011/paragraph"
+        xmlns:hs="http://www.hancom.co.kr/hwpml/2011/section">
+  <hp:p paraPrIDRef="0" styleIDRef="0">
+    <hp:run charPrIDRef="0">
+      <hp:t>줄바꿈A<hp:lineBreak/>줄바꿈B</hp:t>
+    </hp:run>
+  </hp:p>
+</hs:sec>"#;
+
+        let section = parse_hwpx_section(xml).unwrap();
+        let para = &section.paragraphs[0];
+        assert_eq!(para.text, "줄바꿈A\n줄바꿈B");
+        assert_eq!(para.char_offsets, vec![0, 1, 2, 3, 4, 5, 6, 7, 8]);
+    }
+
+    #[test]
+    fn test_parse_control_keeps_interleaved_offsets() {
+        let xml = r#"<?xml version="1.0" encoding="UTF-8"?>
+<hs:sec xmlns:hp="http://www.hancom.co.kr/hwpml/2011/paragraph"
+        xmlns:hs="http://www.hancom.co.kr/hwpml/2011/section">
+  <hp:p paraPrIDRef="0" styleIDRef="0">
+    <hp:run charPrIDRef="0"><hp:t>A</hp:t></hp:run>
+    <hp:tbl rowCnt="1" colCnt="1" cellSpacing="0" borderFillIDRef="0">
+      <hp:inMargin left="0" right="0" top="0" bottom="0"/>
+      <hp:tr>
+        <hp:tc name="0" header="0" hasMargin="0" editable="0" dirty="0" borderFillIDRef="0" textDirection="HORIZONTAL" vertAlign="TOP" colAddr="0" rowAddr="0" colSpan="1" rowSpan="1" width="1000" height="1000">
+          <hp:cellAddr colAddr="0" rowAddr="0"/>
+          <hp:cellSpan colSpan="1" rowSpan="1"/>
+          <hp:cellSz width="1000" height="1000"/>
+          <hp:cellMargin left="0" right="0" top="0" bottom="0"/>
+          <hp:subList><hp:p paraPrIDRef="0" styleIDRef="0"><hp:run charPrIDRef="0"><hp:t>T</hp:t></hp:run></hp:p></hp:subList>
+          <hp:lineBreak/>
+        </hp:tc>
+      </hp:tr>
+    </hp:tbl>
+    <hp:run charPrIDRef="0"><hp:t>B</hp:t></hp:run>
+  </hp:p>
+</hs:sec>"#;
+
+        let section = parse_hwpx_section(xml).unwrap();
+        let para = &section.paragraphs[0];
+        assert_eq!(para.text, "AB");
+        assert_eq!(para.char_offsets, vec![0, 9]);
+        assert_eq!(para.char_shapes[0].start_pos, 0);
+        assert_eq!(para.char_shapes[1].start_pos, 9);
+        assert_eq!(para.controls.len(), 1);
     }
 
     #[test]

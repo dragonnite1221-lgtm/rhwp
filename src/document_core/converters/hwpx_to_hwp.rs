@@ -151,24 +151,20 @@ fn adapt_table(table: &mut Table, report: &mut AdapterReport) {
     if table.raw_ctrl_data.is_empty() {
         table.raw_ctrl_data = serialize_common_obj_attr(&table.common);
         report.tables_ctrl_data_synthesized += 1;
-    }
 
-    // 2. attr 동기화: serializer/control.rs:349 가 raw_ctrl_data 를 그대로 쓰므로
-    //    raw_ctrl_data 안의 attr 비트가 진실. table.attr 자체는 직렬화기 경로에서
-    //    raw_ctrl_data 가 비어있을 때만 사용되므로 추가 작업 불필요.
-    //    다만 IR 의 일관성을 위해 (다른 코드가 table.attr 을 읽을 가능성) 동기화.
-    if table.attr == 0 && !table.raw_ctrl_data.is_empty() && table.raw_ctrl_data.len() >= 4 {
-        let attr = u32::from_le_bytes([
-            table.raw_ctrl_data[0],
-            table.raw_ctrl_data[1],
-            table.raw_ctrl_data[2],
-            table.raw_ctrl_data[3],
-        ]);
-        if attr != 0 {
-            table.attr = attr;
-            report.tables_attr_packed += 1;
+        // Task #317: HWPX 출처는 common.attr=0 (HWPX 파서가 attr 비트를 채우지 않음).
+        // serialize_common_obj_attr 는 common.attr=0 일 때 enum 으로부터 비트 합성 하지만,
+        // typeset 엔진은 table.attr & 0x01 로 is_tac 을 판정 (common.treat_as_char 아님).
+        // HWPX 직접 로드에서는 attr=0 이므로 모든 표가 block 분기로 처리됨.
+        // 어댑터 경로에서 attr 합성하면 일부 표가 TAC 분기로 분기되어 페이지 누적이 달라짐.
+        // → DIRECT 와 동일하게 attr=0 으로 고정.
+        if table.raw_ctrl_data.len() >= 4 {
+            table.raw_ctrl_data[0..4].copy_from_slice(&0u32.to_le_bytes());
         }
     }
+
+    // table.attr 은 raw_ctrl_data 의 진실값과 일치 (=0).
+    table.attr = 0;
 
     // 셀별 보강 + 내부 문단 재귀 (중첩 표 대응)
     for cell in &mut table.cells {
@@ -215,8 +211,8 @@ fn adapt_cell_list_attr(cell: &mut Cell, report: &mut AdapterReport) {
 ///
 /// 호출자: `DocumentCore::export_hwp_with_adapter()` (Stage 5 에서 추가).
 pub fn convert_if_hwpx_source(doc: &mut Document, source_format: FileFormat) -> AdapterReport {
-    if source_format != FileFormat::Hwpx {
-        return AdapterReport::new().no_op("source_format != Hwpx");
+    if !matches!(source_format, FileFormat::Hwpx | FileFormat::Hwp3) {
+        return AdapterReport::new().no_op("source_format != Hwpx/Hwp3");
     }
     convert_hwpx_to_hwp_ir(doc)
 }
@@ -237,7 +233,7 @@ mod tests {
     fn hwp_source_no_op_via_filter() {
         let mut doc = Document::default();
         let report = convert_if_hwpx_source(&mut doc, FileFormat::Hwp);
-        assert_eq!(report.skipped_reason.as_deref(), Some("source_format != Hwpx"));
+        assert_eq!(report.skipped_reason.as_deref(), Some("source_format != Hwpx/Hwp3"));
     }
 
     #[test]

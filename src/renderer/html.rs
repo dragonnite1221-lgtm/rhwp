@@ -3,9 +3,11 @@
 //! 렌더 트리를 HTML 문자열로 변환한다.
 //! CSS로 스타일링하여 접근성과 텍스트 선택을 지원한다.
 
+use base64::Engine;
 use super::{Renderer, TextStyle, ShapeStyle, LineStyle, PathCommand};
 use super::render_tree::{PageRenderTree, RenderNode, RenderNodeType};
 use super::layout::compute_char_positions;
+use super::svg::{detect_image_mime_type, convert_wmf_to_svg};
 use crate::model::style::UnderlineType;
 
 /// HTML 렌더러
@@ -190,11 +192,15 @@ impl HtmlRenderer {
                     &rect.style,
                 );
             }
-            RenderNodeType::Image(_) => {
-                self.output.push_str(&format!(
-                    "<div class=\"hwp-image\" style=\"position:absolute;left:{}px;top:{}px;width:{}px;height:{}px;background:#eee;\"></div>\n",
-                    node.bbox.x, node.bbox.y, node.bbox.width, node.bbox.height,
-                ));
+            RenderNodeType::Image(img) => {
+                if let Some(ref data) = img.data {
+                    self.draw_image(data, node.bbox.x, node.bbox.y, node.bbox.width, node.bbox.height);
+                } else {
+                    self.output.push_str(&format!(
+                        "<div class=\"hwp-image\" style=\"position:absolute;left:{}px;top:{}px;width:{}px;height:{}px;background:#eee;\"></div>\n",
+                        node.bbox.x, node.bbox.y, node.bbox.width, node.bbox.height,
+                    ));
+                }
             }
             _ => {}
         }
@@ -248,6 +254,13 @@ impl Renderer for HtmlRenderer {
     }
 
     fn draw_text(&mut self, text: &str, x: f64, y: f64, style: &TextStyle) {
+        // [Task #509] 한컴은 폰트 지정과 상관없이 PUA 를 자체 처리. 지정 폰트에 글리프
+        // 부재 시 한컴 내부 매핑이 발행. rhwp 도 동일 동작 모방 (PR #251 정합).
+        let text = &text
+            .chars()
+            .map(crate::renderer::layout::map_pua_bullet_char)
+            .collect::<String>();
+
         let font_size = if style.font_size > 0.0 { style.font_size } else { 12.0 };
         let color = color_to_css(style.color);
         let font_family = if style.font_family.is_empty() {
@@ -389,11 +402,21 @@ impl Renderer for HtmlRenderer {
         ));
     }
 
-    fn draw_image(&mut self, _data: &[u8], x: f64, y: f64, w: f64, h: f64) {
-        // TODO: Base64 인코딩 후 <img> src 삽입
+    fn draw_image(&mut self, data: &[u8], x: f64, y: f64, w: f64, h: f64) {
+        let mime_type = detect_image_mime_type(data);
+        let (render_data, render_mime): (std::borrow::Cow<[u8]>, &str) = if mime_type == "image/x-wmf" {
+            match convert_wmf_to_svg(data) {
+                Some(svg_bytes) => (std::borrow::Cow::Owned(svg_bytes), "image/svg+xml"),
+                None => (std::borrow::Cow::Borrowed(data), mime_type),
+            }
+        } else {
+            (std::borrow::Cow::Borrowed(data), mime_type)
+        };
+        let base64_data = base64::engine::general_purpose::STANDARD.encode(&*render_data);
+        let data_uri = format!("data:{};base64,{}", render_mime, base64_data);
         self.output.push_str(&format!(
-            "<div class=\"hwp-image\" style=\"position:absolute;left:{}px;top:{}px;width:{}px;height:{}px;background:#eee;\"></div>\n",
-            x, y, w, h,
+            "<img class=\"hwp-image\" src=\"{}\" style=\"position:absolute;left:{}px;top:{}px;width:{}px;height:{}px;\" />\n",
+            data_uri, x, y, w, h,
         ));
     }
 
@@ -513,5 +536,38 @@ mod tests {
         renderer.render_tree(&tree);
         let output = renderer.output();
         assert!(output.contains("hwp-page"));
+    }
+
+    #[test]
+    fn test_draw_image_png() {
+        let mut renderer = HtmlRenderer::new();
+        renderer.begin_page(800.0, 600.0);
+        // Minimal PNG header (8 bytes)
+        let png_data = [0x89, 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A, 0x00];
+        renderer.draw_image(&png_data, 10.0, 20.0, 100.0, 50.0);
+        let output = renderer.output();
+        assert!(output.contains("<img"));
+        assert!(output.contains("data:image/png;base64,"));
+        assert!(output.contains("hwp-image"));
+    }
+
+    #[test]
+    fn test_draw_image_jpeg() {
+        let mut renderer = HtmlRenderer::new();
+        renderer.begin_page(800.0, 600.0);
+        let jpeg_data = [0xFF, 0xD8, 0xFF, 0xE0, 0x00, 0x10, 0x4A, 0x46];
+        renderer.draw_image(&jpeg_data, 0.0, 0.0, 200.0, 150.0);
+        let output = renderer.output();
+        assert!(output.contains("data:image/jpeg;base64,"));
+    }
+
+    #[test]
+    fn test_draw_image_unknown_format() {
+        let mut renderer = HtmlRenderer::new();
+        renderer.begin_page(800.0, 600.0);
+        let unknown_data = [0x00, 0x01, 0x02, 0x03];
+        renderer.draw_image(&unknown_data, 5.0, 5.0, 50.0, 50.0);
+        let output = renderer.output();
+        assert!(output.contains("data:application/octet-stream;base64,"));
     }
 }

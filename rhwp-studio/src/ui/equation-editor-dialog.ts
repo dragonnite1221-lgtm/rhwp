@@ -1,6 +1,7 @@
 import type { WasmBridge } from '@/core/wasm-bridge';
 import type { EventBus } from '@/core/event-bus';
 import type { EquationProperties } from '@/core/types';
+import { appendSvgMarkup } from './dom-utils';
 
 /**
  * 수식 편집 대화상자
@@ -298,7 +299,7 @@ export class EquationEditorDialog {
   private updatePreview(): void {
     const script = this.scriptArea.value.trim();
     if (!script) {
-      this.previewContainer.innerHTML = '<span class="eq-preview-empty">수식을 입력하세요</span>';
+      this.showPreviewMessage('eq-preview-empty', '수식을 입력하세요');
       return;
     }
 
@@ -308,11 +309,19 @@ export class EquationEditorDialog {
 
     try {
       const svg = this.wasm.renderEquationPreview(script, fontSizeHwpunit, color);
-      this.previewContainer.innerHTML = svg;
+      this.previewContainer.replaceChildren();
+      appendSvgMarkup(this.previewContainer, svg);
     } catch (err) {
-      this.previewContainer.innerHTML = '<span class="eq-preview-error">미리보기 오류</span>';
+      this.showPreviewMessage('eq-preview-error', '미리보기 오류');
       console.warn('[EquationEditor] 미리보기 오류:', err);
     }
+  }
+
+  private showPreviewMessage(className: string, message: string): void {
+    const span = document.createElement('span');
+    span.className = className;
+    span.textContent = message;
+    this.previewContainer.replaceChildren(span);
   }
 
   /** 확인 버튼 핸들러 */

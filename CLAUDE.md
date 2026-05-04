@@ -9,6 +9,20 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 - WebAssembly(WASM)로 빌드하여 웹브라우저에서 HWP 문서를 볼 수 있도록 함
 - 한컴 웹기안기의 오픈소스 대안
 
+### 파일 포맷별 파서 구조
+
+공통 문서 모델은 `src/model/document.rs`의 `Document` 구조체이다. 모든 포맷 파서는 이 하나의 `Document` IR로 변환하여 반환한다.
+
+| 포맷 | 파서 위치 | 출력 IR |
+|------|----------|---------|
+| HWPX (ZIP+XML) | `src/parser/hwpx/` | `Document` |
+| HWP5 (OLE 복합) | `src/parser/hwp5/` | `Document` |
+| HWP3 (고전 바이너리) | `src/parser/hwp3/` | `Document` |
+
+> 역사적으로 `Document` 모델은 HWP5 형식의 구조를 기반으로 설계되었으며, HWPX는 같은 의미의 XML 포맷이다. HWP3는 고전 포맷이지만 동일한 `Document` IR로 변환한다.
+
+**HWP3 파서 규칙**: `src/parser/hwp3/` 내부에서 HWP3 바이너리를 읽어 `Document` IR로 변환하여 반환한다. HWP3 전용 로직은 **반드시 `src/parser/hwp3/` 안에서만** 구현한다. 렌더러(`src/renderer/`), 레이아웃(`src/renderer/layout.rs`), 문서 코어(`src/document_core/`) 등 공통 모듈에 HWP3 전용 분기를 추가하지 않는다.
+
 ## 클로드 코드 사용 시 주의사항
 
 이 프로젝트는 **하이퍼-워터폴** 방법론을 적용한다. 클로드 코드의 기본 동작(빠른 실행, 자율 수정)과 충돌이 발생할 수 있으므로 반드시 숙지한다.
@@ -37,6 +51,8 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 - `tech/` - 기술 사항 정리 문서
 - `manual/` - 매뉴얼, 가이드 문서
 - `troubleshootings/` - 트러블슈팅 관련 문서
+- `pr/` - **외부 기여자 PR 검토 기록** (내부 타스크와 분리)
+- `pr/archives/` - 처리 완료된 PR 보관
 
 ### 필수 참조 문서
 
@@ -44,11 +60,57 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 - `mydocs/tech/font_fallback_strategy.md` — 폰트 폴백 전략 (오픈소스 대체, 라이선스)
 - `mydocs/report/browser_extension_security_audit.md` — 보안 감사 보고서
 
-문서 파일명 규칙 (`plans/`, `working/`):
-- 수행 계획서: `task_{milestone}_{이슈번호}.md` (예: task_m100_71.md)
-- 구현 계획서: `task_{milestone}_{이슈번호}_impl.md` (예: task_m100_71_impl.md)
-- 단계별 완료 보고서: `task_{milestone}_{이슈번호}_stage{N}.md` (예: task_m100_71_stage1.md)
-- 최종 보고서: `task_{milestone}_{이슈번호}_report.md` (예: task_m100_71_report.md)
+### 문서 파일명 규칙
+
+**표준 형식** (`plans/`, `working/`, `report/`):
+
+- 수행 계획서: `task_{milestone}_{이슈번호}.md` (예: `task_m100_71.md`)
+- 구현 계획서: `task_{milestone}_{이슈번호}_impl.md` (예: `task_m100_71_impl.md`)
+- 단계별 완료 보고서: `task_{milestone}_{이슈번호}_stage{N}.md` (예: `task_m100_71_stage1.md`)
+- 최종 보고서: `task_{milestone}_{이슈번호}_report.md` (예: `task_m100_71_report.md`)
+
+**접두어·접미어 규칙:**
+
+- `task_` 접두어는 **필수**. `task_bug_`, `task_feat_` 등 성격별 접두어는 사용하지 않는다.
+- 마일스톤은 항상 `m{숫자}` 형식(예: `m100`, `m200`). `m` 없이 숫자만 적거나 생략하지 않는다.
+- 한 이슈에 후속 수정이 필요한 경우 `_v2`, `_v3` 등 버전 접미어를 사용한다 (예: `task_m100_71_v2.md`). `_fix`, `_hotfix` 등 의미가 모호한 접미어는 쓰지 않는다.
+
+**폴더 역할 (엄격 준수):**
+
+| 폴더 | 용도 | 비고 |
+|------|------|------|
+| `orders/` | 오늘 할일 | `yyyymmdd.md`만 허용. 이슈 상세 조사는 `troubleshootings/` 또는 `tech/`로 |
+| `plans/` | 수행·구현 계획서 | `_stage{N}`, `_report`는 여기 두지 않는다 |
+| `plans/archives/` | 완료된 계획서 보관 | merge 후 정리 시 사용 |
+| `working/` | 단계별 완료 보고서 (`_stage{N}.md`) | 최종 보고서는 여기 두지 않는다 |
+| `report/` | 최종 결과보고서 (`_report.md`) + 기타 장기 보관 보고서 | **최종 보고서는 반드시 이 폴더** |
+| `feedback/` | 작업지시자 피드백, 코드 리뷰 의견 | |
+| `tech/` | 기술 조사·분석 | 스펙 정오표, 라이브러리 발견 등 |
+| `manual/` | 매뉴얼, 가이드 | 사용자/개발자 문서 |
+| `troubleshootings/` | 트러블슈팅 | 재발 방지용 해결 기록 |
+| `pr/` | 외부 기여자 PR 검토 기록 | 내부 타스크와 분리 |
+| `pr/archives/` | 처리 완료된 PR 보관 | |
+
+### PR 처리 규칙 (`pr/`)
+
+외부 기여자 PR은 내부 타스크와 **다른 본질**을 가지므로 별도 절차와 폴더를 사용한다.
+
+**파일명 형식:**
+
+- 검토 문서: `pr_{번호}_review.md` (수행 계획 + 검토 항목 통합)
+- 구현 계획서: `pr_{번호}_review_impl.md` (필요 시)
+- 최종 보고서: `pr_{번호}_report.md` (merge/수정요청/close 결정 + 사유)
+
+**PR 처리 절차 (간소화 4단계):**
+
+1. PR 정보 확인 (이슈 연결, base/head, mergeable, CI 상태)
+2. `pr_{번호}_review.md` 작성 → 승인 요청
+3. (필요 시) `pr_{번호}_review_impl.md` 작성 → 승인 요청
+4. 검증 (빌드/테스트/clippy) + 판단 → `pr_{번호}_report.md` 작성
+
+내부 타스크의 "수행 → 구현 → 단계별 보고 → 최종 보고" 절차는 적용하지 않는다. PR 검토는 본질적으로 **타인 코드를 검증하고 피드백하는 과정**이므로 단계별 보고서(stage)가 불필요하다.
+
+**처리 완료 PR:** `pr/archives/` 로 이동.
 
 ## 빌드 및 실행
 

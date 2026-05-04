@@ -42,6 +42,11 @@ pub enum LayoutKind {
         numer: Box<LayoutBox>,
         denom: Box<LayoutBox>,
     },
+    /// 위아래 배치 (분수선 없음)
+    Atop {
+        top: Box<LayoutBox>,
+        bottom: Box<LayoutBox>,
+    },
     /// 제곱근
     Sqrt {
         index: Option<Box<LayoutBox>>,
@@ -153,7 +158,7 @@ impl EqLayout {
             EqNode::Function(s) => self.layout_function(s, fs),
             EqNode::Quoted(s) => self.layout_number(s, fs),
             EqNode::Fraction { numer, denom } => self.layout_fraction(numer, denom, fs),
-            EqNode::Atop { top, bottom } => self.layout_fraction(top, bottom, fs),
+            EqNode::Atop { top, bottom } => self.layout_atop(top, bottom, fs),
             EqNode::Sqrt { index, body } => self.layout_sqrt(index, body, fs),
             EqNode::Superscript { base, sup } => self.layout_superscript(base, sup, fs),
             EqNode::Subscript { base, sub } => self.layout_subscript(base, sub, fs),
@@ -223,7 +228,11 @@ impl EqLayout {
     }
 
     fn layout_text(&self, text: &str, fs: f64) -> LayoutBox {
-        let w = estimate_text_width(text, fs, true);
+        // CJK/한글 텍스트는 이탤릭이 아니므로 italic 보정 제외
+        let has_cjk = text.chars().any(|c| matches!(c,
+            '\u{3000}'..='\u{9FFF}' | '\u{F900}'..='\u{FAFF}' | '\u{AC00}'..='\u{D7AF}'
+        ));
+        let w = estimate_text_width(text, fs, !has_cjk);
         LayoutBox {
             x: 0.0, y: 0.0, width: w, height: fs,
             baseline: fs * 0.8,
@@ -319,6 +328,36 @@ impl EqLayout {
         }
     }
 
+    fn layout_atop(&self, top: &EqNode, bottom: &EqNode, fs: f64) -> LayoutBox {
+        let t = self.layout_node(top, fs);
+        let b = self.layout_node(bottom, fs);
+
+        let pad = fs * FRAC_LINE_PAD;
+        let axis = fs * AXIS_HEIGHT;
+        let w = t.width.max(b.width) + pad * 2.0;
+
+        let top_h = t.height + pad;
+        let bottom_h = b.height + pad;
+        let baseline = top_h + axis;
+        let total_h = top_h + bottom_h;
+
+        let mut top_box = t;
+        top_box.x = (w - top_box.width) / 2.0;
+        top_box.y = pad;
+
+        let mut bottom_box = b;
+        bottom_box.x = (w - bottom_box.width) / 2.0;
+        bottom_box.y = top_h;
+
+        LayoutBox {
+            x: 0.0, y: 0.0, width: w, height: total_h, baseline,
+            kind: LayoutKind::Atop {
+                top: Box::new(top_box),
+                bottom: Box::new(bottom_box),
+            },
+        }
+    }
+
     fn layout_sqrt(&self, index: &Option<Box<EqNode>>, body: &EqNode, fs: f64) -> LayoutBox {
         let b = self.layout_node(body, fs);
         let pad = fs * SQRT_PAD;
@@ -353,20 +392,29 @@ impl EqLayout {
         let b = self.layout_node(base, fs);
         let s = self.layout_node(sup, fs * SCRIPT_SCALE);
 
+        // sup_shift: 기준선으로부터 위첨자 상단까지의 거리 (양수 = base 상단 아래)
         let sup_shift = b.baseline - s.height * 0.7;
-        let total_h = b.height.max(s.height + sup_shift.max(0.0));
+
+        let (base_y, sup_y, total_h);
+        if sup_shift >= 0.0 {
+            // 위첨자가 base 높이 내에 들어감 — sup를 상단에, base를 아래로
+            sup_y = 0.0;
+            base_y = sup_shift.max(s.height - b.height).max(0.0);
+            total_h = (base_y + b.height).max(s.height);
+        } else {
+            // 위첨자가 base 상단 위로 확장 — sup를 상단에, base를 |sup_shift|만큼 내림
+            sup_y = 0.0;
+            base_y = -sup_shift;
+            total_h = (base_y + b.height).max(s.height);
+        }
 
         let mut base_box = b;
         base_box.x = 0.0;
-        base_box.y = total_h - base_box.height;
+        base_box.y = base_y;
 
         let mut sup_box = s;
         sup_box.x = base_box.width;
-        sup_box.y = 0.0f64.max(sup_shift.min(0.0).abs());
-        if sup_shift > 0.0 {
-            sup_box.y = 0.0;
-            base_box.y = (total_h - base_box.height).max(0.0);
-        }
+        sup_box.y = sup_y;
 
         let total_w = base_box.width + sup_box.width;
 
@@ -829,7 +877,8 @@ impl EqLayout {
     fn layout_paren(&self, left: &str, right: &str, body: &EqNode, fs: f64) -> LayoutBox {
         let b = self.layout_node(body, fs);
         let pad = fs * PAREN_PAD;
-        let paren_w = fs * 0.3;
+        // Times New Roman '(' advance (em 기준) = 0.333. 글리프/path 공통 폭. (Task #283)
+        let paren_w = fs * 0.333;
 
         let left_w = if left.is_empty() { 0.0 } else { paren_w };
         let right_w = if right.is_empty() { 0.0 } else { paren_w };
@@ -994,6 +1043,34 @@ mod tests {
     }
 
     #[test]
+    fn test_superscript_fraction_baseline() {
+        // #532: 분수형 위첨자 (25^{1/3}) 에서 sup의 baseline이
+        // base baseline 아래로 내려가면 안 됨
+        let lb = parse_and_layout("25^{{1} over {3}}", 14.0);
+        let (base_box, sup_box) = match &lb.kind {
+            LayoutKind::Superscript { base, sup } => (base, sup),
+            LayoutKind::Row(children) => {
+                // Row 내 마지막 요소가 Superscript일 수 있음
+                let last = children.last().unwrap();
+                match &last.kind {
+                    LayoutKind::Superscript { base, sup } => (base, sup),
+                    _ => panic!("Expected Superscript in Row"),
+                }
+            }
+            _ => panic!("Expected Superscript or Row, got {:?}", lb.kind),
+        };
+        // sup의 상단(y)이 base의 상단보다 높거나 같아야 함
+        assert!(sup_box.y <= base_box.y,
+            "sup.y ({}) should be <= base.y ({})", sup_box.y, base_box.y);
+        // sup의 baseline이 base baseline보다 위에 있어야 함
+        let sup_baseline_abs = sup_box.y + sup_box.baseline;
+        let base_baseline_abs = base_box.y + base_box.baseline;
+        assert!(sup_baseline_abs < base_baseline_abs,
+            "sup baseline ({}) should be above base baseline ({})",
+            sup_baseline_abs, base_baseline_abs);
+    }
+
+    #[test]
     fn test_eq01_script() {
         // 실제 eq-01.hwp 수식
         let lb = parse_and_layout(
@@ -1002,5 +1079,52 @@ mod tests {
         );
         assert!(lb.width > 100.0);
         assert!(lb.height > 0.0);
+    }
+
+    #[test]
+    fn test_cases_korean_no_overlap() {
+        // exam_math.hwp p177 CASES 수식 — 한글 혼합
+        let lb = parse_and_layout(
+            "a _{n+1} = {cases{``a _{n} -3&&LEFT ( LEFT |` a _{n} `RIGHT | 이~홀수인~경우 RIGHT )#``{1} over {2} a _{n}&&LEFT ( a _{n} =0~또는~ LEFT |` a _{n} `RIGHT | 이~짝수인~경우 RIGHT )}}",
+            14.67,
+        );
+        assert!(lb.width > 0.0, "CASES width should be positive");
+        assert!(lb.height > 0.0, "CASES height should be positive");
+
+        // 전체 수식 a_{n+1} = {cases{...}} 는 Row[subscript, =, Paren{cases}]
+        let top_children = match &lb.kind {
+            LayoutKind::Row(children) => children,
+            other => panic!("Top-level should be Row, got {:?}", other),
+        };
+        let cases_paren = top_children.iter()
+            .find(|c| matches!(&c.kind, LayoutKind::Paren { .. }))
+            .expect("Should contain a Paren (CASES) element");
+        let cases_body = match &cases_paren.kind {
+            LayoutKind::Paren { body, .. } => body,
+            _ => unreachable!(),
+        };
+        let rows = match &cases_body.kind {
+            LayoutKind::Row(rows) => rows,
+            other => panic!("CASES body should be Row, got {:?}", other),
+        };
+        assert!(rows.len() >= 2, "CASES should have at least 2 rows");
+        let row1 = &rows[0];
+        let row2 = &rows[1];
+        let row1_bottom = row1.y + row1.height;
+        let row2_top = row2.y;
+        assert!(row2_top >= row1_bottom,
+            "CASES rows should not overlap: row1 bottom={:.1}, row2 top={:.1}",
+            row1_bottom, row2_top);
+    }
+
+    #[test]
+    fn test_korean_text_width_not_italic() {
+        // 한글 텍스트는 이탤릭 보정 없이 폭 산출
+        let korean = parse_and_layout("홀수인~경우", 20.0);
+        let latin = parse_and_layout("abcdef", 20.0);
+        // 한글 6자(전각 1.0×) > 라틴 6자(~0.55×)
+        assert!(korean.width > latin.width,
+            "Korean text width ({:.1}) should be larger than Latin ({:.1})",
+            korean.width, latin.width);
     }
 }

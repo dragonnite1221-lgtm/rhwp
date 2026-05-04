@@ -54,6 +54,19 @@ fn style_params(style: &TextStyle) -> (f64, f64, f64) {
     (font_size, ratio, tab_w)
 }
 
+/// inline_tabs ext[2] 에서 탭 종류를 추출.
+///
+/// HWP `tab_extended` 포맷 (PR #292 / Task #290 실증):
+/// - high byte = 탭 종류 enum+1 (1=LEFT, 2=RIGHT, 3=CENTER, 4=DECIMAL)
+/// - low  byte = fill_type (TabDef.fill 과 동일)
+///
+/// 기존 코드는 `ext[2]` 전체 u16 을 탭 종류로 해석하여 실제 HWP 값(최소 256)과
+/// 매칭 실패. 이 헬퍼로 고바이트만 추출해 0~4 값으로 정규화.
+#[inline]
+pub(super) fn inline_tab_type(ext: &[u16; 7]) -> u8 {
+    ((ext[2] >> 8) & 0xFF) as u8
+}
+
 /// 현재 절대 위치에서 다음 탭 정지를 찾는다.
 ///
 /// Returns (position, tab_type, fill_type).
@@ -67,8 +80,10 @@ pub(crate) fn find_next_tab_stop(
 ) -> (f64, u8, u8) {
     // 커스텀 탭 정지에서 현재 위치 뒤의 첫 번째 검색
     for ts in tab_stops {
-        // 탭 위치가 사용 가능 너비를 초과하면 available_width로 클램핑
-        let pos = if ts.position > available_width && available_width > 0.0 {
+        // type=1(오른쪽) 탭은 단 기준 절대 위치이므로 available_width 클램핑 제외.
+        // 들여쓰기(left_margin)가 있는 문단에서도 오른쪽 탭이 동일 위치에 정렬되도록 한다.
+        // type=0(왼쪽)/2(가운데) 탭은 종전대로 클램핑하여 텍스트 영역 밖으로 넘어가지 않게 한다.
+        let pos = if ts.tab_type != 1 && ts.position > available_width && available_width > 0.0 {
             available_width
         } else {
             ts.position
@@ -179,11 +194,39 @@ impl TextMeasurer for EmbeddedTextMeasurer {
             if c == '\u{2007}' {
                 return font_size * 0.5 * ratio + style.letter_spacing + style.extra_char_spacing;
             }
-            let base_w = if let Some(w) = measure_char_width_embedded(&style.font_family, style.bold, style.italic, c, font_size) {
+            let base_w_raw = if let Some(w) = measure_char_width_embedded(&style.font_family, style.bold, style.italic, c, font_size) {
                 w
-            } else if cluster_len[i] > 1 || is_cjk_char(c) || is_fullwidth_symbol(c) { font_size } else { font_size * 0.5 };
+            } else if cluster_len[i] > 1 || is_cjk_char(c) || is_fullwidth_symbol(c) {
+                font_size
+            } else if is_narrow_punctuation(c) {
+                // Task #257: 콤마·중점 등은 실제 글리프 폭이 반각보다 뚜렷이
+                // 좁음. 폴백 경로에서 font_size * 0.5 를 쓰면 PDF 대비 뒤
+                // 글자가 2~3px 우측으로 밀림. 0.3 으로 분기.
+                font_size * 0.3
+            } else {
+                font_size * 0.5
+            };
+            // Task #352: 3+ 연속 dash 시퀀스(빈칸/leader) 는 좁은 폭으로 재산출.
+            // HY신명조 등 한글 폰트 메트릭의 ASCII '-' 폭(0.83 em) 부풀림 회피.
+            // 좁은 base 0.3 em 위에 paragraph_layout 가 라인 슬랙을 분배한
+            // extra_dash_advance 를 추가하여 PDF 의 elastic leader 동작 모방.
+            let is_leader = is_dash_leader_run(&chars, i);
+            let base_w = if is_leader {
+                base_w_raw.min(font_size * 0.3)
+            } else {
+                base_w_raw
+            };
             let mut w = base_w * ratio + style.letter_spacing + style.extra_char_spacing;
             if c == ' ' { w += style.extra_word_spacing; }
+            if is_leader { w += style.extra_dash_advance; }
+            // 음수 자간(letter_spacing + extra_char_spacing < 0) 시
+            // per-char 최소 advance = base*ratio*0.5 로 클램프하여 narrow
+            // glyph(콤마/마침표 등) 이 뒷 글자와 역진 겹침되는 것을 방지한다.
+            // 문서 CharShape 의 음수 자간 및 paragraph_layout 의 압축 모두 포함.
+            if style.letter_spacing + style.extra_char_spacing < 0.0 {
+                let min_w = base_w * ratio * 0.5;
+                w = w.max(min_w);
+            }
             w
         };
 
@@ -194,6 +237,10 @@ impl TextMeasurer for EmbeddedTextMeasurer {
             if cluster_len[i] == 0 { continue; }
             if c == '\t' {
                 // 인라인 탭 (HWP tab_extended / HWPX 인라인 탭)
+                // NOTE: 네이티브 경로는 `tab_type = ext[2]` 전체 u16 해석을 유지.
+                // 기존 golden SVG (issue-147, issue-267) 가 이 "우연한 LEFT 폴백" 동작에
+                // 의존하고 있어, 이를 바꾸면 회귀 발생. WASM 경로만 inline_tab_type 사용.
+                // 네이티브 측 일관성 복원은 별도 이슈로 추적 (Task #296 범위 외).
                 if tab_char_idx < style.inline_tabs.len() {
                     let ext = &style.inline_tabs[tab_char_idx];
                     let tab_width_px = ext[0] as f64 * 96.0 / 7200.0;
@@ -265,11 +312,35 @@ impl TextMeasurer for EmbeddedTextMeasurer {
             if c == '\u{2007}' {
                 return font_size * 0.5 * ratio + style.letter_spacing + style.extra_char_spacing;
             }
-            let base_w = if let Some(w) = measure_char_width_embedded(&style.font_family, style.bold, style.italic, c, font_size) {
+            let base_w_raw = if let Some(w) = measure_char_width_embedded(&style.font_family, style.bold, style.italic, c, font_size) {
                 w
-            } else if cluster_len[i] > 1 || is_cjk_char(c) || is_fullwidth_symbol(c) { font_size } else { font_size * 0.5 };
+            } else if cluster_len[i] > 1 || is_cjk_char(c) || is_fullwidth_symbol(c) {
+                font_size
+            } else if is_narrow_punctuation(c) {
+                // Task #257: 콤마·중점 등 narrow glyph 폴백 폭 (0.5 → 0.3).
+                font_size * 0.3
+            } else {
+                font_size * 0.5
+            };
+            // Task #352: 3+ 연속 dash leader 좁은 base 0.3 em + 라인 슬랙
+            // 분배(extra_dash_advance) 로 PDF elastic leader 모방.
+            let is_leader = is_dash_leader_run(&chars, i);
+            let base_w = if is_leader {
+                base_w_raw.min(font_size * 0.3)
+            } else {
+                base_w_raw
+            };
             let mut w = base_w * ratio + style.letter_spacing + style.extra_char_spacing;
             if c == ' ' { w += style.extra_word_spacing; }
+            if is_leader { w += style.extra_dash_advance; }
+            // 음수 자간(letter_spacing + extra_char_spacing < 0) 시 per-char 최소
+            // advance 를 base_w*ratio*0.5 로 클램프하여 narrow glyph(콤마/마침표 등)
+            // 이 뒷 글자와 역진 겹침되는 것을 방지한다. 문서 CharShape 의 음수 자간
+            // 및 paragraph_layout 의 overflow/Justify/Distribute 압축 모두 포함.
+            if style.letter_spacing + style.extra_char_spacing < 0.0 {
+                let min_w = base_w * ratio * 0.5;
+                w = w.max(min_w);
+            }
             w
         };
 
@@ -282,6 +353,8 @@ impl TextMeasurer for EmbeddedTextMeasurer {
             }
             if c == '\t' {
                 // HWPX 인라인 탭: inline_tabs에서 width/type 사용
+                // 네이티브 경로의 ext[2] 인코딩: (tab_type << 8) | fill_type.
+                // 상위 바이트가 tab_type (1=LEFT, 2=RIGHT, 3=CENTER, 4=DECIMAL).
                 if tab_char_idx < style.inline_tabs.len() {
                     let ext = &style.inline_tabs[tab_char_idx];
                     let tab_width_px = ext[0] as f64 * 96.0 / 7200.0;
@@ -289,7 +362,8 @@ impl TextMeasurer for EmbeddedTextMeasurer {
                     let tab_target = x + tab_width_px;
                     match tab_type {
                         1 => { // 오른쪽
-                            let seg_w = measure_segment_from(&chars, &cluster_len, i + 1, &char_width);
+                            let seg_start = { let mut s = i + 1; while s < chars.len() && chars[s] == ' ' && cluster_len[s] != 0 { s += 1; } s };
+                            let seg_w = measure_segment_from(&chars, &cluster_len, seg_start, &char_width);
                             x = (tab_target - seg_w).max(x);
                         }
                         2 => { // 가운데
@@ -310,11 +384,8 @@ impl TextMeasurer for EmbeddedTextMeasurer {
                     let rel_tab = tab_pos - style.line_x_offset;
                     match tab_type {
                         1 => { // 오른쪽
-                            let seg_w = measure_segment_from(&chars, &cluster_len, i + 1, &char_width);
-                            if tab_type == 1 {
-                                eprintln!("[DEBUG_TAB_POS] RIGHT tab: abs_x={:.2}, tab_pos={:.2}, line_x_offset={:.2}, rel_tab={:.2}, seg_w={:.2}, avail_w={:.2}, result_x={:.2}",
-                                    abs_x, tab_pos, style.line_x_offset, rel_tab, seg_w, style.available_width, (rel_tab - seg_w).max(x));
-                            }
+                            let seg_start = { let mut s = i + 1; while s < chars.len() && chars[s] == ' ' && cluster_len[s] != 0 { s += 1; } s };
+                            let seg_w = measure_segment_from(&chars, &cluster_len, seg_start, &char_width);
                             x = (rel_tab - seg_w).max(x);
                         }
                         2 => { // 가운데
@@ -508,7 +579,7 @@ impl TextMeasurer for WasmTextMeasurer {
             if c == '\u{2007}' {
                 return font_size * 0.5 * ratio + style.letter_spacing + style.extra_char_spacing;
             }
-            let char_px = if cluster_len[i] > 1 {
+            let char_px_raw = if cluster_len[i] > 1 {
                 hangul_hwp as f64 / 75.0
             } else {
                 wasm_internals::measure_char_width_hwp(
@@ -516,17 +587,53 @@ impl TextMeasurer for WasmTextMeasurer {
                     c, hangul_hwp, font_size,
                 )
             };
+            // Task #352: dash leader 좁은 base 0.3 em + extra_dash_advance.
+            let is_leader = is_dash_leader_run(&chars, i);
+            let char_px = if is_leader {
+                char_px_raw.min(font_size * 0.3)
+            } else {
+                char_px_raw
+            };
             let mut w = char_px * ratio + style.letter_spacing + style.extra_char_spacing;
             if c == ' ' { w += style.extra_word_spacing; }
+            if is_leader { w += style.extra_dash_advance; }
+            // 음수 자간(letter_spacing + extra_char_spacing < 0) 시
+            // per-char 최소 advance 클램프로 narrow glyph 역진 방지.
+            if style.letter_spacing + style.extra_char_spacing < 0.0 {
+                let min_w = char_px * ratio * 0.5;
+                w = w.max(min_w);
+            }
             w
         };
 
         let mut total = 0.0;
+        let mut tab_char_idx = 0usize; // [Task #296] inline_tabs 인덱스
         for i in 0..char_count {
             let c = chars[i];
             if cluster_len[i] == 0 { continue; }
             if c == '\t' {
-                if has_custom_tabs {
+                // [Task #296] 인라인 탭 (HWP tab_extended / HWPX 인라인 탭) 을
+                // WASM Canvas 경로에서도 존중. 네이티브 EmbeddedTextMeasurer 와 동일 구조.
+                if tab_char_idx < style.inline_tabs.len() {
+                    let ext = &style.inline_tabs[tab_char_idx];
+                    let tab_width_px = ext[0] as f64 * 96.0 / 7200.0;
+                    let tab_type = inline_tab_type(ext);
+                    let tab_target = total + tab_width_px;
+                    match tab_type {
+                        2 => { // RIGHT
+                            let seg_w = measure_segment_from(&chars, &cluster_len, i + 1, &char_width);
+                            total = (tab_target - seg_w).max(total);
+                        }
+                        3 => { // CENTER
+                            let seg_w = measure_segment_from(&chars, &cluster_len, i + 1, &char_width);
+                            total = (tab_target - seg_w / 2.0).max(total);
+                        }
+                        _ => { // LEFT(0/1), DECIMAL(4), 기타
+                            total = tab_target.max(total);
+                        }
+                    }
+                    tab_char_idx += 1;
+                } else if has_custom_tabs {
                     let abs_x = style.line_x_offset + total;
                     let (tab_pos, tab_type, _) = find_next_tab_stop(
                         abs_x, &style.tab_stops, tab_w,
@@ -546,11 +653,13 @@ impl TextMeasurer for WasmTextMeasurer {
                             total = rel_tab.max(total);
                         }
                     }
+                    tab_char_idx += 1;
                 } else {
                     // 기본 등간격 탭: 라인 절대 위치(line_x_offset + total) 기준으로 계산
                     let abs_x = style.line_x_offset + total;
                     let next_abs = ((abs_x / tab_w).floor() + 1.0) * tab_w;
                     total = (next_abs - style.line_x_offset).max(total);
+                    tab_char_idx += 1;
                 }
                 continue;
             }
@@ -580,7 +689,7 @@ impl TextMeasurer for WasmTextMeasurer {
             if c == '\u{2007}' {
                 return font_size * 0.5 * ratio + style.letter_spacing + style.extra_char_spacing;
             }
-            let char_px = if cluster_len[i] > 1 {
+            let char_px_raw = if cluster_len[i] > 1 {
                 hangul_hwp as f64 / 75.0
             } else {
                 wasm_internals::measure_char_width_hwp(
@@ -588,11 +697,26 @@ impl TextMeasurer for WasmTextMeasurer {
                     c, hangul_hwp, font_size,
                 )
             };
+            // Task #352: dash leader 좁은 base 0.3 em + extra_dash_advance.
+            let is_leader = is_dash_leader_run(&chars, i);
+            let char_px = if is_leader {
+                char_px_raw.min(font_size * 0.3)
+            } else {
+                char_px_raw
+            };
             let mut w = char_px * ratio + style.letter_spacing + style.extra_char_spacing;
             if c == ' ' { w += style.extra_word_spacing; }
+            if is_leader { w += style.extra_dash_advance; }
+            // 음수 자간(letter_spacing + extra_char_spacing < 0) 시
+            // per-char 최소 advance 클램프로 narrow glyph 역진 방지.
+            if style.letter_spacing + style.extra_char_spacing < 0.0 {
+                let min_w = char_px * ratio * 0.5;
+                w = w.max(min_w);
+            }
             w
         };
 
+        let mut tab_char_idx = 0usize; // [Task #296] inline_tabs 인덱스
         for i in 0..char_count {
             let c = chars[i];
             if cluster_len[i] == 0 {
@@ -600,7 +724,29 @@ impl TextMeasurer for WasmTextMeasurer {
                 continue;
             }
             if c == '\t' {
-                if has_custom_tabs {
+                // [Task #296] 인라인 탭 (HWP tab_extended / HWPX 인라인 탭) 을
+                // WASM Canvas 경로에서도 존중. 네이티브 EmbeddedTextMeasurer 와 동일 구조.
+                if tab_char_idx < style.inline_tabs.len() {
+                    let ext = &style.inline_tabs[tab_char_idx];
+                    let tab_width_px = ext[0] as f64 * 96.0 / 7200.0;
+                    let tab_type = inline_tab_type(ext);
+                    let tab_target = x + tab_width_px;
+                    match tab_type {
+                        2 => { // RIGHT
+                            let seg_start = { let mut s = i + 1; while s < chars.len() && chars[s] == ' ' && cluster_len[s] != 0 { s += 1; } s };
+                            let seg_w = measure_segment_from(&chars, &cluster_len, seg_start, &char_width);
+                            x = (tab_target - seg_w).max(x);
+                        }
+                        3 => { // CENTER
+                            let seg_w = measure_segment_from(&chars, &cluster_len, i + 1, &char_width);
+                            x = (tab_target - seg_w / 2.0).max(x);
+                        }
+                        _ => { // LEFT(0/1), DECIMAL(4), 기타
+                            x = tab_target.max(x);
+                        }
+                    }
+                    tab_char_idx += 1;
+                } else if has_custom_tabs {
                     let abs_x = style.line_x_offset + x;
                     let (tab_pos, tab_type, _) = find_next_tab_stop(
                         abs_x, &style.tab_stops, tab_w,
@@ -609,7 +755,8 @@ impl TextMeasurer for WasmTextMeasurer {
                     let rel_tab = tab_pos - style.line_x_offset;
                     match tab_type {
                         1 => {
-                            let seg_w = measure_segment_from(&chars, &cluster_len, i + 1, &char_width);
+                            let seg_start = { let mut s = i + 1; while s < chars.len() && chars[s] == ' ' && cluster_len[s] != 0 { s += 1; } s };
+                            let seg_w = measure_segment_from(&chars, &cluster_len, seg_start, &char_width);
                             x = (rel_tab - seg_w).max(x);
                         }
                         2 => {
@@ -620,11 +767,13 @@ impl TextMeasurer for WasmTextMeasurer {
                             x = rel_tab.max(x);
                         }
                     }
+                    tab_char_idx += 1;
                 } else {
                     // 기본 등간격 탭: 라인 절대 위치(line_x_offset + x) 기준으로 계산
                     let abs_x = style.line_x_offset + x;
                     let next_abs = ((abs_x / tab_w).floor() + 1.0) * tab_w;
                     x = (next_abs - style.line_x_offset).max(x);
+                    tab_char_idx += 1;
                 }
                 positions.push(x);
                 continue;
@@ -668,6 +817,7 @@ pub(crate) fn resolved_to_text_style(styles: &ResolvedStyleSet, char_style_id: u
             inline_tabs: Vec::new(),
             extra_word_spacing: 0.0,
             extra_char_spacing: 0.0,
+            extra_dash_advance: 0.0,
             outline_type: cs.outline_type,
             shadow_type: cs.shadow_type,
             shadow_color: cs.shadow_color,
@@ -760,11 +910,32 @@ pub(crate) fn estimate_text_width_unrounded(text: &str, style: &TextStyle) -> f6
         if c == '\u{2007}' {
             return font_size * 0.5 * ratio + style.letter_spacing + style.extra_char_spacing;
         }
-        let base_w = if let Some(w) = measure_char_width_embedded(&style.font_family, style.bold, style.italic, c, font_size) {
+        let base_w_raw = if let Some(w) = measure_char_width_embedded(&style.font_family, style.bold, style.italic, c, font_size) {
             w
-        } else if cluster_len[i] > 1 || is_cjk_char(c) || is_fullwidth_symbol(c) { font_size } else { font_size * 0.5 };
+        } else if cluster_len[i] > 1 || is_cjk_char(c) || is_fullwidth_symbol(c) {
+            font_size
+        } else if is_narrow_punctuation(c) {
+            // Task #257: 콤마·중점 등 narrow glyph 폴백 폭 (0.5 → 0.3).
+            font_size * 0.3
+        } else {
+            font_size * 0.5
+        };
+        // Task #352: 3+ 연속 dash leader 좁은 base 0.3 em + 라인 슬랙 분배.
+        let is_leader = is_dash_leader_run(&chars, i);
+        let base_w = if is_leader {
+            base_w_raw.min(font_size * 0.3)
+        } else {
+            base_w_raw
+        };
         let mut w = base_w * ratio + style.letter_spacing + style.extra_char_spacing;
         if c == ' ' { w += style.extra_word_spacing; }
+        if is_leader { w += style.extra_dash_advance; }
+        // 음수 자간(letter_spacing + extra_char_spacing < 0) 시
+        // per-char 최소 advance 클램프로 narrow glyph 역진 방지.
+        if style.letter_spacing + style.extra_char_spacing < 0.0 {
+            let min_w = base_w * ratio * 0.5;
+            w = w.max(min_w);
+        }
         w
     };
 
@@ -807,6 +978,44 @@ pub(crate) fn is_cjk_char(c: char) -> bool {
     || ('\u{FF00}'..='\u{FFEF}').contains(&c) // 전각 문자
 }
 
+/// 실제 글리프 폭이 반각(em/2)보다 뚜렷이 좁은 구두점·기호.
+/// 메트릭 DB 미등록 폰트의 폴백 폭 계산 시 `font_size * 0.5` 대신
+/// `font_size * 0.3` 을 쓰도록 분기하는 기준 (Task #257).
+fn is_narrow_punctuation(c: char) -> bool {
+    matches!(c,
+        ',' | '.' | ':' | ';' | '\'' | '"' | '`' |
+        '\u{00B7}'   // · MIDDLE DOT
+    )
+}
+
+/// 3 개 이상 연속하는 dash leader 시퀀스의 일부 여부 (Task #352).
+///
+/// 한컴 문서의 빈칸/구분선은 ASCII '-' 반복으로 구성되며, PDF 도 좁은
+/// advance 로 렌더된다. 그러나 일부 한글 폰트(HY신명조 등) 의 메트릭 DB 가
+/// '-' 글리프 폭을 0.83 em 으로 저장하고 있어 반복 시 자연 폭이
+/// 사용 가능 폭을 크게 초과한다. 본 헬퍼로 leader 시퀀스를 식별해
+/// 좁은 advance(`font_size * 0.3`) 로 재산출한다.
+///
+/// 자연 텍스트의 단발 dash(예: "stimulus-driven", "32.-") 는 ≥3 조건을
+/// 만족하지 않으므로 영향 없음.
+fn is_dash_leader_run(chars: &[char], i: usize) -> bool {
+    if chars[i] != '-' { return false; }
+    let mut count = 1usize;
+    let mut j = i;
+    while j > 0 && chars[j - 1] == '-' {
+        count += 1;
+        j -= 1;
+        if count >= 3 { return true; }
+    }
+    let mut j = i;
+    while j + 1 < chars.len() && chars[j + 1] == '-' {
+        count += 1;
+        j += 1;
+        if count >= 3 { return true; }
+    }
+    false
+}
+
 /// 한컴이 전각으로 처리하는 기호 (메트릭 폴백 시 font_size 사용)
 fn is_fullwidth_symbol(c: char) -> bool {
     matches!(c,
@@ -816,6 +1025,7 @@ fn is_fullwidth_symbol(c: char) -> bool {
         '\u{00A5}'                     // ¥ YEN SIGN
     )
     || ('\u{2460}'..='\u{24FF}').contains(&c) // Enclosed Alphanumerics (①②③ 등)
+    || ('\u{25A0}'..='\u{25FF}').contains(&c) // Geometric Shapes (□■▲◆○ 등, 섹션 머리 기호)
     || ('\u{2600}'..='\u{26FF}').contains(&c) // Miscellaneous Symbols (☆★ 등)
     || ('\u{2700}'..='\u{27BF}').contains(&c) // Dingbats (✓✗ 등)
     || ('\u{3200}'..='\u{32FF}').contains(&c) // Enclosed CJK Letters (㉠㉡ 등)
@@ -1106,6 +1316,92 @@ mod tests {
         }
     }
 
+    // ── 오버플로우 압축 회귀 테스트 (Task #229) ──
+
+    /// 음수 extra_char_spacing (오버플로우 압축)에서 narrow glyph(콤마)가
+    /// 뒷 글자에 역진 겹침되지 않아야 한다. compute_char_positions 결과는
+    /// 단조 비감소여야 한다.
+    #[test]
+    fn test_overflow_compression_positions_monotonic_comma() {
+        let m = EmbeddedTextMeasurer;
+        // 실제 재현 케이스: "65,063,026,600" 을 12pt 맑은 고딕으로,
+        // extra_char_spacing = -2.88 (셀 오버플로우 압축 시나리오).
+        let style = TextStyle {
+            font_family: "맑은 고딕".to_string(),
+            font_size: 12.0,
+            ratio: 1.0,
+            extra_char_spacing: -2.88,
+            ..Default::default()
+        };
+        let positions = m.compute_char_positions("65,063,026,600", &style);
+        for win in positions.windows(2) {
+            assert!(
+                win[1] >= win[0] - 1e-6,
+                "positions must be non-decreasing: {:?}",
+                positions
+            );
+        }
+    }
+
+    /// 실제 문서 재현 케이스: 압축은 CharShape 의 `letter_spacing` 을 통해 오며
+    /// `extra_char_spacing` 은 0 일 수 있다. 가드 조건은 둘의 합이어야 한다.
+    #[test]
+    fn test_charshape_negative_letter_spacing_no_reverse() {
+        let m = EmbeddedTextMeasurer;
+        let style = TextStyle {
+            font_family: "맑은 고딕".to_string(),
+            font_size: 12.0,
+            ratio: 1.0,
+            letter_spacing: -2.88,
+            extra_char_spacing: 0.0,
+            ..Default::default()
+        };
+        let positions = m.compute_char_positions("65,063,026,600", &style);
+        for win in positions.windows(2) {
+            assert!(
+                win[1] >= win[0] - 1e-6,
+                "positions must be non-decreasing: {:?}",
+                positions
+            );
+        }
+    }
+
+    /// 동일 시나리오에서 ASCII 마침표도 역진되지 않아야 한다.
+    #[test]
+    fn test_overflow_compression_positions_monotonic_period() {
+        let m = EmbeddedTextMeasurer;
+        let style = TextStyle {
+            font_family: "맑은 고딕".to_string(),
+            font_size: 12.0,
+            ratio: 1.0,
+            extra_char_spacing: -2.88,
+            ..Default::default()
+        };
+        let positions = m.compute_char_positions("526.278", &style);
+        for win in positions.windows(2) {
+            assert!(
+                win[1] >= win[0] - 1e-6,
+                "positions must be non-decreasing: {:?}",
+                positions
+            );
+        }
+    }
+
+    /// extra_char_spacing == 0 (비-압축) 경로는 클램프의 영향을 받지 않아야 한다.
+    /// 21a02ec 이후의 동작과 동일해야 함.
+    #[test]
+    fn test_non_compression_width_unchanged_by_fix() {
+        let m = EmbeddedTextMeasurer;
+        let style_a = TextStyle {
+            font_family: "맑은 고딕".to_string(),
+            font_size: 12.0,
+            ratio: 1.0,
+            ..Default::default()
+        };
+        let w = m.estimate_text_width("65,063,026,600", &style_a);
+        assert!(w > 50.0 && w < 200.0, "sanity: non-compression width reasonable, got {}", w);
+    }
+
     // ── build_cluster_len 테스트 ──
 
     #[test]
@@ -1129,5 +1425,98 @@ mod tests {
         let chars: Vec<char> = "A\u{1100}\u{1161}B".chars().collect();
         let cl = build_cluster_len(&chars);
         assert_eq!(cl, vec![1, 2, 0, 1]);
+    }
+
+    // ── narrow glyph advance 회귀 (Task #257) ──
+    //
+    // `is_narrow_punctuation` 폴백 분기 검증. 메트릭 DB 및 `resolve_metric_alias`
+    // 양쪽 모두에 등록되지 않은 이름을 사용해야 폴백 경로가 실제로 실행된다.
+    // (과거엔 "HY헤드라인M" 을 사용했으나 Task #259 에서 alias 등록되며 폴백이
+    // 우회됨 → 임의의 미등록 이름으로 교체.)
+    const UNREGISTERED_FONT: &str = "__rhwp_test_unregistered_font__";
+
+    #[test]
+    fn test_narrow_glyph_comma_base_width() {
+        let m = EmbeddedTextMeasurer;
+        let style = TextStyle {
+            font_family: UNREGISTERED_FONT.to_string(),
+            font_size: 13.333,
+            ratio: 1.0,
+            ..Default::default()
+        };
+        // positions of "A,B": A at 0, , at A-advance, B at A-advance + ,-advance
+        let positions = m.compute_char_positions("A,B", &style);
+        let comma_advance = positions[2] - positions[1];
+        assert!(
+            comma_advance <= style.font_size * 0.35,
+            "narrow comma advance should be ≤ font_size * 0.35 ({:.2}), got {:.2}",
+            style.font_size * 0.35, comma_advance
+        );
+    }
+
+    #[test]
+    fn test_narrow_glyph_middle_dot_base_width() {
+        let m = EmbeddedTextMeasurer;
+        let style = TextStyle {
+            font_family: UNREGISTERED_FONT.to_string(),
+            font_size: 16.667,
+            ratio: 1.0,
+            ..Default::default()
+        };
+        let positions = m.compute_char_positions("가\u{00B7}나", &style);
+        let dot_advance = positions[2] - positions[1];
+        assert!(
+            dot_advance <= style.font_size * 0.35,
+            "narrow middle-dot advance should be ≤ font_size * 0.35 ({:.2}), got {:.2}",
+            style.font_size * 0.35, dot_advance
+        );
+    }
+
+    #[test]
+    fn test_narrow_glyph_period_and_colon() {
+        let m = EmbeddedTextMeasurer;
+        let style = TextStyle {
+            font_family: UNREGISTERED_FONT.to_string(),
+            font_size: 13.333,
+            ratio: 1.0,
+            ..Default::default()
+        };
+        for (ch, text) in &[('.', "A.B"), (':', "A:B")] {
+            let positions = m.compute_char_positions(text, &style);
+            let advance = positions[2] - positions[1];
+            assert!(
+                advance <= style.font_size * 0.35,
+                "narrow '{}' advance should be ≤ font_size * 0.35 ({:.2}), got {:.2}",
+                ch, style.font_size * 0.35, advance
+            );
+        }
+    }
+
+    #[test]
+    fn test_non_narrow_char_unchanged() {
+        // 회귀 방어: 영문 'A'·한글 '가' 는 narrow 분기에 해당하지 않아야 한다.
+        let m = EmbeddedTextMeasurer;
+        let style = TextStyle {
+            font_family: UNREGISTERED_FONT.to_string(),
+            font_size: 13.333,
+            ratio: 1.0,
+            ..Default::default()
+        };
+        // 'A' = Latin 반각 = font_size * 0.5 ≈ 6.67 유지
+        let pos_a = m.compute_char_positions("AA", &style);
+        let a_advance = pos_a[1] - pos_a[0];
+        assert!(
+            (a_advance - style.font_size * 0.5).abs() < 0.1,
+            "Latin 'A' advance should remain font_size * 0.5 ({:.2}), got {:.2}",
+            style.font_size * 0.5, a_advance
+        );
+        // '가' = CJK 전각 = font_size 유지
+        let pos_k = m.compute_char_positions("가가", &style);
+        let k_advance = pos_k[1] - pos_k[0];
+        assert!(
+            (k_advance - style.font_size).abs() < 0.1,
+            "CJK '가' advance should remain font_size ({:.2}), got {:.2}",
+            style.font_size, k_advance
+        );
     }
 }

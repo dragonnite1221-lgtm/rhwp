@@ -1614,6 +1614,13 @@ impl DocumentCore {
         let new_h = super::super::helpers::json_u32(props_json, "height").map(|h| h.max(MIN_SHAPE_SIZE));
         Self::apply_common_obj_attr_from_json(c, props_json);
 
+        // Polygon/Curve: original_width/height는 생성 시 값으로 유지해야 렌더러의
+        // 스케일 팩터(sx = current/original)가 올바르게 동작한다.
+        let is_polygon_or_curve = matches!(shape,
+            crate::model::shape::ShapeObject::Polygon(_) | crate::model::shape::ShapeObject::Curve(_));
+        let saved_orig_w = if is_polygon_or_curve { shape.drawing().map(|d| d.shape_attr.original_width) } else { None };
+        let saved_orig_h = if is_polygon_or_curve { shape.drawing().map(|d| d.shape_attr.original_height) } else { None };
+
         // ShapeComponentAttr 크기/회전/채우기 동기화
         if let Some(d) = shape.drawing_mut() {
             if let Some(w) = new_w {
@@ -1765,6 +1772,12 @@ impl DocumentCore {
             let h = rect.common.height as i32;
             rect.x_coords = [0, w, w, 0];
             rect.y_coords = [0, 0, h, h];
+        }
+
+        // Polygon/Curve: original_width/height 복원 (생성 시 값 유지 → 렌더러 스케일 팩터 정상화)
+        if let Some(d) = shape.drawing_mut() {
+            if let Some(w) = saved_orig_w { d.shape_attr.original_width = w; }
+            if let Some(h) = saved_orig_h { d.shape_attr.original_height = h; }
         }
 
         // Group 리사이즈: original_width 유지, current_width만 변경 (렌더러가 스케일 적용)
@@ -2752,6 +2765,8 @@ impl DocumentCore {
                     Self::scale_group_children(&mut g.children, sx, sy);
                 }
                 SO::Picture(_) => {} // 그림은 크기만 변경
+                SO::Chart(_) => {}   // 차트: 크기만 변경, 내부 좌표 스케일 없음 (Task #195 단계 2)
+                SO::Ole(_) => {}     // OLE: 크기만 변경
             }
 
             // shape_attr 동기화
@@ -2764,6 +2779,8 @@ impl DocumentCore {
                 SO::Curve(s) => &mut s.drawing.shape_attr,
                 SO::Group(g) => &mut g.shape_attr,
                 SO::Picture(p) => &mut p.shape_attr,
+                SO::Chart(c) => &mut c.drawing.shape_attr,
+                SO::Ole(o) => &mut o.drawing.shape_attr,
             };
             sa.offset_x = new_horz as i32;
             sa.offset_y = new_vert as i32;
@@ -2883,6 +2900,8 @@ impl DocumentCore {
                 ShapeObject::Curve(s) => &mut s.drawing.shape_attr,
                 ShapeObject::Group(g) => &mut g.shape_attr,
                 ShapeObject::Picture(p) => &mut p.shape_attr,
+                ShapeObject::Chart(c) => &mut c.drawing.shape_attr,
+                ShapeObject::Ole(o) => &mut o.drawing.shape_attr,
             };
             sa.offset_x = new_horz as i32;
             sa.offset_y = new_vert as i32;
@@ -3130,6 +3149,8 @@ impl DocumentCore {
                     ShapeObject::Curve(s) => &mut s.drawing.shape_attr,
                     ShapeObject::Group(g) => &mut g.shape_attr,
                     ShapeObject::Picture(p) => &mut p.shape_attr,
+                    ShapeObject::Chart(c) => &mut c.drawing.shape_attr,
+                    ShapeObject::Ole(o) => &mut o.drawing.shape_attr,
                 };
                 if sa.group_level > 0 { sa.group_level -= 1; }
                 sa.offset_x = 0;

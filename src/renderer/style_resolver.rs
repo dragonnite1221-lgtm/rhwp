@@ -590,6 +590,28 @@ fn resolve_ttf_font(name: &str) -> Option<&'static str> {
     }
 }
 
+/// Heavy display 계열 face 여부 판정.
+///
+/// HY헤드라인M, HY견고딕 등 face 이름 자체가 굵은 display 폰트들은
+/// HWP CharShape.bold=false 로 저장되어도 실제로는 시각적 bold 로
+/// 렌더된다. 해당 face 가 설치되지 않은 환경에서 Malgun Gothic 등
+/// regular weight fallback 으로 떨어지면 PDF(한컴) 출력과 시각 괴리가
+/// 발생하므로, 이 리스트에 포함된 face 는 SVG 에서 font-weight="bold"
+/// 를 강제해 fallback bold variant 로 근사 렌더한다.
+pub(crate) fn is_heavy_display_face(font_family: &str) -> bool {
+    // font_family 는 "HY헤드라인M,'Malgun Gothic',..." 처럼 CSS 체인 형태.
+    // 첫 face 만 검사 (HWP 가 지정한 primary face).
+    let primary = font_family.split(',').next().unwrap_or(font_family)
+        .trim()
+        .trim_matches('\'')
+        .trim_matches('"');
+    matches!(primary,
+        "HY헤드라인M" | "HYHeadLine M" | "HYHeadLine Medium"
+        | "HY견고딕" | "HY견명조" | "HY견명조B"
+        | "HY그래픽" | "HY그래픽M"
+    )
+}
+
 /// ParaShape → ResolvedParaStyle 목록
 fn resolve_para_styles(doc_info: &DocInfo, dpi: f64) -> Vec<ResolvedParaStyle> {
     doc_info

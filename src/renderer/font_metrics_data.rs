@@ -68,7 +68,18 @@ pub struct MetricMatch {
     pub bold_fallback: bool,
 }
 
-/// 한국어 폰트 이름 → 내장 메트릭 영문 이름 별칭
+/// 한국어 폰트 이름 → 내장 메트릭 영문 이름 별칭.
+///
+/// 계층:
+/// 1. style_resolver.rs 가 한국어 별칭 → 한국어 정규명 (예: 한양중고딕 → HY중고딕)
+/// 2. 본 함수가 한국어 정규명 → 영문 DB 이름 (예: HY중고딕 → HYGothic-Medium)
+/// 3. find_metric 이 FONT_METRICS 에서 영문 이름으로 조회
+///
+/// 본한글/본명조 는 정식 메트릭 DB 엔트리가 없어 Pretendard/Noto Serif KR 로
+/// 근사. 근거: 같은 한글 원천 (Source Han Sans KR), 이미 번들, OFL 호환.
+/// 한계: Latin 폭 미세 차이, weight 축은 2단계로 근사 (본한글vf 는 wght 중간값을
+/// Regular/Bold 중 가까운 쪽으로). CJK 폰트는 weight 별 한글 폭 차이가 작으므로
+/// 실무 허용. 정식 DB 엔트리 추가는 별도 이슈.
 fn resolve_metric_alias(name: &str) -> &str {
     match name {
         "함초롬돋움" | "한컴돋움" => "HCR Dotum",
@@ -91,6 +102,42 @@ fn resolve_metric_alias(name: &str) -> &str {
         "고운바탕" | "Gowun Batang" => "Gowun Batang",
         "고운돋움" | "Gowun Dodum" => "Gowun Dodum",
         "Pretendard" | "프리텐다드" => "Pretendard",
+        // HY 계열 — 한글 정규명 → 메트릭 DB 영문명 (Issue #259)
+        // style_resolver.rs 가 한국어 별칭을 정규명으로 먼저 변환한 뒤 여기로 온다.
+        "HY중고딕" => "HYGothic-Medium",
+        "HY견고딕" => "HYGothic-Extra",
+        "HY헤드라인M" => "HYHeadLine-Medium",
+        "HY견명조" => "HYMyeongJo-Extra",
+        "HY신명조" => "HYSinMyeongJo-Medium",
+        "HY그래픽" => "HYGraphic-Medium",
+        "HY궁서" => "HYGungSo-Bold",
+        // Source Han Sans 계열 (본한글 · 본고딕) → Pretendard 근사 (Issue #259)
+        // 한글 원천 동일 (Source Han Sans KR), OFL 호환, 이미 번들. 본한글vf 의
+        // 임의 weight 도 Pretendard Regular/Bold 중 가까운 쪽으로 근사.
+        "본한글"
+        | "본한글vf"
+        | "본한글 Medium"
+        | "본한글M"
+        | "본고딕"
+        | "본고딕vf"
+        | "Source Han Sans"
+        | "Source Han Sans K"
+        | "Source Han Sans KR"
+        | "SourceHanSans"
+        | "SourceHanSansKR"
+        | "SourceHanSansK"
+        | "Noto Sans CJK KR" => "Pretendard",
+        // Source Han Serif 계열 (본명조) → Noto Serif KR 근사 (Issue #259)
+        "본명조"
+        | "본명조vf"
+        | "본명조M"
+        | "Source Han Serif"
+        | "Source Han Serif K"
+        | "Source Han Serif KR"
+        | "SourceHanSerif"
+        | "SourceHanSerifKR"
+        | "SourceHanSerifK"
+        | "Noto Serif CJK KR" => "Noto Serif KR",
         _ => name,
     }
 }
@@ -10251,3 +10298,82 @@ pub static FONT_METRICS: [FontMetric; 595] = [
     FontMetric { name: "Pretendard", bold: false, italic: false, em_size: 2048, latin_ranges: &FONT_593_LATIN_RANGES, hangul: Some(&FONT_593_HANGUL) },
     FontMetric { name: "Pretendard", bold: true, italic: false, em_size: 2048, latin_ranges: &FONT_594_LATIN_RANGES, hangul: Some(&FONT_594_HANGUL) },
 ];
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn hy_gothic_medium_maps_correctly() {
+        let m = find_metric("HY중고딕", false, false);
+        assert!(m.is_some(), "HY중고딕 매핑 실패");
+        assert_eq!(m.unwrap().metric.name, "HYGothic-Medium");
+    }
+
+    #[test]
+    fn hy_family_all_map() {
+        for (korean, expected_english) in &[
+            ("HY중고딕", "HYGothic-Medium"),
+            ("HY견고딕", "HYGothic-Extra"),
+            ("HY헤드라인M", "HYHeadLine-Medium"),
+            ("HY견명조", "HYMyeongJo-Extra"),
+            ("HY신명조", "HYSinMyeongJo-Medium"),
+            ("HY그래픽", "HYGraphic-Medium"),
+            ("HY궁서", "HYGungSo-Bold"),
+        ] {
+            let m = find_metric(korean, false, false);
+            assert!(m.is_some(), "{} 매핑 실패", korean);
+            assert_eq!(
+                m.unwrap().metric.name, *expected_english,
+                "{} 이 {} 에 매핑되지 않음", korean, expected_english
+            );
+        }
+    }
+
+    #[test]
+    fn source_han_sans_family_maps_to_pretendard() {
+        for name in &[
+            "본한글", "본한글vf", "본한글 Medium", "본한글M",
+            "본고딕", "본고딕vf",
+            "Source Han Sans", "Source Han Sans K", "Source Han Sans KR",
+            "SourceHanSans", "SourceHanSansKR", "SourceHanSansK",
+            "Noto Sans CJK KR",
+        ] {
+            let m = find_metric(name, false, false);
+            assert!(m.is_some(), "{} 매핑 실패 (Pretendard 기대)", name);
+            assert_eq!(m.unwrap().metric.name, "Pretendard");
+        }
+    }
+
+    #[test]
+    fn source_han_serif_family_maps_to_noto_serif_kr() {
+        for name in &[
+            "본명조", "본명조vf", "본명조M",
+            "Source Han Serif", "Source Han Serif K", "Source Han Serif KR",
+            "SourceHanSerif", "SourceHanSerifKR", "SourceHanSerifK",
+            "Noto Serif CJK KR",
+        ] {
+            let m = find_metric(name, false, false);
+            assert!(m.is_some(), "{} 매핑 실패 (Noto Serif KR 기대)", name);
+            assert_eq!(m.unwrap().metric.name, "Noto Serif KR");
+        }
+    }
+
+    #[test]
+    fn hy_family_bold_fallback() {
+        // HY 계열은 DB 에 bold 변형이 없음 (Stage 1 실측 확인).
+        // bold=true 요청 시 Regular 폴백 + bold_fallback=true 반환.
+        let m = find_metric("HY중고딕", true, false);
+        assert!(m.is_some(), "HY중고딕 bold 폴백 실패");
+        let mm = m.unwrap();
+        assert_eq!(mm.metric.name, "HYGothic-Medium");
+        assert!(mm.bold_fallback, "HY중고딕 bold 요청 시 bold_fallback=true 여야 함");
+    }
+
+    #[test]
+    fn non_korean_font_unchanged() {
+        let m = find_metric("함초롬바탕", false, false);
+        assert!(m.is_some(), "함초롬바탕 기존 매핑 회귀");
+        assert_eq!(m.unwrap().metric.name, "HCR Batang");
+    }
+}

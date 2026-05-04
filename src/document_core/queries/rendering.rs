@@ -7,32 +7,64 @@ use crate::model::paragraph::Paragraph;
 use crate::model::page::ColumnDef;
 use crate::renderer::pagination::{Paginator, PaginationResult};
 use crate::renderer::height_measurer::{MeasuredTable, MeasuredSection, HeightMeasurer};
+use crate::renderer::layer_renderer::LayerRenderer;
 use crate::renderer::layout::LayoutEngine;
 use crate::renderer::render_tree::PageRenderTree;
 use crate::renderer::svg::SvgRenderer;
+use crate::renderer::svg_layer::SvgLayerRenderer;
 use crate::renderer::html::HtmlRenderer;
 use crate::renderer::canvas::CanvasRenderer;
 use crate::renderer::style_resolver::resolve_styles;
 use crate::renderer::composer::{compose_section, compose_paragraph, ComposedParagraph};
 use crate::renderer::page_layout::PageLayoutInfo;
+use crate::paint::{LayerBuilder, LayerOutputOptions, PageLayerTree, RenderProfile};
 use crate::document_core::DocumentCore;
 use crate::error::HwpError;
 use super::super::helpers::color_ref_to_css;
 
 impl DocumentCore {
-    /// 렌더 트리를 생성하여 반환한다 (Core Graphics 등 외부 렌더러용).
-    pub fn build_page_render_tree(&self, page_num: u32) -> Result<crate::renderer::render_tree::PageRenderTree, HwpError> {
+    /// 페이지 렌더 트리를 생성하여 반환한다 (Core Graphics 등 외부 렌더러용).
+    pub fn build_page_render_tree(&self, page_num: u32) -> Result<PageRenderTree, HwpError> {
         let tree = self.build_page_tree(page_num)?;
         let _overflows = self.layout_engine.take_overflows();
         Ok(tree)
     }
 
-    /// 이미지 바이너리 데이터를 인덱스로 반환한다 (0-indexed).
+    /// 페이지 레이어 트리를 생성하여 반환한다 (native bridge / backend replay용).
+    pub fn build_page_layer_tree(&self, page_num: u32) -> Result<PageLayerTree, HwpError> {
+        let tree = self.build_page_tree(page_num)?;
+        let _overflows = self.layout_engine.take_overflows();
+        let output_options = LayerOutputOptions {
+            show_paragraph_marks: self.show_paragraph_marks,
+            show_control_codes: self.show_control_codes,
+            show_transparent_borders: self.show_transparent_borders,
+            clip_enabled: self.clip_enabled,
+            debug_overlay: self.debug_overlay,
+        };
+        let mut builder =
+            LayerBuilder::new(RenderProfile::Screen).with_output_options(output_options);
+        Ok(builder.build(&tree))
+    }
+
+    /// 바이너리 데이터를 0-based `bin_data_content` 인덱스로 반환한다.
     pub fn get_bin_data(&self, index: usize) -> Option<&[u8]> {
-        self.document.bin_data_content.get(index).map(|b| b.data.as_slice())
+        self.document
+            .bin_data_content
+            .get(index)
+            .map(|b| b.data.as_slice())
     }
 
     pub fn render_page_svg_native(&self, page_num: u32) -> Result<String, HwpError> {
+        if matches!(
+            std::env::var("RHWP_RENDER_PATH").ok().as_deref(),
+            Some("layer-svg")
+        ) {
+            return self.render_page_svg_layer_native(page_num);
+        }
+        self.render_page_svg_legacy_native(page_num)
+    }
+
+    pub fn render_page_svg_legacy_native(&self, page_num: u32) -> Result<String, HwpError> {
         let tree = self.build_page_tree(page_num)?;
         let _overflows = self.layout_engine.take_overflows();
         let mut renderer = SvgRenderer::new();
@@ -40,6 +72,16 @@ impl DocumentCore {
         renderer.show_control_codes = self.show_control_codes;
         renderer.debug_overlay = self.debug_overlay;
         renderer.render_tree(&tree);
+        Ok(renderer.output().to_string())
+    }
+
+    pub fn render_page_svg_layer_native(&self, page_num: u32) -> Result<String, HwpError> {
+        let layer_tree = self.build_page_layer_tree(page_num)?;
+        let mut renderer = SvgLayerRenderer::new();
+        renderer.inner_mut().show_paragraph_marks = self.show_paragraph_marks;
+        renderer.inner_mut().show_control_codes = self.show_control_codes;
+        renderer.inner_mut().debug_overlay = self.debug_overlay;
+        renderer.render_page(&layer_tree)?;
         Ok(renderer.output().to_string())
     }
 
@@ -91,11 +133,22 @@ impl DocumentCore {
 
     /// Canvas 렌더링 (네이티브 에러 타입)
     pub fn render_page_canvas_native(&self, page_num: u32) -> Result<u32, HwpError> {
+        let tree = self.build_page_layer_tree(page_num)?;
+        let mut renderer = CanvasRenderer::new();
+        renderer.render_page(&tree)?;
+        Ok(renderer.command_count() as u32)
+    }
+
+    pub fn render_page_canvas_legacy_native(&self, page_num: u32) -> Result<u32, HwpError> {
         let tree = self.build_page_tree(page_num)?;
         let _overflows = self.layout_engine.take_overflows();
         let mut renderer = CanvasRenderer::new();
         renderer.render_tree(&tree);
         Ok(renderer.command_count() as u32)
+    }
+
+    pub fn get_page_layer_tree_native(&self, page_num: u32) -> Result<String, HwpError> {
+        Ok(self.build_page_layer_tree(page_num)?.to_json())
     }
 
     /// 페이지 정보 (네이티브 에러 타입)
@@ -175,7 +228,7 @@ impl DocumentCore {
         }
         set_bit(flags, 0x0100, sd.hide_header);      // bit 8
         set_bit(flags, 0x0200, sd.hide_footer);       // bit 9
-        set_bit(flags, 0x0400, sd.hide_master_page);  // bit 10
+        set_bit(flags, 0x0004, sd.hide_master_page);  // bit 2 (HWP5 스펙, 첫쪽 바탕쪽 감춤)
         set_bit(flags, 0x0800, sd.hide_border);       // bit 11
         set_bit(flags, 0x1000, sd.hide_fill);         // bit 12
         set_bit(flags, 0x00080000, sd.hide_empty_line); // bit 19
@@ -483,11 +536,22 @@ impl DocumentCore {
                         }
                         _ => String::new(),
                     };
+                    // Task #516 결함 3: hit-test 정합 (옵션 3-C) — wrap 모드 노출.
+                    // BehindText 그림은 텍스트 영역 위에서는 hit-test 후순위 처리.
+                    let wrap_str = match image_node.text_wrap {
+                        Some(crate::model::shape::TextWrap::BehindText) => ",\"wrap\":\"behindText\"",
+                        Some(crate::model::shape::TextWrap::InFrontOfText) => ",\"wrap\":\"inFrontOfText\"",
+                        Some(crate::model::shape::TextWrap::Square) => ",\"wrap\":\"square\"",
+                        Some(crate::model::shape::TextWrap::Tight) => ",\"wrap\":\"tight\"",
+                        Some(crate::model::shape::TextWrap::Through) => ",\"wrap\":\"through\"",
+                        Some(crate::model::shape::TextWrap::TopAndBottom) => ",\"wrap\":\"topAndBottom\"",
+                        None => "",
+                    };
 
                     controls.push(format!(
-                        "{{\"type\":\"image\",\"x\":{:.1},\"y\":{:.1},\"w\":{:.1},\"h\":{:.1}{}}}",
+                        "{{\"type\":\"image\",\"x\":{:.1},\"y\":{:.1},\"w\":{:.1},\"h\":{:.1}{}{}}}",
                         node.bbox.x, node.bbox.y, node.bbox.width, node.bbox.height,
-                        doc_coords
+                        doc_coords, wrap_str
                     ));
                     return;
                 }
@@ -833,22 +897,25 @@ impl DocumentCore {
             };
 
             let column_def = Self::find_initial_column_def(&section.paragraphs);
-            let mut result = paginator.paginate_with_measured_opts(
-                &section.paragraphs,
-                &measured,
-                &section.section_def.page_def,
-                &column_def,
-                idx,
-                &self.styles.para_styles,
-                section.section_def.hide_empty_line,
-            );
-
-            // TypesetEngine 병렬 검증 (Phase 1: 비-표 구역)
-            #[cfg(debug_assertions)]
-            {
+            // TypesetEngine을 main pagination으로 사용. RHWP_USE_PAGINATOR=1 로 fallback 가능.
+            let use_paginator = std::env::var("RHWP_USE_PAGINATOR").map(|v| v == "1").unwrap_or(false);
+            let mut result = if use_paginator {
+                paginator.paginate_with_measured_opts(
+                    &section.paragraphs,
+                    &measured,
+                    &section.section_def.page_def,
+                    &column_def,
+                    idx,
+                    &self.styles.para_styles,
+                    crate::renderer::pagination::PaginationOpts {
+                        hide_empty_line: section.section_def.hide_empty_line,
+                        respect_vpos_reset: self.respect_vpos_reset,
+                    },
+                )
+            } else {
                 use crate::renderer::typeset::TypesetEngine;
                 let typesetter = TypesetEngine::new(self.dpi);
-                let ts_result = typesetter.typeset_section(
+                typesetter.typeset_section(
                     &section.paragraphs,
                     composed,
                     &self.styles,
@@ -856,47 +923,9 @@ impl DocumentCore {
                     &column_def,
                     idx,
                     &measured.tables,
-                );
-                if result.pages.len() != ts_result.pages.len() {
-                    eprintln!(
-                        "TYPESET_VERIFY: sec{} 페이지 수 차이 (paginator={}, typeset={})",
-                        idx, result.pages.len(), ts_result.pages.len(),
-                    );
-                    if std::env::var("TYPESET_DETAIL").is_ok() {
-                        use crate::renderer::pagination::PageItem;
-                        let describe_items = |pages: &[crate::renderer::pagination::PageContent]| -> Vec<String> {
-                            pages.iter().map(|p| {
-                                let mut descs = Vec::new();
-                                for col in &p.column_contents {
-                                    for item in &col.items {
-                                        let d = match item {
-                                            PageItem::FullParagraph { para_index, .. } => format!("F{}", para_index),
-                                            PageItem::PartialParagraph { para_index, start_line, end_line, .. } =>
-                                                format!("P{}({}-{})", para_index, start_line, end_line),
-                                            PageItem::Table { para_index, .. } => format!("T{}", para_index),
-                                            PageItem::PartialTable { para_index, start_row, end_row, .. } =>
-                                                format!("PT{}(r{}-{})", para_index, start_row, end_row),
-                                            PageItem::Shape { para_index, .. } => format!("S{}", para_index),
-                                        };
-                                        descs.push(d);
-                                    }
-                                }
-                                descs.join(",")
-                            }).collect()
-                        };
-                        let pag_descs = describe_items(&result.pages);
-                        let ts_descs = describe_items(&ts_result.pages);
-                        for i in 0..pag_descs.len().max(ts_descs.len()) {
-                            let pr = pag_descs.get(i).map(|s| s.as_str()).unwrap_or("-");
-                            let tr = ts_descs.get(i).map(|s| s.as_str()).unwrap_or("-");
-                            if pr != tr || std::env::var("TYPESET_ALL_PAGES").is_ok() {
-                                eprintln!("  page {:2}: pag=[{}]", i, pr);
-                                eprintln!("           ts =[{}]{}", tr, if pr != tr { " <<<" } else { "" });
-                            }
-                        }
-                    }
-                }
-            }
+                    section.section_def.hide_empty_line,
+                )
+            };
 
             self.measured_tables[idx] = measured.tables.clone();
             self.measured_sections[idx] = measured;
@@ -997,9 +1026,26 @@ impl DocumentCore {
                                 master_page_index: replace_idx,
                             });
                         }
-                        // 겹침형 확장은 extra로 추가
-                        if !overlap_exts.is_empty() {
-                            page.extra_master_pages = overlap_exts.iter()
+                        // 겹침형 확장:
+                        // - apply_to 가 active 와 동일: 같은 위치(헤더/푸터/배경) 컨텐츠가 충돌 → active 대체
+                        //   (HWP 작성자가 마지막 쪽 전용 헤더로 의도. 한컴 PDF 출력 동작과 일치)
+                        // - apply_to 가 다름(예: active=Odd, 확장=Both): 보조 컨텐츠 추가 → extra
+                        let active_apply = page.active_master_page.as_ref()
+                            .and_then(|mp_ref| mps.get(mp_ref.master_page_index))
+                            .map(|m| m.apply_to);
+                        let mut remaining_overlap_exts: Vec<usize> = Vec::new();
+                        for &i in &overlap_exts {
+                            if Some(mps[i].apply_to) == active_apply {
+                                page.active_master_page = Some(MasterPageRef {
+                                    section_index: idx,
+                                    master_page_index: i,
+                                });
+                            } else {
+                                remaining_overlap_exts.push(i);
+                            }
+                        }
+                        if !remaining_overlap_exts.is_empty() {
+                            page.extra_master_pages = remaining_overlap_exts.iter()
                                 .map(|&mi| MasterPageRef { section_index: idx, master_page_index: mi })
                                 .collect();
                         }
@@ -1340,8 +1386,13 @@ impl DocumentCore {
                     la.body_area.x, la.body_area.y, la.body_area.width, la.body_area.height));
 
                 for (col_idx, cc) in page.column_contents.iter().enumerate() {
-                    out.push_str(&format!("  단 {} (items={}{})\n",
-                        col_idx, cc.items.len(),
+                    let hwp_used_px = compute_hwp_used_height(cc, paragraphs, dpi);
+                    let diff_str = match hwp_used_px {
+                        Some(hwp) => format!(", hwp_used≈{:.1}px, diff={:+.1}px", hwp, cc.used_height - hwp),
+                        None => String::new(),
+                    };
+                    out.push_str(&format!("  단 {} (items={}, used={:.1}px{}{})\n",
+                        col_idx, cc.items.len(), cc.used_height, diff_str,
                         if cc.zone_y_offset > 0.0 { format!(", zone_y_offset={:.1}", cc.zone_y_offset) } else { String::new() }));
 
                     for item in &cc.items {
@@ -1363,12 +1414,14 @@ impl DocumentCore {
                                         format!("h={:.1} (sb={:.1} lines={:.1} sa={:.1})", sb + lines + sa, sb, lines, sa)
                                     })
                                     .unwrap_or_default();
-                                out.push_str(&format!("    FullParagraph  pi={}  {}  \"{}\"\n",
-                                    para_index, height, text_preview));
+                                let vpos_info = format_vpos_range(paragraphs.get(*para_index), None, None);
+                                out.push_str(&format!("    FullParagraph  pi={}  {}  {}  \"{}\"\n",
+                                    para_index, height, vpos_info, text_preview));
                             }
                             PageItem::PartialParagraph { para_index, start_line, end_line } => {
-                                out.push_str(&format!("    PartialParagraph  pi={}  lines={}..{}\n",
-                                    para_index, start_line, end_line));
+                                let vpos_info = format_vpos_range(paragraphs.get(*para_index), Some(*start_line), Some(*end_line));
+                                out.push_str(&format!("    PartialParagraph  pi={}  lines={}..{}  {}\n",
+                                    para_index, start_line, end_line, vpos_info));
                             }
                             PageItem::Table { para_index, control_index } => {
                                 let table_info = paragraphs.get(*para_index)
@@ -1383,10 +1436,12 @@ impl DocumentCore {
                                         } else { String::new() }
                                     })
                                     .unwrap_or_default();
-                                out.push_str(&format!("    Table          pi={} ci={}  {}\n",
-                                    para_index, control_index, table_info));
+                                let vpos_info = format_vpos_range(paragraphs.get(*para_index), None, None);
+                                out.push_str(&format!("    Table          pi={} ci={}  {}  {}\n",
+                                    para_index, control_index, table_info, vpos_info));
                             }
-                            PageItem::PartialTable { para_index, control_index, start_row, end_row, is_continuation, .. } => {
+                            PageItem::PartialTable { para_index, control_index, start_row, end_row, is_continuation,
+                                                     split_start_content_offset, split_end_content_limit } => {
                                 let table_info = paragraphs.get(*para_index)
                                     .and_then(|p| p.controls.get(*control_index))
                                     .map(|c| {
@@ -1395,8 +1450,15 @@ impl DocumentCore {
                                         } else { String::new() }
                                     })
                                     .unwrap_or_default();
-                                out.push_str(&format!("    PartialTable   pi={} ci={}  rows={}..{}  cont={}  {}\n",
-                                    para_index, control_index, start_row, end_row, is_continuation, table_info));
+                                let vpos_info = format_vpos_range(paragraphs.get(*para_index), None, None);
+                                // [Task #431] 분할 표 진단 정보 — split_start/end 가 0 이 아니면 셀 내 분할
+                                let split_info = if *split_start_content_offset > 0.0 || *split_end_content_limit > 0.0 {
+                                    format!("  split_start={:.1} split_end={:.1}", split_start_content_offset, split_end_content_limit)
+                                } else {
+                                    String::new()
+                                };
+                                out.push_str(&format!("    PartialTable   pi={} ci={}  rows={}..{}  cont={}  {}  {}{}\n",
+                                    para_index, control_index, start_row, end_row, is_continuation, table_info, vpos_info, split_info));
                             }
                             PageItem::Shape { para_index, control_index } => {
                                 let shape_info = paragraphs.get(*para_index)
@@ -1410,8 +1472,9 @@ impl DocumentCore {
                                         }
                                     })
                                     .unwrap_or_default();
-                                out.push_str(&format!("    Shape          pi={} ci={}  {}\n",
-                                    para_index, control_index, shape_info));
+                                let vpos_info = format_vpos_range(paragraphs.get(*para_index), None, None);
+                                out.push_str(&format!("    Shape          pi={} ci={}  {}  {}\n",
+                                    para_index, control_index, shape_info, vpos_info));
                             }
                         }
                     }
@@ -1640,8 +1703,450 @@ impl DocumentCore {
         self.paginate();
     }
 
+
+    /// 페이지에 렌더된 텍스트를 줄 단위로 추출한다.
+    ///
+    /// TextLine 노드의 시각적 순서를 유지하며 TextRun/각주 마커/양식 텍스트를 합친다.
+    pub fn extract_page_text_native(&self, page_num: u32) -> Result<String, HwpError> {
+        use crate::renderer::render_tree::{RenderNode, RenderNodeType};
+
+        fn collect_line_text(node: &RenderNode, out: &mut String, has_token: &mut bool) {
+            match &node.node_type {
+                RenderNodeType::TextRun(tr) => {
+                    out.push_str(&tr.text);
+                    *has_token = true;
+                }
+                RenderNodeType::FootnoteMarker(marker) => {
+                    out.push_str(&marker.text);
+                    *has_token = true;
+                }
+                RenderNodeType::FormObject(form) => {
+                    if !form.text.is_empty() {
+                        out.push_str(&form.text);
+                        *has_token = true;
+                    } else if !form.caption.is_empty() {
+                        out.push_str(&form.caption);
+                        *has_token = true;
+                    }
+                }
+                _ => {}
+            }
+
+            for child in &node.children {
+                collect_line_text(child, out, has_token);
+            }
+        }
+
+        fn collect_page_lines(node: &RenderNode, lines: &mut Vec<String>) {
+            if matches!(node.node_type, RenderNodeType::TextLine(_)) {
+                let mut line = String::new();
+                let mut has_token = false;
+
+                for child in &node.children {
+                    collect_line_text(child, &mut line, &mut has_token);
+                }
+
+                if has_token {
+                    lines.push(line);
+                }
+                return;
+            }
+
+            for child in &node.children {
+                collect_page_lines(child, lines);
+            }
+        }
+
+        let tree = self.build_page_tree(page_num)?;
+        let mut lines = Vec::new();
+        collect_page_lines(&tree.root, &mut lines);
+        Ok(lines.join("\n"))
+    }
+
+    /// 페이지를 Markdown으로 추출한다.
+    ///
+    /// - 일반 텍스트는 줄 단위로 추출
+    /// - 표 컨트롤은 Markdown table(`| ... |`)로 변환
+    /// - 표/이미지는 내부 텍스트 중복 추출을 방지하기 위해 하위 순회를 생략
+    /// - 이미지는 `[[RHWP_IMAGE:n]]` 토큰으로 출력되며,
+    ///   반환 벡터에 같은 순서로 `(sec_idx, para_idx, control_idx, bin_data_id)`가 담긴다.
+    ///   (sec/para/ctrl은 없을 수 있으며, 이 경우 bin_data_id로 추출한다)
+    pub fn extract_page_markdown_with_images_native(
+        &self,
+        page_num: u32,
+    ) -> Result<
+        (
+            String,
+            Vec<(Option<usize>, Option<usize>, Option<usize>, u16)>,
+        ),
+        HwpError,
+    > {
+        use crate::renderer::render_tree::{RenderNode, RenderNodeType};
+
+        #[derive(Debug)]
+        enum MarkdownItem {
+            Line(String),
+            Table(String),
+            Image {
+                sec_idx: Option<usize>,
+                para_idx: Option<usize>,
+                control_idx: Option<usize>,
+                bin_data_id: u16,
+            },
+        }
+
+        fn collect_line_text(node: &RenderNode, out: &mut String, has_token: &mut bool) {
+            match &node.node_type {
+                RenderNodeType::TextRun(tr) => {
+                    out.push_str(&tr.text);
+                    *has_token = true;
+                }
+                RenderNodeType::FootnoteMarker(marker) => {
+                    out.push_str(&marker.text);
+                    *has_token = true;
+                }
+                RenderNodeType::FormObject(form) => {
+                    if !form.text.is_empty() {
+                        out.push_str(&form.text);
+                        *has_token = true;
+                    } else if !form.caption.is_empty() {
+                        out.push_str(&form.caption);
+                        *has_token = true;
+                    }
+                }
+                _ => {}
+            }
+
+            for child in &node.children {
+                collect_line_text(child, out, has_token);
+            }
+        }
+
+        fn markdown_escape_cell(s: &str) -> String {
+            s.replace('|', "\\|")
+                .replace('\r', "")
+                .replace('\n', " ")
+                .trim()
+                .to_string()
+        }
+
+        fn table_cell_text(cell: &crate::model::table::Cell) -> String {
+            let mut parts: Vec<String> = Vec::new();
+            for para in &cell.paragraphs {
+                let txt = para.text.trim();
+                if !txt.is_empty() {
+                    parts.push(markdown_escape_cell(txt));
+                }
+            }
+            parts.join(" <br> ")
+        }
+
+        fn table_to_markdown(table: &crate::model::table::Table) -> String {
+            let rows = table.row_count as usize;
+            let cols = table.col_count as usize;
+            if rows == 0 || cols == 0 {
+                return String::new();
+            }
+
+            let mut grid = vec![vec![String::new(); cols]; rows];
+
+            for cell in &table.cells {
+                let r = cell.row as usize;
+                let c = cell.col as usize;
+                if r >= rows || c >= cols {
+                    continue;
+                }
+                grid[r][c] = table_cell_text(cell);
+            }
+
+            let make_row = |cells: &[String]| -> String {
+                format!("| {} |", cells.join(" | "))
+            };
+
+            let header = make_row(&grid[0]);
+            let separator = format!(
+                "| {} |",
+                std::iter::repeat("---").take(cols).collect::<Vec<_>>().join(" | ")
+            );
+
+            let mut lines = vec![header, separator];
+            for row in grid.iter().skip(1) {
+                lines.push(make_row(row));
+            }
+            lines.join("\n")
+        }
+
+        fn lookup_table<'a>(
+            doc: &'a crate::model::document::Document,
+            sec_idx: usize,
+            para_idx: usize,
+            ctrl_idx: usize,
+        ) -> Option<&'a crate::model::table::Table> {
+            let para = doc.sections.get(sec_idx)?.paragraphs.get(para_idx)?;
+            match para.controls.get(ctrl_idx)? {
+                crate::model::control::Control::Table(table) => Some(table.as_ref()),
+                _ => None,
+            }
+        }
+
+        fn collect_markdown_items(
+            node: &RenderNode,
+            doc: &crate::model::document::Document,
+            items: &mut Vec<MarkdownItem>,
+        ) {
+            fn collect_images_only(node: &RenderNode, items: &mut Vec<MarkdownItem>) {
+                if let RenderNodeType::Image(image_node) = &node.node_type {
+                    items.push(MarkdownItem::Image {
+                        sec_idx: image_node.section_index,
+                        para_idx: image_node.para_index,
+                        control_idx: image_node.control_index,
+                        bin_data_id: image_node.bin_data_id,
+                    });
+                    return;
+                }
+                for child in &node.children {
+                    collect_images_only(child, items);
+                }
+            }
+
+            match &node.node_type {
+                RenderNodeType::Table(table_node) => {
+                    if let (Some(si), Some(pi), Some(ci)) = (
+                        table_node.section_index,
+                        table_node.para_index,
+                        table_node.control_index,
+                    ) {
+                        if let Some(table) = lookup_table(doc, si, pi, ci) {
+                            let md = table_to_markdown(table);
+                            if !md.is_empty() {
+                                items.push(MarkdownItem::Table(md));
+                            }
+                            // 표 텍스트는 table_to_markdown으로 처리하고,
+                            // 표 내부 Image 노드만 별도로 수집한다.
+                            for child in &node.children {
+                                collect_images_only(child, items);
+                            }
+                            return;
+                        }
+                    }
+                }
+                RenderNodeType::Image(image_node) => {
+                    items.push(MarkdownItem::Image {
+                        sec_idx: image_node.section_index,
+                        para_idx: image_node.para_index,
+                        control_idx: image_node.control_index,
+                        bin_data_id: image_node.bin_data_id,
+                    });
+                    return;
+                }
+                RenderNodeType::TextLine(_) => {
+                    let mut line = String::new();
+                    let mut has_token = false;
+                    for child in &node.children {
+                        collect_line_text(child, &mut line, &mut has_token);
+                    }
+                    if has_token {
+                        items.push(MarkdownItem::Line(line));
+                    }
+                    return;
+                }
+                _ => {}
+            }
+
+            for child in &node.children {
+                collect_markdown_items(child, doc, items);
+            }
+        }
+
+        let tree = self.build_page_tree(page_num)?;
+        let mut items: Vec<MarkdownItem> = Vec::new();
+        collect_markdown_items(&tree.root, &self.document, &mut items);
+
+        let mut out = String::new();
+        let mut images: Vec<(Option<usize>, Option<usize>, Option<usize>, u16)> = Vec::new();
+        for item in items {
+            match item {
+                MarkdownItem::Line(line) => {
+                    out.push_str(&line);
+                    out.push('\n');
+                }
+                MarkdownItem::Table(table_md) => {
+                    if !out.is_empty() && !out.ends_with("\n\n") {
+                        out.push('\n');
+                    }
+                    out.push_str(&table_md);
+                    out.push_str("\n\n");
+                }
+                MarkdownItem::Image {
+                    sec_idx,
+                    para_idx,
+                    control_idx,
+                    bin_data_id,
+                } => {
+                    if !out.is_empty() && !out.ends_with("\n\n") {
+                        out.push('\n');
+                    }
+                    let image_idx = images.len() + 1;
+                    out.push_str(&format!("[[RHWP_IMAGE:{}]]\n\n", image_idx));
+                    images.push((sec_idx, para_idx, control_idx, bin_data_id));
+                }
+            }
+        }
+
+        Ok((out.trim_end().to_string(), images))
+    }
+
+    /// 페이지를 Markdown으로 추출한다 (이미지 토큰 포함).
+    pub fn extract_page_markdown_native(&self, page_num: u32) -> Result<String, HwpError> {
+        self.extract_page_markdown_with_images_native(page_num)
+            .map(|(md, _)| md)
+    }
+
+
     // =====================================================================
     // 클립보드 API (내부)
     // =====================================================================
 
+}
+
+/// 단이 HWP 원본 layout 에서 사용했을 높이를 LINE_SEG vpos 기준으로 추정 (px).
+///
+/// 알고리즘:
+/// 1. 단의 항목들을 순회하며 첫 vpos-reset (line>0, vertical_pos==0) 발견 지점을 찾는다.
+/// 2. reset 발견: reset 직전 줄의 vpos + line_height (HWP 가 단을 끊은 위치)
+/// 3. reset 미발견: 단의 마지막 처리 줄 (FullParagraph: 마지막, PartialParagraph: end_line-1)
+/// 4. Table/Shape 만 있는 항목은 추정 불가 (None)
+fn compute_hwp_used_height(
+    cc: &crate::renderer::pagination::ColumnContent,
+    paragraphs: &[Paragraph],
+    dpi: f64,
+) -> Option<f64> {
+    use crate::renderer::pagination::PageItem;
+    use crate::renderer::hwpunit_to_px;
+
+    // 1) 단 항목 내 첫 vpos-reset 검색
+    for item in &cc.items {
+        let (para_idx, range_start, range_end) = match item {
+            PageItem::FullParagraph { para_index } => {
+                let p = match paragraphs.get(*para_index) { Some(p) => p, None => continue };
+                (*para_index, 0usize, p.line_segs.len())
+            }
+            PageItem::PartialParagraph { para_index, start_line, end_line } => {
+                let p = match paragraphs.get(*para_index) { Some(p) => p, None => continue };
+                (*para_index, *start_line, (*end_line).min(p.line_segs.len()))
+            }
+            _ => continue,
+        };
+        let p = match paragraphs.get(para_idx) { Some(p) => p, None => continue };
+        // line>0 인 줄 중 vertical_pos==0 첫 줄 찾기
+        for i in range_start.max(1)..range_end {
+            if let Some(seg) = p.line_segs.get(i) {
+                if seg.vertical_pos == 0 {
+                    if let Some(prev) = p.line_segs.get(i.saturating_sub(1)) {
+                        let bottom_hwpu = prev.vertical_pos + prev.line_height;
+                        return Some(hwpunit_to_px(bottom_hwpu, dpi));
+                    }
+                }
+            }
+        }
+    }
+
+    // 2) reset 미발견: 단 마지막 항목의 마지막 줄
+    let last_item = cc.items.last()?;
+    let (para_idx, line_idx) = match last_item {
+        PageItem::FullParagraph { para_index } => {
+            let p = paragraphs.get(*para_index)?;
+            if p.line_segs.is_empty() { return None; }
+            (*para_index, p.line_segs.len() - 1)
+        }
+        PageItem::PartialParagraph { para_index, end_line, .. } => {
+            let p = paragraphs.get(*para_index)?;
+            if p.line_segs.is_empty() { return None; }
+            (*para_index, end_line.saturating_sub(1).min(p.line_segs.len() - 1))
+        }
+        _ => return None,
+    };
+    let p = paragraphs.get(para_idx)?;
+    let seg = p.line_segs.get(line_idx)?;
+    let bottom_hwpu = seg.vertical_pos + seg.line_height;
+    Some(hwpunit_to_px(bottom_hwpu, dpi))
+}
+
+/// LINE_SEG vertical_pos 범위를 문자열로 포맷.
+///
+/// `start_line..end_line` 가 None 이면 문단 전체 범위.
+/// `vertical_pos == 0` 인 줄(문단 첫 줄 제외)을 vpos-reset 으로 마킹.
+fn format_vpos_range(
+    para: Option<&Paragraph>,
+    start_line: Option<usize>,
+    end_line: Option<usize>,
+) -> String {
+    let Some(p) = para else { return String::new() };
+    if p.line_segs.is_empty() { return String::new() };
+    let total = p.line_segs.len();
+    let s = start_line.unwrap_or(0).min(total.saturating_sub(1));
+    let e = end_line.unwrap_or(total - 1).min(total - 1);
+    if s > e { return String::new() };
+
+    let first = p.line_segs[s].vertical_pos;
+    let last = p.line_segs[e].vertical_pos;
+    let mut resets: Vec<usize> = Vec::new();
+    for i in s..=e {
+        // 문단 첫 줄(line 0)의 vpos는 자연 시작점이므로 제외
+        if i > 0 && p.line_segs[i].vertical_pos == 0 {
+            resets.push(i);
+        }
+    }
+    let mut s_out = if s == e {
+        format!("vpos={}", first)
+    } else {
+        format!("vpos={}..{}", first, last)
+    };
+    for r in resets {
+        s_out.push_str(&format!(" [vpos-reset@line{}]", r));
+    }
+    s_out
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::model::bin_data::BinDataContent;
+    use crate::renderer::render_tree::RenderNodeType;
+
+    #[test]
+    fn build_page_render_tree_exposes_public_page_tree() {
+        let mut core = DocumentCore::new_empty();
+        core.paginate();
+
+        let tree = core
+            .build_page_render_tree(0)
+            .expect("empty document should expose page render tree");
+
+        match tree.root.node_type {
+            RenderNodeType::Page(page) => {
+                assert_eq!(page.page_index, 0);
+            }
+            other => panic!("root should be Page node, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn get_bin_data_returns_zero_based_content_slice() {
+        let mut core = DocumentCore::new_empty();
+        core.document.bin_data_content.push(BinDataContent {
+            id: 1,
+            data: vec![0x01, 0x02, 0x03],
+            extension: "png".to_string(),
+        });
+        core.document.bin_data_content.push(BinDataContent {
+            id: 2,
+            data: vec![0xAA, 0xBB],
+            extension: "jpg".to_string(),
+        });
+
+        assert_eq!(core.get_bin_data(0), Some(&[0x01, 0x02, 0x03][..]));
+        assert_eq!(core.get_bin_data(1), Some(&[0xAA, 0xBB][..]));
+        assert_eq!(core.get_bin_data(2), None);
+    }
 }

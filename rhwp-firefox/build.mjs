@@ -4,8 +4,8 @@
 // 2. WASM, 폰트, 확장 파일(manifest, background, content-script)을 dist/에 복사
 // 3. dist/ 폴더가 곧 Firefox 확장 프로그램
 
-import { execSync } from 'child_process';
-import { cpSync, mkdirSync, existsSync, renameSync } from 'fs';
+import { execFileSync } from 'child_process';
+import { cpSync, mkdirSync, existsSync, renameSync, rmSync } from 'fs';
 import { resolve, dirname } from 'path';
 import { fileURLToPath } from 'url';
 
@@ -13,26 +13,37 @@ const __dirname = dirname(fileURLToPath(import.meta.url));
 const ROOT = resolve(__dirname, '..');
 const DIST = resolve(__dirname, 'dist');
 
-function run(cmd, cwd = __dirname) {
-  console.log(`> ${cmd}`);
-  execSync(cmd, { stdio: 'inherit', cwd });
+// [Task #354] execSync (shell 보간) → execFileSync (인자 배열, shell:false) 전환.
+// CodeQL 경고 (js/shell-command-injection-from-environment) 해소 + 공백 포함
+// 경로에서도 인자 배열이 안전하게 처리됨.
+function run(cmd, args, cwd = __dirname) {
+  console.log(`> ${cmd} ${args.join(' ')}`);
+  execFileSync(cmd, args, { stdio: 'inherit', cwd, shell: false });
 }
 
-function copy(src, dest) {
+function copy(src, dest, options = {}) {
   if (!existsSync(src)) {
     console.warn(`  SKIP (not found): ${src}`);
     return;
   }
-  cpSync(src, dest, { recursive: true });
+  cpSync(src, dest, { recursive: true, ...options });
   console.log(`  COPY: ${src} → ${dest}`);
 }
 
+/** 배포본에서 제외할 파일 패턴 (테스트 등). */
+const EXCLUDE_FROM_DIST = /\.(test|spec)\.[mc]?[jt]sx?$/i;
+
 console.log('=== rhwp-firefox 빌드 시작 ===\n');
+
+if (existsSync(DIST)) {
+  rmSync(DIST, { recursive: true, force: true });
+  console.log(`  CLEAN: ${DIST}`);
+}
 
 // 1. Vite 빌드 (rhwp-studio → dist/)
 console.log('[1/4] Vite 빌드...');
 const studioDir = resolve(ROOT, 'rhwp-studio');
-run(`npx vite build --config ${resolve(__dirname, 'vite.config.ts')}`, studioDir);
+run('npx', ['vite', 'build', '--config', resolve(__dirname, 'vite.config.ts')], studioDir);
 
 // index.html → viewer.html 이름 변경
 const indexHtml = resolve(DIST, 'index.html');
@@ -58,7 +69,12 @@ copy(resolve(__dirname, 'background.js'), resolve(DIST, 'background.js'));
 copy(resolve(__dirname, 'content-script.js'), resolve(DIST, 'content-script.js'));
 copy(resolve(__dirname, 'content-script.css'), resolve(DIST, 'content-script.css'));
 copy(resolve(__dirname, 'dev-tools-inject.js'), resolve(DIST, 'dev-tools-inject.js'));
-copy(resolve(__dirname, 'sw'), resolve(DIST, 'sw'));
+// sw/ 는 download-interceptor-common.js 심링크(→ rhwp-shared/sw/)를 포함하므로
+// dereference: true 로 실체 파일 복사 (패키징된 확장에서 상대 경로 의존성 제거).
+copy(resolve(__dirname, 'sw'), resolve(DIST, 'sw'), {
+  filter: (src) => !EXCLUDE_FROM_DIST.test(src),
+  dereference: true,
+});
 copy(resolve(__dirname, 'options.html'), resolve(DIST, 'options.html'));
 copy(resolve(__dirname, 'options.js'), resolve(DIST, 'options.js'));
 

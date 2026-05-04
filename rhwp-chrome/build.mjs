@@ -68,8 +68,11 @@ copy(resolve(__dirname, 'background.js'), resolve(DIST, 'background.js'));
 copy(resolve(__dirname, 'content-script.js'), resolve(DIST, 'content-script.js'));
 copy(resolve(__dirname, 'content-script.css'), resolve(DIST, 'content-script.css'));
 copy(resolve(__dirname, 'dev-tools-inject.js'), resolve(DIST, 'dev-tools-inject.js'));
+// sw/ 는 download-interceptor-common.js 심링크(→ rhwp-shared/sw/)를 포함하므로
+// dereference: true 로 실체 파일 복사 (패키징된 확장에서 상대 경로 의존성 제거).
 copy(resolve(__dirname, 'sw'), resolve(DIST, 'sw'), {
   filter: (src) => !EXCLUDE_FROM_DIST.test(src),
+  dereference: true,
 });
 copy(resolve(__dirname, 'options.html'), resolve(DIST, 'options.html'));
 copy(resolve(__dirname, 'options.js'), resolve(DIST, 'options.js'));

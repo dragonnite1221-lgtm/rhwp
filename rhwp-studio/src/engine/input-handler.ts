@@ -24,6 +24,53 @@ import * as _keyboard from './input-handler-keyboard';
 import * as _text from './input-handler-text';
 import * as _picture from './input-handler-picture';
 
+const SVG_NS = 'http://www.w3.org/2000/svg';
+
+function createOverlaySvg(): SVGSVGElement {
+  const svg = document.createElementNS(SVG_NS, 'svg');
+  svg.style.width = '100%';
+  svg.style.height = '100%';
+  svg.style.overflow = 'visible';
+  return svg;
+}
+
+function setSvgAttrs(el: SVGElement, attrs: Record<string, string | number>): void {
+  for (const [key, value] of Object.entries(attrs)) {
+    el.setAttribute(key, String(value));
+  }
+}
+
+function appendOverlayLine(
+  svg: SVGSVGElement,
+  x1: number,
+  y1: number,
+  x2: number,
+  y2: number,
+  dashed = false,
+): void {
+  const line = document.createElementNS(SVG_NS, 'line');
+  setSvgAttrs(line, {
+    x1,
+    y1,
+    x2,
+    y2,
+    stroke: '#333',
+    'stroke-width': 2,
+  });
+  if (dashed) line.setAttribute('stroke-dasharray', '6,3');
+  svg.appendChild(line);
+}
+
+function createOverlayLabel(x: number, y: number, text: string): HTMLDivElement {
+  const label = document.createElement('div');
+  label.style.cssText =
+    `position:fixed;left:${x}px;top:${y}px;` +
+    'background:rgba(0,0,0,0.75);color:#fff;font-size:11px;padding:2px 6px;' +
+    'border-radius:3px;white-space:nowrap;pointer-events:none';
+  label.textContent = text;
+  return label;
+}
+
 /** 클릭 커서 배치 + 키보드 입력을 처리한다 */
 export class InputHandler {
   private cursor: CursorState;
@@ -169,10 +216,12 @@ export class InputHandler {
   // 양식 개체 오버레이
   private formOverlay: HTMLElement | null = null;
 
-  // 투명선 자동 활성화 상태
-  private wasInCell = false;
-  private manualTransparentBorders = false;
-  private autoTransparentBorders = false;
+  // [Task #394] 셀 진입 자동 ON 로직 비활성화 — checkTransparentBordersTransition 와 동시 주석 처리.
+  // 되돌리려면 아래 3 개 변수 + 호출 지점 + 메서드 본체 + 이벤트 핸들러의 주석을 동시에 해제.
+  // // 투명선 자동 활성화 상태
+  // private wasInCell = false;
+  // private manualTransparentBorders = false;
+  // private autoTransparentBorders = false;
 
   // IME 조합 상태
   private isComposing = false;
@@ -340,10 +389,12 @@ export class InputHandler {
       });
     });
 
-    // 투명선 수동 토글 상태 추적
-    eventBus.on('transparent-borders-changed', (show) => {
-      this.manualTransparentBorders = show as boolean;
-    });
+    // [Task #394] 셀 진입 자동 ON 로직 비활성화 — manual 추적 불필요.
+    // transparent-borders-changed 이벤트 자체는 view.ts 에서 emit 되므로 보존됨 (다른 구독자가 사용 가능).
+    // // 투명선 수동 토글 상태 추적
+    // eventBus.on('transparent-borders-changed', (show) => {
+    //   this.manualTransparentBorders = show as boolean;
+    // });
 
     // Toolbar에서 서식 적용 요청 수신 (글꼴명, 크기, 색상 — 커맨드 시스템 미경유)
     eventBus.on('format-char', (props) => {
@@ -492,19 +543,31 @@ export class InputHandler {
       document.body.appendChild(this.polygonOverlay);
     }
     const pts = this.polygonPoints;
-    if (pts.length === 0) { this.polygonOverlay.innerHTML = ''; return; }
+    if (pts.length === 0) {
+      this.polygonOverlay.replaceChildren();
+      return;
+    }
 
-    let lines = '';
+    const svg = createOverlaySvg();
     // 확정된 변
     for (let i = 0; i < pts.length - 1; i++) {
-      lines += `<line x1="${pts[i].x}" y1="${pts[i].y}" x2="${pts[i + 1].x}" y2="${pts[i + 1].y}" stroke="#333" stroke-width="2"/>`;
+      appendOverlayLine(svg, pts[i].x, pts[i].y, pts[i + 1].x, pts[i + 1].y);
     }
     // 마지막 점 → 마우스 위치 (프리뷰)
     const last = pts[pts.length - 1];
-    lines += `<line x1="${last.x}" y1="${last.y}" x2="${mx}" y2="${my}" stroke="#333" stroke-width="2" stroke-dasharray="6,3"/>`;
+    appendOverlayLine(svg, last.x, last.y, mx, my, true);
     // 꼭짓점 마커
     for (const p of pts) {
-      lines += `<circle cx="${p.x}" cy="${p.y}" r="3" fill="#fff" stroke="#333" stroke-width="1"/>`;
+      const circle = document.createElementNS(SVG_NS, 'circle');
+      setSvgAttrs(circle, {
+        cx: p.x,
+        cy: p.y,
+        r: 3,
+        fill: '#fff',
+        stroke: '#333',
+        'stroke-width': 1,
+      });
+      svg.appendChild(circle);
     }
     // 크기 표시
     const allX = [...pts.map(p => p.x), mx];
@@ -514,9 +577,9 @@ export class InputHandler {
     const zoom = this.viewportManager.getZoom();
     const wMm = ((maxX - minX) / zoom * 25.4 / 96).toFixed(1);
     const hMm = ((maxY - minY) / zoom * 25.4 / 96).toFixed(1);
-    const sizeLabel = `<div style="position:fixed;left:${maxX + 4}px;top:${maxY + 4}px;background:rgba(0,0,0,0.75);color:#fff;font-size:11px;padding:2px 6px;border-radius:3px;white-space:nowrap;pointer-events:none">${wMm} × ${hMm} mm</div>`;
+    const sizeLabel = createOverlayLabel(maxX + 4, maxY + 4, `${wMm} × ${hMm} mm`);
 
-    this.polygonOverlay.innerHTML = `<svg style="width:100%;height:100%;overflow:visible">${lines}</svg>${sizeLabel}`;
+    this.polygonOverlay.replaceChildren(svg, sizeLabel);
   }
 
   /** 다각형 그리기: 완료 (더블클릭 또는 시작점 근접) */
@@ -630,10 +693,10 @@ export class InputHandler {
     // mm 크기 계산 (96dpi 기준: 1px = 25.4/96 mm)
     const wMm = (w / zoom * 25.4 / 96).toFixed(1);
     const hMm = (h / zoom * 25.4 / 96).toFixed(1);
-    const sizeLabel = `<div style="position:fixed;left:${left + w + 4}px;top:${top + h + 4}px;background:rgba(0,0,0,0.75);color:#fff;font-size:11px;padding:2px 6px;border-radius:3px;white-space:nowrap;pointer-events:none">${wMm} × ${hMm} mm</div>`;
+    const sizeLabel = createOverlayLabel(left + w + 4, top + h + 4, `${wMm} × ${hMm} mm`);
 
-    let shapeSvg = '';
-    let customLabel = '';
+    const svg = createOverlaySvg();
+    let customLabel: HTMLDivElement | null = null;
     if (type === 'line') {
       let ex = x2, ey = y2;
       if (shiftKey) {
@@ -644,19 +707,30 @@ export class InputHandler {
         ex = x1 + dist * Math.cos(snapAngle);
         ey = y1 + dist * Math.sin(snapAngle);
       }
-      shapeSvg = `<line x1="${x1}" y1="${y1}" x2="${ex}" y2="${ey}" stroke="#333" stroke-width="2" stroke-dasharray="6,3"/>`;
       if (this.textboxPlacementDrag && shiftKey) {
         this.textboxPlacementDrag.currentClientX = ex;
         this.textboxPlacementDrag.currentClientY = ey;
       }
+      appendOverlayLine(svg, x1, y1, ex, ey, true);
       // 직선: 길이 표시
       const lenPx = Math.hypot(ex - x1, ey - y1);
       const lenMm = (lenPx / zoom * 25.4 / 96).toFixed(1);
       const mx = (x1 + ex) / 2, my = (y1 + ey) / 2;
-      customLabel = `<div style="position:fixed;left:${mx + 8}px;top:${my + 8}px;background:rgba(0,0,0,0.75);color:#fff;font-size:11px;padding:2px 6px;border-radius:3px;white-space:nowrap;pointer-events:none">${lenMm} mm</div>`;
+      customLabel = createOverlayLabel(mx + 8, my + 8, `${lenMm} mm`);
     } else if (type === 'ellipse') {
       const cx = left + w / 2, cy = top + h / 2;
-      shapeSvg = `<ellipse cx="${cx}" cy="${cy}" rx="${w / 2}" ry="${h / 2}" fill="rgba(0,0,0,0.05)" stroke="#333" stroke-width="2" stroke-dasharray="6,3"/>`;
+      const ellipse = document.createElementNS(SVG_NS, 'ellipse');
+      setSvgAttrs(ellipse, {
+        cx,
+        cy,
+        rx: w / 2,
+        ry: h / 2,
+        fill: 'rgba(0,0,0,0.05)',
+        stroke: '#333',
+        'stroke-width': 2,
+        'stroke-dasharray': '6,3',
+      });
+      svg.appendChild(ellipse);
     } else if (type === 'arc') {
       // 호: 사각형에 내접하는 타원의 1/4 호
       // 우상 사분면: 상단 중앙 → 우측 중앙
@@ -664,22 +738,59 @@ export class InputHandler {
       if (rx > 1 && ry > 1) {
         const cx = left + w / 2, cy = top + h / 2;
         // 시작: 상단 중앙 (cx, top), 끝: 우측 중앙 (left+w, cy)
-        shapeSvg = `<path d="M ${cx} ${top} A ${rx} ${ry} 0 0 1 ${left + w} ${cy}" fill="none" stroke="#333" stroke-width="2" stroke-dasharray="6,3"/>`;
+        const path = document.createElementNS(SVG_NS, 'path');
+        setSvgAttrs(path, {
+          d: `M ${cx} ${top} A ${rx} ${ry} 0 0 1 ${left + w} ${cy}`,
+          fill: 'none',
+          stroke: '#333',
+          'stroke-width': 2,
+          'stroke-dasharray': '6,3',
+        });
+        svg.appendChild(path);
         // 보조선: 내접 사각형
-        shapeSvg += `<rect x="${left}" y="${top}" width="${w}" height="${h}" fill="none" stroke="#ccc" stroke-width="1" stroke-dasharray="3,3"/>`;
+        const guide = document.createElementNS(SVG_NS, 'rect');
+        setSvgAttrs(guide, {
+          x: left,
+          y: top,
+          width: w,
+          height: h,
+          fill: 'none',
+          stroke: '#ccc',
+          'stroke-width': 1,
+          'stroke-dasharray': '3,3',
+        });
+        svg.appendChild(guide);
       }
     } else if (type === 'polygon') {
       // 다각형: 삼각형 프리뷰
       const tx = left + w / 2, ty = top;
-      shapeSvg = `<polygon points="${tx},${ty} ${left + w},${top + h} ${left},${top + h}" fill="rgba(0,0,0,0.05)" stroke="#333" stroke-width="2" stroke-dasharray="6,3"/>`;
+      const polygon = document.createElementNS(SVG_NS, 'polygon');
+      setSvgAttrs(polygon, {
+        points: `${tx},${ty} ${left + w},${top + h} ${left},${top + h}`,
+        fill: 'rgba(0,0,0,0.05)',
+        stroke: '#333',
+        'stroke-width': 2,
+        'stroke-dasharray': '6,3',
+      });
+      svg.appendChild(polygon);
     } else {
       // rectangle / textbox
-      shapeSvg = `<rect x="${left}" y="${top}" width="${w}" height="${h}" fill="rgba(0,0,0,0.05)" stroke="#333" stroke-width="2" stroke-dasharray="6,3"/>`;
+      const rect = document.createElementNS(SVG_NS, 'rect');
+      setSvgAttrs(rect, {
+        x: left,
+        y: top,
+        width: w,
+        height: h,
+        fill: 'rgba(0,0,0,0.05)',
+        stroke: '#333',
+        'stroke-width': 2,
+        'stroke-dasharray': '6,3',
+      });
+      svg.appendChild(rect);
     }
 
-    const label = customLabel || (w > 5 || h > 5 ? sizeLabel : '');
-    this.textboxPlacementOverlay.innerHTML =
-      `<svg style="width:100%;height:100%;overflow:visible">${shapeSvg}</svg>${label}`;
+    const label = customLabel || (w > 5 || h > 5 ? sizeLabel : null);
+    this.textboxPlacementOverlay.replaceChildren(...(label ? [svg, label] : [svg]));
   }
 
   /** 도형 배치 오버레이 제거 */
@@ -1393,7 +1504,10 @@ export class InputHandler {
     }
     this.updateSelection();
     this.emitCursorFormatState();
-    this.checkTransparentBordersTransition();
+    // [Task #394] 셀 진입 자동 ON 로직 비활성화 — 한컴 출력 정합성을 위해 OFF 기본값 유지.
+    // 되돌리려면 아래 호출 + line ~1520 의 동일 호출 + 메서드 본체 / 상태 변수 / 이벤트 핸들러
+    // 의 주석을 동시에 풀면 이전 동작 복원.
+    // this.checkTransparentBordersTransition();
     this.updateFieldMarkers();
     // 눈금자 다단 영역 표시용 커서 좌표 전달
     const cursorRect = this.cursor.getRect();
@@ -1410,7 +1524,8 @@ export class InputHandler {
     }
     this.updateSelection();
     this.emitCursorFormatState();
-    this.checkTransparentBordersTransition();
+    // [Task #394] 셀 진입 자동 ON 로직 비활성화 — 위 updateCaretAndScroll 의 코멘트 참고.
+    // this.checkTransparentBordersTransition();
   }
 
   /** 클릭 좌표에서 같은 표 내 셀의 row/col을 반환한다. 다른 표이거나 셀이 아니면 null. */
@@ -1659,7 +1774,11 @@ export class InputHandler {
     _picture.finishPictureRotateDrag.call(this, e);
   }
 
-  /** 셀 진입/탈출 시 투명선 자동 ON/OFF */
+  /* [Task #394] 셀 진입 자동 ON 로직 비활성화 — 호출 지점 (updateCaretAndScroll, updateCaretNoScroll)
+     의 호출도 같이 주석 처리됨. 되돌리려면 본 블록 주석 + 호출 지점 주석 + 상태 변수 / 이벤트 핸들러
+     주석을 동시에 풀면 이전 동작 복원.
+
+  // 셀 진입/탈출 시 투명선 자동 ON/OFF
   private checkTransparentBordersTransition(): void {
     const nowInCell = this.cursor.isInCell() && !this.cursor.isInTextBox();
     if (nowInCell && !this.wasInCell) {
@@ -1685,6 +1804,7 @@ export class InputHandler {
     }
     this.wasInCell = nowInCell;
   }
+  */
 
   /** 캐럿이 화면 밖이면 스크롤을 조정한다 */
   private scrollCaretIntoView(rect: import('@/core/types').CursorRect): void {

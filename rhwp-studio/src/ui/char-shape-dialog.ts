@@ -40,16 +40,63 @@ function buildFontList(): string[] {
 }
 
 /** 속성 아이콘 정의: HWP 원본의 가 문자 변형 */
-const ATTR_ICONS: { id: string; html: string; title: string }[] = [
-  { id: 'bold',          html: '<span style="font-weight:bold">가</span>',                                     title: '굵게' },
-  { id: 'italic',        html: '<span style="font-style:italic">가</span>',                                    title: '기울임' },
-  { id: 'underline',     html: '<span style="text-decoration:underline">가</span>',                            title: '밑줄' },
-  { id: 'strikethrough', html: '<span style="text-decoration:line-through">가</span>',                         title: '취소선' },
-  { id: 'outline',       html: '<span style="color:transparent;-webkit-text-stroke:1px #333">가</span>',       title: '외곽선' },
-  { id: 'shadow',        html: '<span style="text-shadow:2px 2px 0 #999">가</span>',                          title: '그림자' },
-  { id: 'superscript',   html: '<span style="font-size:12px">가<sup style="font-size:8px">1</sup></span>',    title: '위 첨자' },
-  { id: 'subscript',     html: '<span style="font-size:12px">가<sub style="font-size:8px">1</sub></span>',    title: '아래 첨자' },
+const ATTR_ICONS: { id: string; title: string }[] = [
+  { id: 'bold',          title: '굵게' },
+  { id: 'italic',        title: '기울임' },
+  { id: 'underline',     title: '밑줄' },
+  { id: 'strikethrough', title: '취소선' },
+  { id: 'outline',       title: '외곽선' },
+  { id: 'shadow',        title: '그림자' },
+  { id: 'superscript',   title: '위 첨자' },
+  { id: 'subscript',     title: '아래 첨자' },
 ];
+
+function createAttrIconContent(id: string): HTMLSpanElement {
+  const span = document.createElement('span');
+  span.textContent = '가';
+  switch (id) {
+    case 'bold':
+      span.style.fontWeight = 'bold';
+      break;
+    case 'italic':
+      span.style.fontStyle = 'italic';
+      break;
+    case 'underline':
+      span.style.textDecoration = 'underline';
+      break;
+    case 'strikethrough':
+      span.style.textDecoration = 'line-through';
+      break;
+    case 'outline':
+      span.style.color = 'transparent';
+      span.style.setProperty('-webkit-text-stroke', '1px #333');
+      break;
+    case 'shadow':
+      span.style.textShadow = '2px 2px 0 #999';
+      break;
+    case 'superscript': {
+      span.textContent = '';
+      span.style.fontSize = '12px';
+      span.appendChild(document.createTextNode('가'));
+      const sup = document.createElement('sup');
+      sup.style.fontSize = '8px';
+      sup.textContent = '1';
+      span.appendChild(sup);
+      break;
+    }
+    case 'subscript': {
+      span.textContent = '';
+      span.style.fontSize = '12px';
+      span.appendChild(document.createTextNode('가'));
+      const sub = document.createElement('sub');
+      sub.style.fontSize = '8px';
+      sub.textContent = '1';
+      span.appendChild(sub);
+      break;
+    }
+  }
+  return span;
+}
 
 export class CharShapeDialog {
   private overlay!: HTMLDivElement;
@@ -336,7 +383,7 @@ export class CharShapeDialog {
       const btn = document.createElement('button');
       btn.className = 'cs-icon-btn';
       btn.title = a.title;
-      btn.innerHTML = a.html;
+      btn.appendChild(createAttrIconContent(a.id));
       btn.addEventListener('click', () => {
         if (a.id === 'superscript' && !btn.classList.contains('active')) {
           this.attrBtns['subscript']?.classList.remove('active');
@@ -608,7 +655,7 @@ export class CharShapeDialog {
     });
     const widthPreview = document.createElement('span');
     widthPreview.className = 'cs-line-preview';
-    widthPreview.innerHTML = '&mdash;&mdash;&mdash;';
+    widthPreview.textContent = '\u2014\u2014\u2014';
     widthRow.appendChild(this.borderWidthSelect);
     widthRow.appendChild(widthPreview);
     borderLeft.appendChild(widthRow);

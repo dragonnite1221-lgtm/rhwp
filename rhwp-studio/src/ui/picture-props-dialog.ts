@@ -320,8 +320,8 @@ export class PicturePropsDialog {
 
   /** 개체 타입에 따라 탭을 재구성한다 */
   private rebuildTabs(): void {
-    this.tabGroup.innerHTML = '';
-    this.body.innerHTML = '';
+    this.tabGroup.replaceChildren();
+    this.body.replaceChildren();
     this.tabs = [];
     this.panels = [];
 

@@ -8,6 +8,7 @@ use super::super::pagination::{PageContent, ColumnContent, PageItem};
 use super::super::page_layout::PageLayoutInfo;
 use super::utils::{expand_numbering_format, numbering_format_to_number_format};
 use super::text_measurement::estimate_text_width;
+use crate::renderer::{TextStyle, TabStop};
 
 fn a4_page_def() -> PageDef {
     PageDef {
@@ -81,6 +82,7 @@ fn test_build_page_with_paragraph() {
             zone_layout: None,
             zone_y_offset: 0.0,
             wrap_around_paras: Vec::new(),
+            used_height: 0.0,
         }],
         active_header: None,
         active_footer: None,
@@ -161,6 +163,7 @@ fn test_layout_with_composed_styles() {
             zone_layout: None,
             zone_y_offset: 0.0,
             wrap_around_paras: Vec::new(),
+            used_height: 0.0,
         }],
         active_header: None,
         active_footer: None,
@@ -255,6 +258,7 @@ fn test_layout_multi_run_x_position() {
             zone_layout: None,
             zone_y_offset: 0.0,
             wrap_around_paras: Vec::new(),
+            used_height: 0.0,
         }],
         active_header: None,
         active_footer: None,
@@ -552,6 +556,7 @@ fn test_layout_table_basic() {
             zone_layout: None,
             zone_y_offset: 0.0,
             wrap_around_paras: Vec::new(),
+            used_height: 0.0,
         }],
         active_header: None,
         active_footer: None,
@@ -635,6 +640,7 @@ fn test_layout_table_cell_positions() {
             zone_layout: None,
             zone_y_offset: 0.0,
             wrap_around_paras: Vec::new(),
+            used_height: 0.0,
         }],
         active_header: None,
         active_footer: None,
@@ -851,4 +857,259 @@ fn test_numbering_state_different_numbering_id_resets() {
     // id=4: 앞 번호 이어
     let c6 = state.advance(4, 1, None);
     assert_eq!(c6[1], 2); // "2"
+}
+
+#[test]
+fn test_geometric_shapes_treated_as_fullwidth() {
+    // Task #146: Geometric Shapes (U+25A0-U+25FF) 는 HWP 문서의 섹션 머리
+    // 기호 (□ 1. / ■ 가. / ○ ㅇ 등) 로 널리 쓰이므로 전각(font_size) 폭
+    // 으로 측정되어야 한다.
+    let style = TextStyle { font_size: 20.0, ..Default::default() };
+    for c in ['□', '■', '▲', '▼', '◆', '○', '●', '◇'] {
+        let text = c.to_string();
+        let positions = compute_char_positions(&text, &style);
+        assert!(
+            (positions[1] - 20.0).abs() < 0.01,
+            "'{}' (U+{:04X}) expected full-width advance 20.0, got {}",
+            c, c as u32, positions[1]
+        );
+    }
+}
+
+#[test]
+fn test_square_bullet_with_space_preserves_layout() {
+    // Task #146 회귀 방지: "□ 가" 제목 패턴에서 □ 가 반각으로 측정되면
+    // 후속 글자 x 좌표가 em 단위만큼 좌측으로 붕괴한다.
+    // 자간 -8% 는 text-align.hwp 제목 CharShape 와 동일.
+    let style = TextStyle {
+        font_size: 20.0,
+        letter_spacing: -1.6, // -8% of 20
+        ..Default::default()
+    };
+    let positions = compute_char_positions("□ 가", &style);
+    assert_eq!(positions.len(), 4);
+    // □: 전각(20) + 자간(-1.6) = advance 18.4
+    assert!((positions[1] - 18.4).abs() < 0.01, "positions[1] expected 18.4, got {}", positions[1]);
+    // 공백: 반각(10) + 자간(-1.6) = advance 8.4 (min_clamp 5.0 미작동)
+    assert!((positions[2] - 26.8).abs() < 0.01, "positions[2] expected 26.8, got {}", positions[2]);
+    // 가: 전각(20) + 자간(-1.6) = advance 18.4
+    assert!((positions[3] - 45.2).abs() < 0.01, "positions[3] expected 45.2, got {}", positions[3]);
+}
+
+#[test]
+fn test_tac_leading_width_block_table_full_line() {
+    // Task #146 v3: block 취급 TAC 표(너비 ≥ 90% seg_width)에서
+    // composed.tac_controls 가 비어있을 때, 선행 텍스트는 line 0 전체로
+    // 간주해 모든 run 폭을 합산해야 한다. text-align.hwp 문단 0.2 시나리오.
+    use super::super::composer::{ComposedParagraph, ComposedLine, ComposedTextRun};
+    use crate::renderer::style_resolver::{ResolvedStyleSet, ResolvedCharStyle};
+
+    let line = ComposedLine {
+        runs: vec![ComposedTextRun {
+            text: "    ".to_string(),
+            char_style_id: 0, lang_index: 0,
+            ..Default::default()
+        }],
+        line_height: 400, baseline_distance: 320,
+        segment_width: 48188, column_start: 0,
+        line_spacing: 0, has_line_break: false, char_start: 0,
+    };
+    let composed = ComposedParagraph {
+        lines: vec![line],
+        para_style_id: 0,
+        inline_controls: Vec::new(),
+        numbering_text: None,
+        tac_controls: Vec::new(), // block 취급이라 비어있음
+        footnote_positions: Vec::new(),
+        tab_extended: Vec::new(),
+    };
+    let styles = ResolvedStyleSet {
+        char_styles: vec![ResolvedCharStyle {
+            font_size: 20.0, letter_spacing: -1.6,
+            ..Default::default()
+        }],
+        ..Default::default()
+    };
+    let width = super::compute_tac_leading_width(&composed, 0, &styles);
+    // 4 spaces × (10 base - 1.6 lspc) = 33.6 (min_clamp 5.0 미작동)
+    assert!((width - 33.6).abs() < 0.5, "expected ~33.6, got {}", width);
+}
+
+#[test]
+fn test_is_heavy_display_face_matches_known_heavy_faces() {
+    // Task #146 v4: HY헤드라인M 등 heavy display face 는 CharShape.bold=false
+    // 여도 본래 heavy 이므로 SVG 에서 font-weight="bold" 강제 대상이어야 한다.
+    use crate::renderer::style_resolver::is_heavy_display_face;
+    for face in ["HY헤드라인M", "HYHeadLine M", "HYHeadLine Medium",
+                  "HY견고딕", "HY견명조", "HY견명조B", "HY그래픽", "HY그래픽M"] {
+        assert!(is_heavy_display_face(face), "{} should be heavy", face);
+    }
+    // 일반 face 는 false
+    for face in ["Malgun Gothic", "맑은 고딕", "함초롬바탕", "함초롬돋움",
+                  "바탕", "돋움", "HY신명조", "HY중고딕"] {
+        assert!(!is_heavy_display_face(face), "{} should NOT be heavy", face);
+    }
+}
+
+#[test]
+fn test_is_heavy_display_face_with_family_chain() {
+    // font-family 체인에서 primary face(첫 항목) 기준 판정.
+    use crate::renderer::style_resolver::is_heavy_display_face;
+    assert!(is_heavy_display_face("HY헤드라인M,'Malgun Gothic',sans-serif"));
+    assert!(is_heavy_display_face("HY견고딕, 돋움"));
+    // 따옴표 포함
+    assert!(is_heavy_display_face("'HY헤드라인M',Malgun Gothic"));
+    assert!(is_heavy_display_face("\"HY그래픽\",바탕"));
+    // primary 가 heavy 가 아니면 false (HY헤드라인M 이 두번째여도 false)
+    assert!(!is_heavy_display_face("Malgun Gothic,HY헤드라인M"));
+}
+
+#[test]
+fn test_tac_leading_width_inline_table_partial() {
+    // inline 취급 TAC 표: tac_controls 에 위치 기록. 해당 위치까지만 합산.
+    use super::super::composer::{ComposedParagraph, ComposedLine, ComposedTextRun};
+    use crate::renderer::style_resolver::{ResolvedStyleSet, ResolvedCharStyle};
+
+    let line = ComposedLine {
+        runs: vec![ComposedTextRun {
+            text: "ab가나".to_string(),
+            char_style_id: 0, lang_index: 0,
+            ..Default::default()
+        }],
+        line_height: 400, baseline_distance: 320,
+        segment_width: 48188, column_start: 0,
+        line_spacing: 0, has_line_break: false, char_start: 0,
+    };
+    let composed = ComposedParagraph {
+        lines: vec![line],
+        para_style_id: 0,
+        inline_controls: Vec::new(),
+        numbering_text: None,
+        tac_controls: vec![(2, 1000, 0)], // pos=2 (ab 뒤), control_index=0
+        footnote_positions: Vec::new(),
+        tab_extended: Vec::new(),
+    };
+    let styles = ResolvedStyleSet {
+        char_styles: vec![ResolvedCharStyle {
+            font_size: 20.0, ..Default::default()
+        }],
+        ..Default::default()
+    };
+    let width = super::compute_tac_leading_width(&composed, 0, &styles);
+    // "ab" 2 chars, 반각 × font_size/2 = 20*0.5*2 = 20
+    assert!((width - 20.0).abs() < 0.5, "expected ~20.0, got {}", width);
+}
+
+// ────────────────────────────────────────────────────────────
+// Task #290: resolve_last_tab_pending — cross-run 탭 감지 헬퍼
+// ────────────────────────────────────────────────────────────
+
+/// ext[2] 생성 편의: high=tab_type_enum+1, low=fill_type
+fn mk_ext(width_hu: u16, tab_kind_hi: u8, fill_lo: u8) -> [u16; 7] {
+    let tab_type = ((tab_kind_hi as u16) << 8) | (fill_lo as u16);
+    [width_hu, 0, tab_type, 0, 0, 0, 9]
+}
+
+fn mk_text_style() -> TextStyle {
+    TextStyle {
+        font_size: 12.0,
+        font_family: String::new(),
+        line_x_offset: 0.0,
+        ..Default::default()
+    }
+}
+
+#[test]
+fn task290_inline_left_returns_none() {
+    // inline 이 LEFT (ext[2] high=1) 이면 pending 없음 — 본 수정의 핵심
+    let ext = vec![mk_ext(100, 1, 0)]; // LEFT, fill=none
+    let ts = mk_text_style();
+    let tab_stops = vec![TabStop { position: 22.0, tab_type: 0, fill_type: 0 }];
+    let result = super::paragraph_layout::resolve_last_tab_pending(
+        "abc\t", 0, &ext, &ts, &tab_stops, 48.0, true, 420.0,
+    );
+    assert_eq!(result, None, "LEFT inline 은 pending 없음");
+}
+
+#[test]
+fn task290_inline_right_uses_tabdef() {
+    // inline 이 RIGHT (ext[2] high=2) 면 TabDef find_next_tab_stop 경로로 폴스루
+    let ext = vec![mk_ext(200, 2, 3)]; // RIGHT, fill=dot
+    let ts = mk_text_style();
+    let tab_stops = vec![TabStop { position: 300.0, tab_type: 1, fill_type: 3 }];
+    let result = super::paragraph_layout::resolve_last_tab_pending(
+        "abc\t", 0, &ext, &ts, &tab_stops, 48.0, false, 420.0,
+    );
+    assert_eq!(result, Some((300.0, 1, 3)), "RIGHT inline → TabDef 기반 위치, fill=dot");
+}
+
+#[test]
+fn task290_inline_center_uses_tabdef() {
+    // inline 이 CENTER (ext[2] high=3) 면 TabDef 기반 위치
+    let ext = vec![mk_ext(150, 3, 0)]; // CENTER
+    let ts = mk_text_style();
+    let tab_stops = vec![TabStop { position: 200.0, tab_type: 2, fill_type: 0 }];
+    let result = super::paragraph_layout::resolve_last_tab_pending(
+        "abc\t", 0, &ext, &ts, &tab_stops, 48.0, false, 420.0,
+    );
+    assert_eq!(result, Some((200.0, 2, 0)), "CENTER inline → TabDef 기반 위치, fill 없음");
+}
+
+#[test]
+fn task290_no_inline_fallback_to_tabdef() {
+    // inline_tabs 가 비었으면 TabDef 폴백 — 기존 동작 유지
+    let ext: Vec<[u16; 7]> = vec![];
+    let ts = mk_text_style();
+    let tab_stops = vec![TabStop { position: 250.0, tab_type: 1, fill_type: 0 }];
+    let result = super::paragraph_layout::resolve_last_tab_pending(
+        "abc\t", 0, &ext, &ts, &tab_stops, 48.0, false, 420.0,
+    );
+    assert_eq!(result, Some((250.0, 1, 0)), "inline 없음 → TabDef RIGHT stop 사용, fill 없음");
+}
+
+#[test]
+fn task290_no_inline_auto_tab_right_fallthrough() {
+    // inline 없음 + TabDef stop 소진 + auto_tab_right=true → 우측 끝 RIGHT (기존 동작 유지)
+    let ext: Vec<[u16; 7]> = vec![];
+    let ts = mk_text_style();
+    let tab_stops = vec![TabStop { position: 10.0, tab_type: 0, fill_type: 0 }]; // 이미 지나친 stop
+    let result = super::paragraph_layout::resolve_last_tab_pending(
+        "abcdef\t", 0, &ext, &ts, &tab_stops, 48.0, true, 420.0,
+    );
+    assert!(result.is_some(), "auto_tab_right 폴스루 → Some");
+    let (tp, tt, _ft) = result.unwrap();
+    assert_eq!(tt, 1, "auto_tab_right 은 RIGHT(1)");
+    assert!((tp - 420.0).abs() < 0.1, "tab_pos 는 available_width 에 고정");
+}
+
+// [Task #296] inline_tab_type 헬퍼 단위 테스트
+// HWP tab_extended 의 ext[2] 포맷: high byte = 탭 종류 enum+1, low byte = fill_type
+
+#[test]
+fn task296_inline_tab_type_left() {
+    // ext[2] = 0x0100 (256) → high=1 = LEFT (exam_math #18 실측 케이스)
+    let ext = [132u16, 0, 0x0100, 0, 0, 0, 9];
+    assert_eq!(super::text_measurement::inline_tab_type(&ext), 1);
+}
+
+#[test]
+fn task296_inline_tab_type_right() {
+    // ext[2] = 0x0203 (515) → high=2 = RIGHT, low=3 = fill=dot
+    //         (hwp-3.0-HWPML 저작권\t1 실측 케이스, PR #292 트러블슈팅 기록)
+    let ext = [200u16, 0, 0x0203, 0, 0, 0, 9];
+    assert_eq!(super::text_measurement::inline_tab_type(&ext), 2);
+}
+
+#[test]
+fn task296_inline_tab_type_center() {
+    // ext[2] = 0x0300 → high=3 = CENTER
+    let ext = [150u16, 0, 0x0300, 0, 0, 0, 9];
+    assert_eq!(super::text_measurement::inline_tab_type(&ext), 3);
+}
+
+#[test]
+fn task296_inline_tab_type_decimal() {
+    // ext[2] = 0x0400 → high=4 = DECIMAL
+    let ext = [100u16, 0, 0x0400, 0, 0, 0, 9];
+    assert_eq!(super::text_measurement::inline_tab_type(&ext), 4);
 }

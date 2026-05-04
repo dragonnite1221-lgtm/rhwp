@@ -68,6 +68,8 @@ pub struct DocumentCore {
     pub(crate) clip_enabled: bool,
     /// 디버그 오버레이 표시 여부 (문단/표 경계 + pi/ci 라벨)
     pub(crate) debug_overlay: bool,
+    /// LINE_SEG vpos-reset 강제 분리 적용 여부 (페이지네이션 옵션)
+    pub(crate) respect_vpos_reset: bool,
     /// 구역별 표 측정 데이터 (페이지네이션 결과 보존)
     pub(crate) measured_tables: Vec<Vec<MeasuredTable>>,
     /// 구역별 dirty 플래그 (true = 재페이지네이션 필요)
@@ -208,6 +210,7 @@ impl DocumentCore {
             show_transparent_borders: false,
             clip_enabled: true,
             debug_overlay: false,
+            respect_vpos_reset: false,
             measured_tables: Vec::new(),
             dirty_sections: Vec::new(),
             measured_sections: Vec::new(),

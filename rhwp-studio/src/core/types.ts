@@ -575,6 +575,15 @@ export interface ReplaceResult {
   newLength?: number;
 }
 
+/** 단일 치환 (검색어 기반) 결과 */
+export interface ReplaceOneResult {
+  ok: boolean;
+  sec?: number;
+  para?: number;
+  charOffset?: number;
+  newLength?: number;
+}
+
 /** 전체 치환 결과 */
 export interface ReplaceAllResult {
   ok: boolean;

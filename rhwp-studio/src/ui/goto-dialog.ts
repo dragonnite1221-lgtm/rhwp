@@ -107,7 +107,7 @@ export class GotoDialog extends ModalDialog {
   }
 
   private refreshBookmarks(): void {
-    this.bookmarkList.innerHTML = '';
+    this.bookmarkList.replaceChildren();
     this.selectedBookmark = null;
     const bookmarks = this.services.wasm.getBookmarks();
     if (bookmarks.length === 0) {

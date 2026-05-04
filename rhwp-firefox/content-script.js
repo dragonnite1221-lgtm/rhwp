@@ -43,7 +43,7 @@
 
   // ─── 유틸리티 ───
 
-  // DOM API로 안전하게 텍스트 요소 생성 (innerHTML 미사용 — H-01 XSS 방어)
+  // DOM API로 안전하게 텍스트 요소 생성 (H-01 XSS 방어)
   function createEl(tag, className, text) {
     const el = document.createElement(tag);
     if (className) el.className = className;
@@ -136,7 +136,7 @@
     const thumbnail = anchor.getAttribute('data-hwp-thumbnail');
 
     // 썸네일 영역 (사전 지정 또는 자동 추출 후 삽입)
-    // DOM API로 안전하게 생성 — innerHTML 미사용 (H-01 XSS 방어)
+    // DOM API로 안전하게 생성 (H-01 XSS 방어)
     const thumbContainer = document.createElement('div');
     if (thumbnail && isSafeImageUrl(thumbnail)) {
       insertThumbnailImg(thumbContainer, thumbnail);

@@ -217,7 +217,7 @@ export class BookmarkDialog {
     }
     // position은 이미 문서 순서대로 반환됨
 
-    this.listEl.innerHTML = '';
+    this.listEl.replaceChildren();
     this.selectedIdx = -1;
 
     if (this.bookmarks.length === 0) {

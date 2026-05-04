@@ -20,7 +20,7 @@ impl Paginator {
         section_index: usize,
         para_styles: &[crate::renderer::style_resolver::ResolvedParaStyle],
     ) -> PaginationResult {
-        self.paginate_with_measured_opts(paragraphs, measured, page_def, column_def, section_index, para_styles, false)
+        self.paginate_with_measured_opts(paragraphs, measured, page_def, column_def, section_index, para_styles, PaginationOpts::default())
     }
 
     pub fn paginate_with_measured_opts(
@@ -31,8 +31,10 @@ impl Paginator {
         column_def: &ColumnDef,
         section_index: usize,
         para_styles: &[crate::renderer::style_resolver::ResolvedParaStyle],
-        hide_empty_line: bool,
+        opts: PaginationOpts,
     ) -> PaginationResult {
+        let hide_empty_line = opts.hide_empty_line;
+        let respect_vpos_reset = opts.respect_vpos_reset;
         let layout = PageLayoutInfo::from_page_def(page_def, column_def, self.dpi);
         let measurer = HeightMeasurer::new(self.dpi);
 
@@ -60,6 +62,7 @@ impl Paginator {
         let mut wrap_around_cs: i32 = -1;  // -1 = 비활성
         let mut wrap_around_sw: i32 = -1;  // wrap zone의 segment_width
         let mut wrap_around_table_para: usize = 0;  // 어울림 표의 문단 인덱스
+        let mut wrap_around_any_seg: bool = false;  // true면 any_seg_matches만으로 어울림 판정
         let mut prev_pagination_para: Option<usize> = None;  // vpos 보정용 이전 문단
 
         // 고정값 줄간격 TAC 표 병행 (Task #9):
@@ -299,7 +302,7 @@ impl Paginator {
                 let sw0_match = wrap_around_sw == 0 && is_empty_para && para_sw > 0
                     && para_sw < body_w / 2;
                 if para_cs == wrap_around_cs && para_sw == wrap_around_sw
-                    || (any_seg_matches && is_empty_para)
+                    || (any_seg_matches && (is_empty_para || wrap_around_any_seg))
                     || sw0_match {
                     // 어울림 문단: 표 옆에 배치 — pagination에서 높이 소비 없이 기록
                     // (표가 이미 이 공간을 차지하고 있음)
@@ -314,6 +317,7 @@ impl Paginator {
                 } else {
                     wrap_around_cs = -1;
                     wrap_around_sw = -1;
+                    wrap_around_any_seg = false;
                 }
             }
 
@@ -321,7 +325,7 @@ impl Paginator {
             if !has_table {
                 self.paginate_text_lines(
                     &mut st, para_idx, para, measured, para_height,
-                    base_available_height,
+                    base_available_height, respect_vpos_reset,
                 );
             }
 
@@ -367,6 +371,28 @@ impl Paginator {
                         .map(|s| s.segment_width as i32)
                         .unwrap_or(0);
                     wrap_around_table_para = para_idx;
+                    wrap_around_any_seg = false;
+                }
+            }
+            // 비-TAC Picture Square wrap (어울림 그림): TABLE wrap과 동일 메커니즘.
+            // lineseg가 이미지 존 전후로 분할되어 첫 seg cs=0 일 수 있으므로
+            // wrap_around_any_seg=true 로 any_seg_matches만으로 후속 문단 판정 허용.
+            let has_non_tac_pic_square = para.controls.iter().any(|c| {
+                let cm = match c {
+                    Control::Picture(p) => Some(&p.common),
+                    Control::Shape(s) => if let crate::model::shape::ShapeObject::Picture(p) = s.as_ref() { Some(&p.common) } else { None },
+                    _ => None,
+                };
+                cm.map(|cm| !cm.treat_as_char && matches!(cm.text_wrap, crate::model::shape::TextWrap::Square)).unwrap_or(false)
+            });
+            if has_non_tac_pic_square {
+                let anchor_cs = para.line_segs.first().map(|s| s.column_start).unwrap_or(0);
+                let anchor_sw = para.line_segs.first().map(|s| s.segment_width as i32).unwrap_or(0);
+                if anchor_cs > 0 || anchor_sw > 0 {
+                    wrap_around_cs = anchor_cs;
+                    wrap_around_sw = anchor_sw;
+                    wrap_around_table_para = para_idx;
+                    wrap_around_any_seg = true;
                 }
             }
 
@@ -586,11 +612,25 @@ impl Paginator {
         measured: &MeasuredSection,
         para_height: f64,
         base_available_height: f64,
+        respect_vpos_reset: bool,
     ) {
         let available_now = st.available_height();
 
+        // LINE_SEG vpos-reset 강제 분리 지점 검출 (line>0 && vertical_pos==0)
+        // 옵션 on + multicolumn이 아닌 경우에만 적용. multicolumn은 column-break 메커니즘 우선.
+        let forced_breaks: Vec<usize> = if respect_vpos_reset {
+            para.line_segs.iter().enumerate()
+                .filter(|(i, ls)| *i > 0 && ls.vertical_pos == 0)
+                .map(|(i, _)| i)
+                .collect()
+        } else {
+            Vec::new()
+        };
+
         // 다단 레이아웃에서 문단 내 단 경계 감지
-        let col_breaks = if st.col_count > 1 && st.current_column == 0 && st.on_first_multicolumn_page {
+        // [Task #459] on_first_multicolumn_page 가드 제거: 다단 구역이 여러 페이지에 걸칠 때
+        // 후속 페이지에서도 LINE_SEG vpos-reset 으로 인코딩된 단 경계를 인식해야 함.
+        let col_breaks = if st.col_count > 1 && st.current_column == 0 {
             Self::detect_column_breaks_in_paragraph(para)
         } else {
             vec![0]
@@ -598,6 +638,8 @@ impl Paginator {
 
         if col_breaks.len() > 1 {
             self.paginate_multicolumn_paragraph(st, para_idx, para, measured, para_height, &col_breaks);
+        } else if !forced_breaks.is_empty() {
+            self.paginate_with_forced_breaks(st, para_idx, para, measured, &forced_breaks, base_available_height);
         } else if {
             // 문단 적합성 검사: trailing line_spacing 제외
             let trailing_ls = para.line_segs.last()
@@ -743,6 +785,123 @@ impl Paginator {
         }
     }
 
+    /// LINE_SEG vpos-reset에 의한 강제 분리 처리.
+    ///
+    /// HWP 파일이 LINE_SEG.vertical_pos=0 으로 표시한 단/페이지 경계를 존중하여,
+    /// 문단을 forced_breaks 위치에서 PartialParagraph로 분리하고 단/페이지를 진행한다.
+    ///
+    /// 각 세그먼트가 단일 단/페이지를 초과할 경우 자연 줄 분할로 fallback.
+    fn paginate_with_forced_breaks(
+        &self,
+        st: &mut PaginationState,
+        para_idx: usize,
+        para: &Paragraph,
+        measured: &MeasuredSection,
+        forced_breaks: &[usize],
+        base_available_height: f64,
+    ) {
+        let Some(mp) = measured.get_measured_paragraph(para_idx) else {
+            // 측정 정보 없음 → fallback FullParagraph
+            st.current_items.push(PageItem::FullParagraph { para_index: para_idx });
+            return;
+        };
+
+        let line_count = mp.line_heights.len();
+        if line_count == 0 {
+            st.current_items.push(PageItem::FullParagraph { para_index: para_idx });
+            return;
+        }
+
+        let sp_before = mp.spacing_before;
+        let sp_after = mp.spacing_after;
+
+        // 세그먼트 경계: [0, fb1, fb2, ..., line_count]
+        let mut boundaries: Vec<usize> = vec![0];
+        boundaries.extend(forced_breaks.iter().copied().filter(|&b| b > 0 && b < line_count));
+        boundaries.push(line_count);
+        boundaries.dedup();
+
+        for win_idx in 0..boundaries.len() - 1 {
+            let seg_start = boundaries[win_idx];
+            let seg_end = boundaries[win_idx + 1];
+            if seg_start >= seg_end { continue; }
+            let is_last_segment = win_idx + 2 == boundaries.len();
+
+            // 세그먼트 줄 단위 배치 (자연 분할 + forced break 결합)
+            let mut cursor_line = seg_start;
+            while cursor_line < seg_end {
+                let fn_margin = if st.current_footnote_height > 0.0 { st.footnote_safety_margin } else { 0.0 };
+                let page_avail = if cursor_line == seg_start && win_idx == 0 {
+                    (base_available_height - st.current_footnote_height - fn_margin - st.current_height - st.current_zone_y_offset).max(0.0)
+                } else {
+                    base_available_height
+                };
+
+                let sp_b = if cursor_line == 0 { sp_before } else { 0.0 };
+                let avail_for_lines = (page_avail - sp_b).max(0.0);
+
+                // 세그먼트 안에서만 줄 누적 (seg_end 초과 금지)
+                let mut cumulative = 0.0;
+                let mut end_line = cursor_line;
+                for li in cursor_line..seg_end {
+                    let content_h = mp.line_heights[li];
+                    if cumulative + content_h > avail_for_lines && li > cursor_line {
+                        break;
+                    }
+                    cumulative += mp.line_advance(li);
+                    end_line = li + 1;
+                }
+                if end_line <= cursor_line {
+                    end_line = cursor_line + 1;
+                }
+
+                let part_line_height: f64 = mp.line_advances_sum(cursor_line..end_line);
+                let part_sp_after = if end_line >= line_count { sp_after } else { 0.0 };
+                let part_height = sp_b + part_line_height + part_sp_after;
+
+                // 첫 줄도 안 들어가면 단/페이지 진행 후 재시도
+                let first_line_h = mp.line_heights.get(cursor_line).copied().unwrap_or(0.0);
+                let remaining_for_lines = (st.available_height() - st.current_height).max(0.0);
+                if (st.current_height >= st.available_height() || remaining_for_lines < first_line_h)
+                    && !st.current_items.is_empty()
+                {
+                    st.advance_column_or_new_page();
+                    continue;
+                }
+
+                // 세그먼트 전체가 한 번에 배치되었고 문단 전체이면 FullParagraph
+                if cursor_line == 0 && end_line >= line_count {
+                    st.current_items.push(PageItem::FullParagraph { para_index: para_idx });
+                } else {
+                    st.current_items.push(PageItem::PartialParagraph {
+                        para_index: para_idx,
+                        start_line: cursor_line,
+                        end_line,
+                    });
+                }
+
+                if st.page_vpos_base.is_none() {
+                    if let Some(seg) = para.line_segs.get(cursor_line) {
+                        st.page_vpos_base = Some(seg.vertical_pos);
+                    }
+                }
+                st.current_height += part_height;
+
+                cursor_line = end_line;
+
+                if cursor_line < seg_end {
+                    // 세그먼트 내부 자연 분할 → 다음 단/페이지
+                    st.advance_column_or_new_page();
+                }
+            }
+
+            // 세그먼트 종료 시점이 마지막이 아니면 강제 분리 (vpos-reset)
+            if !is_last_segment {
+                st.advance_column_or_new_page();
+            }
+        }
+    }
+
     /// 다단 문단의 단별 PartialParagraph 분할
     fn paginate_multicolumn_paragraph(
         &self,
@@ -850,10 +1009,37 @@ impl Paginator {
                     );
                 }
                 Control::Shape(shape_obj) => {
-                    st.current_items.push(PageItem::Shape {
+                    // [Issue #476] treat_as_char Shape 는 박스가 속한 line 이 라우팅된 페이지/단에 등록.
+                    // paragraph 가 페이지 분할되면 process_controls 시점에 st.current_items 는 마지막
+                    // 페이지 상태이므로, 그대로 push 하면 박스가 잘못된 페이지에 떠 있게 된다.
+                    let routed = if shape_obj.common().treat_as_char {
+                        super::find_inline_control_target_page(
+                            &st.pages, &st.current_items, para_idx, ctrl_idx, para,
+                        )
+                    } else {
+                        None
+                    };
+                    let item = PageItem::Shape {
                         para_index: para_idx,
                         control_index: ctrl_idx,
-                    });
+                    };
+                    match routed {
+                        Some((page_idx, col_idx)) => {
+                            // 이전 페이지의 해당 단 items 에 직접 push
+                            if let Some(page) = st.pages.get_mut(page_idx) {
+                                if let Some(col) = page.column_contents.get_mut(col_idx) {
+                                    col.items.push(item);
+                                } else {
+                                    st.current_items.push(item);
+                                }
+                            } else {
+                                st.current_items.push(item);
+                            }
+                        }
+                        None => {
+                            st.current_items.push(item);
+                        }
+                    }
                     // 글상자 내 각주 수집
                     if let Some(text_box) = shape_obj.drawing().and_then(|d| d.text_box.as_ref()) {
                         for (tp_idx, tp) in text_box.paragraphs.iter().enumerate() {
@@ -1106,7 +1292,12 @@ impl Paginator {
             // 피트 판단식: current_height + effective_table_height <= available
             // 이를 만족하도록 effective_table_height = abs_bottom - current_height
             let abs_bottom = para_start_height + v_off + effective_height + host_spacing;
-            (abs_bottom - st.current_height).max(effective_height + host_spacing)
+            if abs_bottom <= base_available_height + 0.5 {
+                // 표가 body 범위 내에 완전히 들어옴 → flow height 기여 없음
+                0.0
+            } else {
+                (abs_bottom - st.current_height).max(effective_height + host_spacing)
+            }
         } else {
             table_total_height
         };
@@ -1351,13 +1542,29 @@ impl Paginator {
         };
         let remaining_on_page = table_available_height - st.current_height - host_text_height - v_offset_px;
 
-        let first_row_h = if row_count > 0 { mt.row_heights[0] } else { 0.0 };
+        // Task #398 v2: 보호 블록(2~3 rows)만 블록 단위 advance.
+        // 큰 rowspan(>3)은 행 단위 분할 허용 (HanCom-compat).
+        let (first_block_start, first_block_end, first_block_h) = if row_count > 0 {
+            mt.row_block_for(0)
+        } else { (0, 0, 0.0) };
+        let first_block_size = first_block_end.saturating_sub(first_block_start);
+        let first_block_is_single_row = first_block_size == 1;
+        // [Task #474] RowBreak 표는 보호 블록 정책 비적용 (HWP 행 경계 분할 정책 정합)
+        let first_block_protected = !mt.allows_row_break_split()
+            && first_block_size >= 2
+            && first_block_size <= crate::renderer::height_measurer::BLOCK_UNIT_MAX_ROWS;
         let can_intra_split_early = !mt.cells.is_empty();
+        let split_unit_h = if first_block_protected {
+            first_block_h
+        } else {
+            mt.row_heights.first().copied().unwrap_or(0.0)
+        };
 
-        if remaining_on_page < first_row_h && !st.current_items.is_empty() {
-            // 첫 행이 인트라-로우 분할 가능하고 남은 공간에 최소 콘텐츠가 들어갈 수 있으면
-            // 현재 페이지에서 분할 시도 (새 페이지로 밀지 않음)
-            let first_row_splittable = can_intra_split_early && mt.is_row_splittable(0);
+        if remaining_on_page < split_unit_h && !st.current_items.is_empty() {
+            // 인트라-로우 분할은 단일 행 또는 큰 블록(>3)에서만 시도. 보호 블록은 묶음 단위 advance.
+            let first_row_splittable = (first_block_is_single_row || !first_block_protected)
+                && can_intra_split_early
+                && mt.is_row_splittable(0);
             let min_content = if first_row_splittable {
                 mt.min_first_line_height_for_row(0, 0.0) + mt.max_padding_for_row(0)
             } else {
@@ -1465,11 +1672,25 @@ impl Paginator {
             {
                 const MIN_SPLIT_CONTENT_PX: f64 = 10.0;
 
-                let approx_end = mt.find_break_row(avail_for_rows, cursor_row, effective_first_row_h);
+                let approx_end_raw = mt.find_break_row(avail_for_rows, cursor_row, effective_first_row_h);
+                // Task #398: rowspan 묶음 중간에서 잘리지 않도록 블록 경계로 스냅
+                let approx_end = mt.snap_to_block_boundary(approx_end_raw);
+
+                // cursor_row가 속한 블록 정보 (인트라-로우 분할 가드)
+                let (cur_b_start, cur_b_end, _) = mt.row_block_for(cursor_row);
+                let cur_block_size = cur_b_end.saturating_sub(cur_b_start);
+                let cur_block_single = cur_block_size == 1;
+                // [Task #474] RowBreak 표는 보호 블록 정책 비적용
+                let cur_block_protected = !mt.allows_row_break_split()
+                    && cur_block_size >= 2
+                    && cur_block_size <= crate::renderer::height_measurer::BLOCK_UNIT_MAX_ROWS;
+                // 큰 블록(>3) 또는 단일 행은 분할 가능; 보호 블록(2~3)은 분할 불가
+                let cur_can_intra_split = (cur_block_single || !cur_block_protected) && can_intra_split;
 
                 if approx_end <= cursor_row {
                     let r = cursor_row;
-                    let splittable = can_intra_split && mt.is_row_splittable(r);
+                    // 인트라-로우 분할은 보호 블록(2~3)이 아닌 경우 (단일 행 또는 큰 블록>3) 허용
+                    let splittable = cur_can_intra_split && mt.is_row_splittable(r);
                     if splittable {
                         let padding = mt.max_padding_for_row(r);
                         let avail_content = (avail_for_rows - padding).max(0.0);
@@ -1485,7 +1706,7 @@ impl Paginator {
                         } else {
                             end_row = r + 1;
                         }
-                    } else if can_intra_split && effective_first_row_h > avail_for_rows {
+                    } else if cur_can_intra_split && effective_first_row_h > avail_for_rows {
                         // 행이 분할 불가능하지만 페이지보다 클 때: 가용 높이에 맞춰 강제 분할
                         let padding = mt.max_padding_for_row(r);
                         let avail_content = (avail_for_rows - padding).max(0.0);
@@ -1495,6 +1716,9 @@ impl Paginator {
                         } else {
                             end_row = r + 1;
                         }
+                    } else if cur_block_protected {
+                        // Task #398: 보호 블록(2~3 rows)이 들어가지 않으면 블록 전체 배치.
+                        end_row = cur_b_end;
                     } else {
                         end_row = r + 1;
                     }
@@ -1508,7 +1732,16 @@ impl Paginator {
                     };
                     let range_h = mt.range_height(cursor_row, approx_end) - delta;
                     let remaining_avail = avail_for_rows - range_h;
-                    if can_intra_split && mt.is_row_splittable(r) {
+                    // Task #398 v2: 분할 후보 r의 블록 보호 검사 (보호 블록만 분할 차단)
+                    let (next_b_start, next_b_end, _) = mt.row_block_for(r);
+                    let next_block_size = next_b_end.saturating_sub(next_b_start);
+                    let next_block_single = next_block_size == 1;
+                    // [Task #474] RowBreak 표는 보호 블록 정책 비적용
+                    let next_block_protected = !mt.allows_row_break_split()
+                        && next_block_size >= 2
+                        && next_block_size <= crate::renderer::height_measurer::BLOCK_UNIT_MAX_ROWS;
+                    let next_can_intra_split = (next_block_single || !next_block_protected) && can_intra_split;
+                    if next_can_intra_split && mt.is_row_splittable(r) {
                         let row_cs = cs;
                         let padding = mt.max_padding_for_row(r);
                         let avail_content_for_r = (remaining_avail - row_cs - padding).max(0.0);
@@ -1522,9 +1755,10 @@ impl Paginator {
                             end_row = r + 1;
                             split_end_limit = avail_content_for_r;
                         }
-                    } else if can_intra_split && mt.row_heights[r] > base_available_height {
+                    } else if next_can_intra_split && mt.row_heights[r] > base_available_height {
                         // 행이 splittable=false이지만 전체 페이지 가용높이보다 큰 경우:
-                        // 다음 페이지로 넘겨도 들어가지 않으므로 가용 공간에 맞춰 강제 intra-row split
+                        // 다음 페이지로 넘겨도 들어가지 않으므로 가용 공간에 맞춰 강제 intra-row split.
+                        // Task #398: 단일 행 블록에서만 적용 (rowspan 묶음 보호).
                         let row_cs = cs;
                         let padding = mt.max_padding_for_row(r);
                         let avail_content_for_r = (remaining_avail - row_cs - padding).max(0.0);
@@ -1648,8 +1882,8 @@ impl Paginator {
         new_page_numbers: &[(usize, u16)],
         _section_index: usize,
     ) {
-        let mut page_num_counter: u32 = 1;
-        let mut prev_page_last_para: usize = 0;
+        // 쪽번호: PageNumberAssigner 가 NewNumber 1회 적용 + 단조 증가를 보장 (Issue #353)
+        let mut assigner = crate::renderer::page_number::PageNumberAssigner::new(new_page_numbers, 1);
         // 머리말/꼬리말은 한번 설정되면 이후 페이지에도 유지 (누적)
         let mut header_both: Option<HeaderFooterRef> = None;
         let mut header_even: Option<HeaderFooterRef> = None;
@@ -1709,16 +1943,10 @@ impl Paginator {
                 }
             }
 
-            for (para_idx, new_num) in new_page_numbers {
-                if *para_idx > prev_page_last_para || i == 0 {
-                    if *para_idx <= page_last_para {
-                        page_num_counter = *new_num as u32;
-                    }
-                }
-            }
-            page.page_number = page_num_counter;
+            let page_num_u32 = assigner.assign(page);
+            page.page_number = page_num_u32;
 
-            let page_num = page_num_counter as usize;
+            let page_num = page_num_u32 as usize;
             let is_odd = page_num % 2 == 1;
 
             page.active_header = if is_odd {
@@ -1743,8 +1971,7 @@ impl Paginator {
                 }
             }
 
-            prev_page_last_para = page_last_para;
-            page_num_counter += 1;
+            let _ = page_last_para;
         }
     }
 

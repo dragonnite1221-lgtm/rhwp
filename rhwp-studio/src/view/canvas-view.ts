@@ -258,7 +258,7 @@ export class CanvasView {
     this.canvasPool.releaseAll();
     this.currentVisiblePages = [];
     this.pages = [];
-    this.scrollContent.innerHTML = '';
+    this.scrollContent.replaceChildren();
   }
 
   /** 전체 정리 */

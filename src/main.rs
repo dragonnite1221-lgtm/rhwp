@@ -10,6 +10,8 @@ fn main() {
         Some("--version") | Some("-V") => println!("rhwp v{}", rhwp::version()),
         Some("export-svg") => export_svg(&args[2..]),
         Some("export-pdf") => export_pdf(&args[2..]),
+        Some("export-text") => export_text(&args[2..]),
+        Some("export-markdown") => export_markdown(&args[2..]),
         Some("info") => show_info(&args[2..]),
         Some("dump") => dump_controls(&args[2..]),
         Some("dump-pages") => dump_pages(&args[2..]),
@@ -19,6 +21,7 @@ fn main() {
         Some("test-shape") => test_shape_roundtrip(&args[2..]),
         Some("test-caption") => test_caption(&args[2..]),
         Some("gen-table") => gen_table(&args[2..]),
+        Some("gen-pua") => gen_pua_test(&args[2..]),
         Some("test-field") => test_field_roundtrip(&args[2..]),
         Some("ir-diff") => ir_diff(&args[2..]),
         Some("thumbnail") => extract_thumbnail(&args[2..]),
@@ -44,19 +47,31 @@ fn print_help() {
     println!("      --show-para-marks       문단부호(↵/↓) 표시");
     println!("      --show-control-codes    조판부호 보이기 (문단부호 + 개체 마커 등)");
     println!("      --debug-overlay         디버그 오버레이 (문단/표 경계 + 인덱스 라벨)");
+    println!("      --respect-vpos-reset    LINE_SEG vpos=0 리셋을 단/페이지 강제 경계로 처리");
     println!("      --show-grid             1mm 격자 오버레이 (레이아웃 디버깅용)");
     println!("      --font-style            @font-face local() 참조 삽입 (폰트 데이터 미포함)");
     println!("      --embed-fonts           폰트 서브셋 임베딩 (사용 글자만 base64)");
     println!("      --embed-fonts=full      폰트 전체 임베딩 (base64)");
     println!("      --font-path <경로>      폰트 파일 탐색 경로 (여러 번 지정 가능)");
     println!();
+    println!("  export-text <파일.hwp> [옵션]");
+    println!("      페이지별 텍스트를 TXT로 내보내기");
+    println!();
+    println!("      -o, --output <폴더>     출력 폴더 (기본: output/)");
+    println!("      -p, --page <번호>       특정 페이지만 내보내기 (0부터 시작)");
+    println!();
+    println!("  export-markdown <파일.hwp> [옵션]");
+    println!("      페이지별 텍스트를 Markdown(.md)으로 내보내기");
+    println!();
+    println!("      -o, --output <폴더>     출력 폴더 (기본: output/)");
+    println!("      -p, --page <번호>       특정 페이지만 내보내기 (0부터 시작)");
     println!("  info <파일.hwp>");
     println!("      HWP 파일 정보 표시");
     println!();
     println!("  dump <파일.hwp> [--section <번호>] [--para <번호>]");
     println!("      문서 조판부호 구조 덤프 (디버깅용)");
     println!();
-    println!("  dump-pages <파일.hwp> [-p <번호>]");
+    println!("  dump-pages <파일.hwp> [-p <번호>] [--respect-vpos-reset]");
     println!("      페이지네이션 결과 덤프 (페이지별 문단/표 배치 목록)");
     println!();
     println!("  diag <파일.hwp>");
@@ -94,6 +109,7 @@ fn export_svg(args: &[String]) {
     let mut show_control_codes = false;
     let mut debug_overlay = false;
     let mut show_grid = false;
+    let mut respect_vpos_reset = false;
     let mut font_embed_mode = rhwp::renderer::svg::FontEmbedMode::None;
     let mut font_paths: Vec<std::path::PathBuf> = Vec::new();
 
@@ -134,6 +150,10 @@ fn export_svg(args: &[String]) {
             }
             "--debug-overlay" => {
                 debug_overlay = true;
+                i += 1;
+            }
+            "--respect-vpos-reset" => {
+                respect_vpos_reset = true;
                 i += 1;
             }
             "--show-grid" => {
@@ -194,6 +214,9 @@ fn export_svg(args: &[String]) {
     }
     if debug_overlay {
         doc.set_debug_overlay(true);
+    }
+    if respect_vpos_reset {
+        doc.set_respect_vpos_reset(true);
     }
 
     let page_count = doc.page_count();
@@ -457,6 +480,391 @@ fn export_pdf(args: &[String]) {
     println!("PDF 내보내기 완료");
 }
 
+fn export_text(args: &[String]) {
+    if args.is_empty() {
+        eprintln!("오류: HWP 파일 경로를 지정해주세요.");
+        eprintln!("사용법: rhwp export-text <파일.hwp> [옵션] (rhwp --help 참조)");
+        return;
+    }
+
+    let file_path = &args[0];
+    let mut output_dir = "output".to_string();
+    let mut target_page: Option<u32> = None;
+
+    let mut i = 1;
+    while i < args.len() {
+        match args[i].as_str() {
+            "--output" | "-o" => {
+                if i + 1 < args.len() {
+                    output_dir = args[i + 1].clone();
+                    i += 2;
+                } else {
+                    eprintln!("오류: --output 뒤에 폴더 경로가 필요합니다.");
+                    return;
+                }
+            }
+            "--page" | "-p" => {
+                if i + 1 < args.len() {
+                    match args[i + 1].parse::<u32>() {
+                        Ok(n) => target_page = Some(n),
+                        Err(_) => {
+                            eprintln!("오류: 페이지 번호가 올바르지 않습니다.");
+                            return;
+                        }
+                    }
+                    i += 2;
+                } else {
+                    eprintln!("오류: --page 뒤에 페이지 번호가 필요합니다.");
+                    return;
+                }
+            }
+            _ => {
+                eprintln!("알 수 없는 옵션: {}", args[i]);
+                i += 1;
+            }
+        }
+    }
+
+    let data = match fs::read(file_path) {
+        Ok(d) => d,
+        Err(e) => {
+            eprintln!("오류: 파일을 읽을 수 없습니다 - {}: {}", file_path, e);
+            return;
+        }
+    };
+
+    let doc = match rhwp::wasm_api::HwpDocument::from_bytes(&data) {
+        Ok(d) => d,
+        Err(e) => {
+            eprintln!("오류: HWP 파싱 실패 - {}", e);
+            return;
+        }
+    };
+
+    let page_count = doc.page_count();
+    println!("문서 로드 완료: {} ({}페이지)", file_path, page_count);
+    if page_count == 0 {
+        eprintln!("오류: 문서에 페이지가 없습니다.");
+        return;
+    }
+
+    let output_path = Path::new(&output_dir);
+    if !output_path.exists() {
+        if let Err(e) = fs::create_dir_all(output_path) {
+            eprintln!("오류: 출력 폴더를 생성할 수 없습니다 - {}: {}", output_dir, e);
+            return;
+        }
+    }
+
+    let pages: Vec<u32> = match target_page {
+        Some(p) => {
+            if p >= page_count {
+                eprintln!("오류: 페이지 번호가 범위를 벗어났습니다 (0~{})", page_count - 1);
+                return;
+            }
+            vec![p]
+        }
+        None => (0..page_count).collect(),
+    };
+
+    let file_stem = Path::new(file_path)
+        .file_stem()
+        .and_then(|s| s.to_str())
+        .unwrap_or("page");
+
+    for page_num in &pages {
+        match doc.extract_page_text_native(*page_num) {
+            Ok(mut text) => {
+                if !text.ends_with('\n') {
+                    text.push('\n');
+                }
+
+                let txt_filename = if page_count == 1 {
+                    format!("{}.txt", file_stem)
+                } else {
+                    format!("{}_{:03}.txt", file_stem, page_num + 1)
+                };
+                let txt_path = output_path.join(&txt_filename);
+
+                match fs::write(&txt_path, text.as_bytes()) {
+                    Ok(_) => println!("  → {}", txt_path.display()),
+                    Err(e) => eprintln!("오류: TXT 저장 실패 - {}: {}", txt_path.display(), e),
+                }
+            }
+            Err(e) => {
+                eprintln!("오류: 페이지 {} 텍스트 추출 실패 - {:?}", page_num, e);
+            }
+        }
+    }
+
+    println!("텍스트 내보내기 완료: {}개 TXT 파일 → {}/", pages.len(), output_dir);
+}
+
+fn export_markdown(args: &[String]) {
+    if args.is_empty() {
+        eprintln!("오류: HWP 파일 경로를 지정해주세요.");
+        eprintln!("사용법: rhwp export-markdown <파일.hwp> [옵션] (rhwp --help 참조)");
+        return;
+    }
+
+    let file_path = &args[0];
+    let mut output_dir = "output".to_string();
+    let mut target_page: Option<u32> = None;
+
+    let mut i = 1;
+    while i < args.len() {
+        match args[i].as_str() {
+            "--output" | "-o" => {
+                if i + 1 < args.len() {
+                    output_dir = args[i + 1].clone();
+                    i += 2;
+                } else {
+                    eprintln!("오류: --output 뒤에 폴더 경로가 필요합니다.");
+                    return;
+                }
+            }
+            "--page" | "-p" => {
+                if i + 1 < args.len() {
+                    match args[i + 1].parse::<u32>() {
+                        Ok(n) => target_page = Some(n),
+                        Err(_) => {
+                            eprintln!("오류: 페이지 번호가 올바르지 않습니다.");
+                            return;
+                        }
+                    }
+                    i += 2;
+                } else {
+                    eprintln!("오류: --page 뒤에 페이지 번호가 필요합니다.");
+                    return;
+                }
+            }
+            _ => {
+                eprintln!("알 수 없는 옵션: {}", args[i]);
+                i += 1;
+            }
+        }
+    }
+
+    let data = match fs::read(file_path) {
+        Ok(d) => d,
+        Err(e) => {
+            eprintln!("오류: 파일을 읽을 수 없습니다 - {}: {}", file_path, e);
+            return;
+        }
+    };
+
+    let doc = match rhwp::wasm_api::HwpDocument::from_bytes(&data) {
+        Ok(d) => d,
+        Err(e) => {
+            eprintln!("오류: HWP 파싱 실패 - {}", e);
+            return;
+        }
+    };
+
+    let page_count = doc.page_count();
+    println!("문서 로드 완료: {} ({}페이지)", file_path, page_count);
+    if page_count == 0 {
+        eprintln!("오류: 문서에 페이지가 없습니다.");
+        return;
+    }
+
+    let output_path = Path::new(&output_dir);
+    if !output_path.exists() {
+        if let Err(e) = fs::create_dir_all(output_path) {
+            eprintln!("오류: 출력 폴더를 생성할 수 없습니다 - {}: {}", output_dir, e);
+            return;
+        }
+    }
+
+    let pages: Vec<u32> = match target_page {
+        Some(p) => {
+            if p >= page_count {
+                eprintln!("오류: 페이지 번호가 범위를 벗어났습니다 (0~{})", page_count - 1);
+                return;
+            }
+            vec![p]
+        }
+        None => (0..page_count).collect(),
+    };
+
+    let file_stem = Path::new(file_path)
+        .file_stem()
+        .and_then(|s| s.to_str())
+        .unwrap_or("page");
+
+    let assets_dir_name = format!("{}_assets", file_stem);
+    let assets_dir_path = output_path.join(&assets_dir_name);
+    let mut written_image_count: usize = 0;
+
+    let mime_to_ext = |mime: &str| -> &'static str {
+        match mime {
+            "image/png" => "png",
+            "image/jpeg" => "jpg",
+            "image/gif" => "gif",
+            "image/bmp" => "bmp",
+            "image/webp" => "webp",
+            _ => "bin",
+        }
+    };
+
+    for page_num in &pages {
+        match doc.extract_page_markdown_with_images_native(*page_num) {
+            Ok((mut markdown, image_refs)) => {
+                for (img_idx, (sec_idx, para_idx, control_idx, bin_data_id)) in
+                    image_refs.iter().enumerate()
+                {
+                    let token = format!("[[RHWP_IMAGE:{}]]", img_idx + 1);
+
+                    let try_control = match (sec_idx, para_idx, control_idx) {
+                        (Some(si), Some(pi), Some(ci)) => Some((*si, *pi, *ci)),
+                        _ => None,
+                    };
+
+                    let (mime, image_data) = if let Some((si, pi, ci)) = try_control {
+                        match (
+                            doc.get_control_image_mime_native(si, pi, ci),
+                            doc.get_control_image_data_native(si, pi, ci),
+                        ) {
+                            (Ok(m), Ok(d)) => (m, d),
+                            _ => {
+                                if *bin_data_id == 0 {
+                                    eprintln!(
+                                        "경고: 페이지 {} 이미지 추출 실패 (s{} p{} c{}), fallback bin_data_id 없음",
+                                        page_num, si, pi, ci
+                                    );
+                                    markdown = markdown.replace(&token, "");
+                                    continue;
+                                }
+                                let fb_mime = match doc.get_bin_data_image_mime_native(*bin_data_id) {
+                                    Ok(m) => m,
+                                    Err(e) => {
+                                        eprintln!(
+                                            "경고: 페이지 {} 이미지 MIME fallback 실패 (bin={}): {:?}",
+                                            page_num, bin_data_id, e
+                                        );
+                                        markdown = markdown.replace(&token, "");
+                                        continue;
+                                    }
+                                };
+                                let fb_data = match doc.get_bin_data_image_data_native(*bin_data_id) {
+                                    Ok(d) => d,
+                                    Err(e) => {
+                                        eprintln!(
+                                            "경고: 페이지 {} 이미지 데이터 fallback 실패 (bin={}): {:?}",
+                                            page_num, bin_data_id, e
+                                        );
+                                        markdown = markdown.replace(&token, "");
+                                        continue;
+                                    }
+                                };
+                                (fb_mime, fb_data)
+                            }
+                        }
+                    } else {
+                        if *bin_data_id == 0 {
+                            eprintln!(
+                                "경고: 페이지 {} 이미지 추출 실패 (문서 좌표 없음, bin_data_id=0)",
+                                page_num
+                            );
+                            markdown = markdown.replace(&token, "");
+                            continue;
+                        }
+                        let fb_mime = match doc.get_bin_data_image_mime_native(*bin_data_id) {
+                            Ok(m) => m,
+                            Err(e) => {
+                                eprintln!(
+                                    "경고: 페이지 {} 이미지 MIME fallback 실패 (bin={}): {:?}",
+                                    page_num, bin_data_id, e
+                                );
+                                markdown = markdown.replace(&token, "");
+                                continue;
+                            }
+                        };
+                        let fb_data = match doc.get_bin_data_image_data_native(*bin_data_id) {
+                            Ok(d) => d,
+                            Err(e) => {
+                                eprintln!(
+                                    "경고: 페이지 {} 이미지 데이터 fallback 실패 (bin={}): {:?}",
+                                    page_num, bin_data_id, e
+                                );
+                                markdown = markdown.replace(&token, "");
+                                continue;
+                            }
+                        };
+                        (fb_mime, fb_data)
+                    };
+
+                    if !assets_dir_path.exists() {
+                        if let Err(e) = fs::create_dir_all(&assets_dir_path) {
+                            eprintln!(
+                                "오류: 이미지 출력 폴더 생성 실패 - {}: {}",
+                                assets_dir_path.display(),
+                                e
+                            );
+                            markdown = markdown.replace(&token, "");
+                            continue;
+                        }
+                    }
+
+                    let ext = mime_to_ext(&mime);
+                    let image_filename = format!(
+                        "{}_p{:03}_img{:03}.{}",
+                        file_stem,
+                        page_num + 1,
+                        img_idx + 1,
+                        ext
+                    );
+                    let image_path = assets_dir_path.join(&image_filename);
+
+                    if let Err(e) = fs::write(&image_path, &image_data) {
+                        eprintln!(
+                            "경고: 이미지 저장 실패 - {}: {}",
+                            image_path.display(),
+                            e
+                        );
+                        markdown = markdown.replace(&token, "");
+                        continue;
+                    }
+
+                    let image_link = format!("![image {}]({}/{})", img_idx + 1, assets_dir_name, image_filename);
+                    markdown = markdown.replace(&token, &image_link);
+                    written_image_count += 1;
+                }
+
+                if !markdown.ends_with('\n') {
+                    markdown.push('\n');
+                }
+
+                let md_filename = if page_count == 1 {
+                    format!("{}.md", file_stem)
+                } else {
+                    format!("{}_{:03}.md", file_stem, page_num + 1)
+                };
+                let md_path = output_path.join(&md_filename);
+
+                match fs::write(&md_path, markdown.as_bytes()) {
+                    Ok(_) => println!("  → {}", md_path.display()),
+                    Err(e) => eprintln!("오류: Markdown 저장 실패 - {}: {}", md_path.display(), e),
+                }
+            }
+            Err(e) => {
+                eprintln!("오류: 페이지 {} Markdown 생성 실패 - {:?}", page_num, e);
+            }
+        }
+    }
+
+    if written_image_count > 0 {
+        println!(
+            "Markdown 내보내기 완료: {}개 MD 파일, {}개 이미지 → {}/",
+            pages.len(),
+            written_image_count,
+            output_dir
+        );
+    } else {
+        println!("Markdown 내보내기 완료: {}개 MD 파일 → {}/", pages.len(), output_dir);
+    }
+}
+
 fn show_info(args: &[String]) {
     if args.is_empty() {
         eprintln!("오류: HWP 파일 경로를 지정해주세요.");
@@ -682,6 +1090,7 @@ fn dump_pages(args: &[String]) {
 
     let file_path = &args[0];
     let mut target_page: Option<u32> = None;
+    let mut respect_vpos_reset = false;
 
     let mut i = 1;
     while i < args.len() {
@@ -691,6 +1100,10 @@ fn dump_pages(args: &[String]) {
                     target_page = args[i + 1].parse().ok();
                     i += 2;
                 } else { i += 1; }
+            }
+            "--respect-vpos-reset" => {
+                respect_vpos_reset = true;
+                i += 1;
             }
             _ => { i += 1; }
         }
@@ -704,13 +1117,17 @@ fn dump_pages(args: &[String]) {
         }
     };
 
-    let doc = match rhwp::wasm_api::HwpDocument::from_bytes(&data) {
+    let mut doc = match rhwp::wasm_api::HwpDocument::from_bytes(&data) {
         Ok(d) => d,
         Err(e) => {
             eprintln!("오류: HWP 파싱 실패 - {}", e);
             return;
         }
     };
+
+    if respect_vpos_reset {
+        doc.set_respect_vpos_reset(true);
+    }
 
     println!("문서 로드: {} ({}페이지)", file_path, doc.page_count());
     print!("{}", doc.dump_page_items(target_page));
@@ -818,11 +1235,11 @@ fn dump_controls(args: &[String]) {
     let dump_common = |c: &rhwp::model::shape::CommonObjAttr, indent: &str| {
         println!("{}  크기: {:.1}mm × {:.1}mm ({}×{} HU)",
             indent, hu_to_mm(c.width), hu_to_mm(c.height), c.width, c.height);
-        println!("{}  위치: 가로={} 오프셋={:.1}mm({}), 세로={} 오프셋={:.1}mm({})",
+        println!("{}  위치: 가로={} 오프셋={:.1}mm({}) 정렬={:?}, 세로={} 오프셋={:.1}mm({}) 정렬={:?}",
             indent, horz_str(&c.horz_rel_to),
-            hu_to_mm(c.horizontal_offset), c.horizontal_offset,
+            hu_to_mm(c.horizontal_offset), c.horizontal_offset, c.horz_align,
             vert_str(&c.vert_rel_to),
-            hu_to_mm(c.vertical_offset), c.vertical_offset);
+            hu_to_mm(c.vertical_offset), c.vertical_offset, c.vert_align);
         println!("{}  배치: {}, 글자처럼={}, z={}",
             indent, wrap_str(&c.text_wrap), c.treat_as_char, c.z_order);
     };
@@ -934,6 +1351,16 @@ fn dump_controls(args: &[String]) {
                 dump_common_fn(&p.common, indent);
                 dump_sa_fn(&p.shape_attr, indent);
             }
+            ShapeObject::Chart(c) => {
+                println!("{}[차트] type={:?} series={} raw_chart_data={}B", indent, c.chart_type, c.series.len(), c.raw_chart_data.len());
+                dump_common_fn(&c.common, indent);
+                dump_sa_fn(&c.drawing.shape_attr, indent);
+            }
+            ShapeObject::Ole(o) => {
+                println!("{}[OLE] bin_data_id={} extent={}x{} flags=0x{:02X} raw={}B", indent, o.bin_data_id, o.extent_x, o.extent_y, o.flags, o.raw_tag_data.len());
+                dump_common_fn(&o.common, indent);
+                dump_sa_fn(&o.drawing.shape_attr, indent);
+            }
         }
     }
 
@@ -1000,7 +1427,10 @@ fn dump_controls(args: &[String]) {
                                 }
                                 desc
                             }
-                            Control::Picture(p) => format!("그림(bin_id={}, w={}, h={}, tac={})", p.image_attr.bin_data_id, p.common.width, p.common.height, p.common.treat_as_char),
+                            Control::Picture(p) => {
+                                let wm = p.image_attr.watermark_preset().map(|s| format!(", watermark={}", s)).unwrap_or_default();
+                                format!("그림(bin_id={}, w={}, h={}, tac={}{})", p.image_attr.bin_data_id, p.common.width, p.common.height, p.common.treat_as_char, wm)
+                            },
                             Control::Header(_) => "머리말".to_string(),
                             Control::Footer(_) => "꼬리말".to_string(),
                             _ => format!("{:?}", std::mem::discriminant(ctrl)),
@@ -1214,18 +1644,24 @@ fn dump_controls(args: &[String]) {
                                     for (ci, ctrl) in cp.controls.iter().enumerate() {
                                         match ctrl {
                                             Control::Picture(p) => {
-                                                println!("{}    ctrl[{}] 그림: bin_id={}, w={} h={} ({:.1}×{:.1}mm), tac={}, wrap={:?}, vert={:?}(off={}), horz={:?}(off={})",
+                                                println!("{}    ctrl[{}] 그림: bin_id={}, w={} h={} ({:.1}×{:.1}mm), tac={}, wrap={:?}, vert={:?}(off={}), horz={:?}(off={}), orig={}×{}, cur={}×{}, crop=({},{},{},{})",
                                                     indent, ci, p.image_attr.bin_data_id,
                                                     p.common.width, p.common.height,
                                                     p.common.width as f64 / 7200.0 * 25.4,
                                                     p.common.height as f64 / 7200.0 * 25.4,
                                                     p.common.treat_as_char,
                                                     p.common.text_wrap, p.common.vert_rel_to, p.common.vertical_offset,
-                                                    p.common.horz_rel_to, p.common.horizontal_offset);
+                                                    p.common.horz_rel_to, p.common.horizontal_offset,
+                                                    p.shape_attr.original_width, p.shape_attr.original_height,
+                                                    p.shape_attr.current_width, p.shape_attr.current_height,
+                                                    p.crop.left, p.crop.top, p.crop.right, p.crop.bottom);
+                                                println!("{}      [image_attr] effect={:?} brightness={} contrast={} watermark={}",
+                                                    indent, p.image_attr.effect, p.image_attr.brightness, p.image_attr.contrast,
+                                                    p.image_attr.watermark_preset().unwrap_or("none"));
                                             }
                                             Control::Shape(s) => {
-                                                println!("{}    ctrl[{}] 도형: tac={}, wrap={:?}",
-                                                    indent, ci, s.common().treat_as_char, s.common().text_wrap);
+                                                println!("{}    ctrl[{}] {}: tac={}, wrap={:?}",
+                                                    indent, ci, s.shape_name(), s.common().treat_as_char, s.common().text_wrap);
                                             }
                                             _ => {}
                                         }
@@ -1262,6 +1698,9 @@ fn dump_controls(args: &[String]) {
                             sa.current_width, sa.current_height,
                             sa.current_width as f64 / 7200.0 * 25.4, sa.current_height as f64 / 7200.0 * 25.4,
                             pic.common.treat_as_char);
+                        println!("{}  [image_attr] effect={:?} brightness={} contrast={} watermark={}",
+                            prefix, pic.image_attr.effect, pic.image_attr.brightness, pic.image_attr.contrast,
+                            pic.image_attr.watermark_preset().unwrap_or("none"));
                         println!("{}  border_x={:?} border_y={:?} border_color=#{:06X} border_width={} ({:.2}mm) border_attr={:?}",
                             prefix, pic.border_x, pic.border_y,
                             pic.border_color, pic.border_width, pic.border_width as f64 / 7200.0 * 25.4,
@@ -1832,14 +2271,106 @@ fn gen_table(args: &[String]) {
     println!("저장 완료: {} ({}행 × {}열)", output, rows, cols);
 }
 
+/// PUA (Private Use Area) 문자 셋트를 입력한 HWP 테스트 문서 생성.
+///
+/// Task #509 (PUA 회귀 정정) 의 한컴 정답지 확보용. 본 라이브러리가 발견한
+/// 14 샘플 광범위 PUA 코드포인트 18 종을 한 문서에 입력 → 한컴 편집기로 PDF
+/// 출력 + rhwp SVG 출력 시각 비교.
+///
+/// 사용:
+///   rhwp gen-pua [output_path]
+///   기본 출력: output/pua-test.hwp
+fn gen_pua_test(args: &[String]) {
+    let output = args.first().map(|s| s.as_str()).unwrap_or("output/pua-test.hwp");
+
+    println!("PUA 문자 셋트 입력 HWP 문서 생성 중...");
+
+    let mut core = rhwp::document_core::DocumentCore::new_empty();
+    core.create_blank_document_native().expect("빈 문서 생성 실패");
+
+    // PUA 코드포인트 셋트 (Task #509 Stage 1 의 14 샘플 광범위 통계 정합)
+    // (codepoint, 영역 분류, 사용 샘플, 본 라이브러리 현재 매핑)
+    let pua_set: &[(u32, &str, &str, &str)] = &[
+        // ── Basic PUA (0xF020~0xF0FF) — 매핑 표 적용 영역 ──
+        (0x0F076, "Basic",      "mel-001",      "❖ U+2756"),
+        (0x0F09F, "Basic",      "biz_plan",     "• U+2022"),
+        (0x0F0A0, "Basic",      "synam-001",    "▪ U+25AA"),
+        (0x0F0A7, "Basic",      "kps-ai",       "▪ U+25AA"),
+        (0x0F0E8, "Basic",      "kps-ai",       "(미정의)"),
+        (0x0F0F2, "Basic",      "KTX",          "⇩ U+21E9 (의도 정정 후보)"),
+        (0x0F0FE, "Basic",      "k-water-rfp",  "☑ U+2611"),
+        // ── Basic PUA — 매핑 표 외 영역 ──
+        (0x0F53A, "Basic-out",  "hwpspec",      "(매핑 표 외)"),
+        // ── Supplementary PUA-A (0xF0000~0xFFFFD) — 매핑 표 미지원 영역 ──
+        (0xF02B1, "Suppl-A",    "mel-001",      "(매핑 표 외)"),
+        (0xF02B2, "Suppl-A",    "mel-001",      "(매핑 표 외)"),
+        (0xF02B3, "Suppl-A",    "mel-001",      "(매핑 표 외)"),
+        (0xF02B4, "Suppl-A",    "mel-001",      "(매핑 표 외)"),
+        (0xF02B5, "Suppl-A",    "mel-001",      "(매핑 표 외)"),
+        (0xF02B6, "Suppl-A",    "mel-001",      "(매핑 표 외)"),
+        (0xF02B7, "Suppl-A",    "mel-001",      "(매핑 표 외)"),
+        (0xF02B8, "Suppl-A",    "mel-001",      "(매핑 표 외)"),
+        (0xF02B9, "Suppl-A",    "mel-001",      "(매핑 표 외)"),
+        (0xF02EF, "Suppl-A",    "KTX (회귀)",   "(매핑 표 외) ★"),
+    ];
+
+    println!("  PUA 코드포인트 {} 종 입력", pua_set.len());
+
+    core.begin_batch_native().expect("배치 시작 실패");
+
+    // 첫 paragraph (0번) 에 제목 입력
+    let title = "[PUA 회귀 검증 — Task #509]";
+    core.insert_text_native(0, 0, 0, title).expect("제목 입력 실패");
+
+    // 각 PUA 글자별로 paragraph 추가:
+    // "U+0F0F2 (Basic, KTX): {char}    ← 한컴 정답지 / rhwp 비교"
+    // 빈 paragraph 추가 + 텍스트 입력 패턴
+    for (i, &(cp, area, sample, mapping)) in pua_set.iter().enumerate() {
+        let pi = i + 1; // 0번은 제목, 1번부터 PUA paragraphs
+
+        // 새 paragraph 추가 (pi 위치에 새 문단 삽입)
+        core.insert_paragraph_native(0, pi)
+            .unwrap_or_else(|e| panic!("paragraph 추가 실패 (pi={}): {:?}", pi, e));
+
+        // PUA 글자 char 변환 (i32 unsafe 회피)
+        let pua_char = char::from_u32(cp)
+            .unwrap_or_else(|| panic!("invalid codepoint U+{:05X}", cp));
+
+        // 텍스트: "U+0F0F2 (Basic, KTX, ⇩ U+21E9 매핑): " + PUA + "  ← 한컴 PDF 글리프 정답지"
+        let text = format!(
+            "U+{:05X} ({}, {}, {}): {}  ← 한컴 PDF 정답지",
+            cp, area, sample, mapping, pua_char
+        );
+
+        core.insert_text_native(0, pi, 0, &text)
+            .unwrap_or_else(|e| panic!("텍스트 입력 실패 (pi={}): {:?}", pi, e));
+    }
+
+    core.end_batch_native().expect("배치 종료 실패");
+
+    // 저장
+    let bytes = core.export_hwp_native().expect("HWP 내보내기 실패");
+    let out_path = Path::new(output);
+    if let Some(parent) = out_path.parent() {
+        fs::create_dir_all(parent).ok();
+    }
+    fs::write(out_path, bytes).expect("파일 저장 실패");
+    println!("저장 완료: {} ({} 종 PUA)", output, pua_set.len());
+    println!();
+    println!("다음 단계:");
+    println!("  1. 한컴 2022 편집기에서 본 파일 열기 → PDF 출력 (정답지)");
+    println!("  2. rhwp export-svg {} → SVG 출력 비교", output);
+    println!("  3. 시각 비교로 매핑 정합 확정");
+}
+
 fn test_field_roundtrip(args: &[String]) {
     let input = args.first().map(|s| s.as_str()).unwrap_or("hwp_webctl/bsbc01_10_000.hwp");
     let output = args.get(1).map(|s| s.as_str()).unwrap_or("output/field_test.hwp");
-    
+
     let data = std::fs::read(input).expect("파일 읽기 실패");
     let mut core = rhwp::document_core::DocumentCore::from_bytes(&data)
         .expect("문서 파싱 실패");
-    
+
     // 1. 필드 목록 출력
     let fields = core.collect_all_fields();
     println!("=== 필드 목록 ({}개) ===", fields.len());
@@ -1847,7 +2378,7 @@ fn test_field_roundtrip(args: &[String]) {
         let name = fi.field.field_name().unwrap_or("(이름없음)");
         println!("  {} = \"{}\"", name, fi.value);
     }
-    
+
     // 2. 필드에 값 설정
     let test_data = [
         ("mbizNm", "청소년 자립지원사업"),
@@ -1860,7 +2391,7 @@ fn test_field_roundtrip(args: &[String]) {
         ("bizPrdTxt", "2026.01 ~ 2026.12"),
         ("insttNm", "시청 복지과"),
     ];
-    
+
     println!("\n=== 필드 값 설정 ===");
     for (name, value) in &test_data {
         match core.set_field_value_by_name(name, value) {
@@ -1868,7 +2399,7 @@ fn test_field_roundtrip(args: &[String]) {
             Err(e) => println!("  ✗ {} = \"{}\" → {}", name, value, e),
         }
     }
-    
+
     // 3. 설정 후 확인
     println!("\n=== 설정 후 확인 ===");
     let fields2 = core.collect_all_fields();
@@ -1876,7 +2407,7 @@ fn test_field_roundtrip(args: &[String]) {
         let name = fi.field.field_name().unwrap_or("(이름없음)");
         println!("  {} = \"{}\"", name, fi.value);
     }
-    
+
     // 3.5 pi=0 문단 텍스트 직접 확인
     let para0 = &core.document().sections[0].paragraphs[0];
 
@@ -1884,7 +2415,7 @@ fn test_field_roundtrip(args: &[String]) {
     let saved = core.export_hwp_native().expect("직렬화 실패");
     std::fs::write(output, &saved).expect("저장 실패");
     println!("\n저장: {} ({}바이트)", output, saved.len());
-    
+
     // 5. 재로딩 → 필드 확인
     let mut core2 = rhwp::document_core::DocumentCore::from_bytes(&saved)
         .expect("재로딩 실패");

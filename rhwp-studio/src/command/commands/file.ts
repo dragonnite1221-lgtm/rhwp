@@ -10,6 +10,90 @@ import {
   type FileSystemWindowLike,
 } from '@/command/file-system-access';
 
+function appendPrintStyle(doc: Document, widthMm: number, heightMm: number): void {
+  const style = doc.createElement('style');
+  style.textContent = `
+@page { size: ${widthMm}mm ${heightMm}mm; margin: 0; }
+* { margin: 0; padding: 0; }
+body { background: #fff; }
+.page { page-break-after: always; width: ${widthMm}mm; height: ${heightMm}mm; overflow: hidden; }
+.page:last-child { page-break-after: auto; }
+.page svg { width: 100%; height: 100%; }
+@media screen {
+  body { background: #e5e7eb; display: flex; flex-direction: column; align-items: center; gap: 16px; padding: 16px; }
+  .page { background: #fff; box-shadow: 0 2px 8px rgba(0,0,0,0.15); }
+  .print-bar { position: fixed; top: 0; left: 0; right: 0; background: #1e293b; color: #fff; padding: 8px 16px; display: flex; align-items: center; gap: 12px; font: 14px sans-serif; z-index: 100; }
+  .print-bar button { padding: 6px 16px; background: #2563eb; color: #fff; border: none; border-radius: 4px; cursor: pointer; font-size: 14px; }
+  .print-bar button:hover { background: #1d4ed8; }
+  body { padding-top: 56px; }
+}
+@media print { .print-bar { display: none; } }
+`;
+  doc.head.appendChild(style);
+}
+
+function createPrintButton(doc: Document, id: string, label: string, background?: string): HTMLButtonElement {
+  const button = doc.createElement('button');
+  button.id = id;
+  button.type = 'button';
+  button.textContent = label;
+  if (background) button.style.background = background;
+  return button;
+}
+
+function appendSvgPage(doc: Document, container: HTMLElement, svg: string): void {
+  const page = doc.createElement('div');
+  page.className = 'page';
+
+  const parsed = new DOMParser().parseFromString(svg, 'image/svg+xml');
+  const parseError = parsed.querySelector('parsererror');
+  if (parseError) {
+    throw new Error(`인쇄용 SVG 파싱 실패: ${parseError.textContent || 'parsererror'}`);
+  }
+
+  page.appendChild(doc.importNode(parsed.documentElement, true));
+  container.appendChild(page);
+}
+
+function setupPrintDocument(
+  printWin: Window,
+  fileName: string,
+  pageCount: number,
+  widthMm: number,
+  heightMm: number,
+  svgPages: string[],
+): void {
+  const doc = printWin.document;
+  doc.documentElement.lang = 'ko';
+  doc.title = `${fileName} — 인쇄`;
+
+  doc.head.replaceChildren();
+  const meta = doc.createElement('meta');
+  meta.setAttribute('charset', 'UTF-8');
+  doc.head.appendChild(meta);
+  appendPrintStyle(doc, widthMm, heightMm);
+
+  const printBar = doc.createElement('div');
+  printBar.className = 'print-bar';
+  const printButton = createPrintButton(doc, 'print-btn', '인쇄');
+  const closeButton = createPrintButton(doc, 'close-btn', '닫기', '#475569');
+  const title = doc.createElement('span');
+  title.textContent = `${fileName} — ${pageCount}페이지`;
+  printBar.append(printButton, closeButton, title);
+
+  doc.body.replaceChildren(printBar);
+  for (const svg of svgPages) {
+    appendSvgPage(doc, doc.body, svg);
+  }
+
+  printButton.addEventListener('click', () => {
+    printWin.print();
+  });
+  closeButton.addEventListener('click', () => {
+    printWin.close();
+  });
+}
+
 export const fileCommands: CommandDef[] = [
   {
     id: 'file:new-doc',
@@ -167,48 +251,7 @@ export const fileCommands: CommandDef[] = [
           return;
         }
 
-        printWin.document.write(`<!DOCTYPE html>
-<html>
-<head>
-<meta charset="UTF-8">
-<title>${wasm.fileName} — 인쇄</title>
-<style>
-  @page { size: ${widthMm}mm ${heightMm}mm; margin: 0; }
-  * { margin: 0; padding: 0; }
-  body { background: #fff; }
-  .page { page-break-after: always; width: ${widthMm}mm; height: ${heightMm}mm; overflow: hidden; }
-  .page:last-child { page-break-after: auto; }
-  .page svg { width: 100%; height: 100%; }
-  @media screen {
-    body { background: #e5e7eb; display: flex; flex-direction: column; align-items: center; gap: 16px; padding: 16px; }
-    .page { background: #fff; box-shadow: 0 2px 8px rgba(0,0,0,0.15); }
-    .print-bar { position: fixed; top: 0; left: 0; right: 0; background: #1e293b; color: #fff; padding: 8px 16px; display: flex; align-items: center; gap: 12px; font: 14px sans-serif; z-index: 100; }
-    .print-bar button { padding: 6px 16px; background: #2563eb; color: #fff; border: none; border-radius: 4px; cursor: pointer; font-size: 14px; }
-    .print-bar button:hover { background: #1d4ed8; }
-    body { padding-top: 56px; }
-  }
-  @media print { .print-bar { display: none; } }
-</style>
-</head>
-<body>
-<div class="print-bar">
-  <button id="print-btn">인쇄</button>
-  <button id="close-btn" style="background:#475569">닫기</button>
-  <span>${wasm.fileName} — ${pageCount}페이지</span>
-</div>
-${svgPages.map(svg => `<div class="page">${svg}</div>`).join('\n')}
-
-</body>
-</html>`);
-        printWin.document.close();
-
-        // CSP 안전: DOM API로 이벤트 바인딩 (인라인 스크립트 사용 안 함)
-        printWin.document.getElementById('print-btn')?.addEventListener('click', () => {
-          printWin.print();
-        });
-        printWin.document.getElementById('close-btn')?.addEventListener('click', () => {
-          printWin.close();
-        });
+        setupPrintDocument(printWin, wasm.fileName, pageCount, widthMm, heightMm, svgPages);
 
         if (statusEl) statusEl.textContent = origStatus;
       } catch (err) {

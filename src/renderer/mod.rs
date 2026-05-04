@@ -13,13 +13,18 @@ pub mod equation;
 pub mod font_metrics_data;
 pub mod height_measurer;
 pub mod html;
+pub mod layer_renderer;
 pub mod layout;
 pub mod page_layout;
+pub mod page_number;
 pub mod pagination;
+pub mod pua_oldhangul;
 pub mod render_tree;
 pub mod scheduler;
 pub mod style_resolver;
 pub mod svg;
+pub mod svg_fragment;
+pub mod svg_layer;
 #[cfg(not(target_arch = "wasm32"))]
 pub mod pdf;
 pub mod typeset;
@@ -112,6 +117,10 @@ pub struct TextStyle {
     pub extra_word_spacing: f64,
     /// 배분/나눔 정렬용: 글자당 추가 간격 (px)
     pub extra_char_spacing: f64,
+    /// Task #352: dash leader (3+ 연속 '-') 시퀀스의 글자당 추가 간격 (px).
+    /// PDF 와 같이 라인 슬랙을 dash leader 가 흡수하도록 하여, 공백 분배
+    /// 부담을 줄이고 자연스러운 단어 간격을 유지한다. 0 이면 미적용.
+    pub extra_dash_advance: f64,
     /// 외곽선 종류 (0=없음, 1~6=종류)
     pub outline_type: u8,
     /// 그림자 종류 (0=없음, 1=비연속, 2=연속)
@@ -144,6 +153,18 @@ pub struct TextStyle {
     pub shade_color: ColorRef,
 }
 
+impl TextStyle {
+    /// 시각적 bold 여부.
+    ///
+    /// CharShape.bold=true 외에도 HY헤드라인M 같은 heavy display face 를
+    /// 사용할 때 true 를 반환. 해당 face 가 fallback 으로 대체될 때 발생하는
+    /// 시각 bold 소실을 보완하기 위해 SVG 출력 시 font-weight="bold" 강제에
+    /// 사용된다.
+    pub fn is_visually_bold(&self) -> bool {
+        self.bold || crate::renderer::style_resolver::is_heavy_display_face(&self.font_family)
+    }
+}
+
 impl Default for TextStyle {
     fn default() -> Self {
         Self {
@@ -165,6 +186,7 @@ impl Default for TextStyle {
             inline_tabs: Vec::new(),
             extra_word_spacing: 0.0,
             extra_char_spacing: 0.0,
+            extra_dash_advance: 0.0,
             outline_type: 0,
             shadow_type: 0,
             shadow_color: 0x00B2B2B2,
@@ -528,7 +550,7 @@ pub fn px_to_hwpunit(px: f64, dpi: f64) -> i32 {
 pub fn generic_fallback(font_family: &str) -> &'static str {
     if font_family.is_empty() {
         // Sans-serif: Windows → macOS/iOS → Android → 오픈소스 → generic
-        return "'Malgun Gothic','맑은 고딕','Apple SD Gothic Neo','Noto Sans KR','Pretendard',sans-serif";
+        return "'Malgun Gothic','맑은 고딕','Apple SD Gothic Neo','Noto Sans KR','Pretendard','Source Han Serif K Old Hangul',sans-serif";
     }
     // 고정폭 키워드
     let lower = font_family.to_ascii_lowercase();
@@ -543,18 +565,23 @@ pub fn generic_fallback(font_family: &str) -> &'static str {
     if font_family.contains("바탕") || font_family.contains("명조")
         || font_family.contains("궁서")
     {
-        // Serif: Windows → macOS/iOS → Android → 오픈소스 → generic
-        return "'Batang','바탕','AppleMyungjo','Noto Serif KR',serif";
+        // Serif: Windows → macOS(Bold 보유 우선) → macOS 기본 → Android → 오픈소스 → 리눅스 시스템 → generic
+        // Nanum Myeongjo 는 macOS 10.9+ 기본 설치이며 Bold variant 보유.
+        // AppleMyungjo 보다 앞에 두어야 macOS Chrome 에서 CJK 글리프 bold 매칭 성공.
+        // 'Source Han Serif K Old Hangul' (Task #528): @font-face unicode-range 가 옛한글
+        // 영역 (U+1100-11FF, U+A960-A97F, U+D7B0-D7FF) 만 매칭하므로 일반 한글에 영향 없음.
+        return "'Batang','바탕','Nanum Myeongjo','AppleMyungjo','Noto Serif KR','Noto Serif CJK KR','Source Han Serif K Old Hangul',serif";
     }
     // 세리프 키워드 (영문)
     if lower.contains("times") || lower.contains("hymjre")
         || lower.contains("palatino") || lower.contains("georgia")
         || lower.contains("batang") || lower.contains("gungsuh")
     {
-        return "'Batang','바탕','AppleMyungjo','Noto Serif KR',serif";
+        return "'Batang','바탕','Nanum Myeongjo','AppleMyungjo','Noto Serif KR','Noto Serif CJK KR','Source Han Serif K Old Hangul',serif";
     }
     // Sans-serif: Windows → macOS/iOS → Android → 오픈소스 → generic
-    "'Malgun Gothic','맑은 고딕','Apple SD Gothic Neo','Noto Sans KR','Pretendard',sans-serif"
+    // 'Source Han Serif K Old Hangul' (Task #528): unicode-range 옛한글 자모 영역 한정
+    "'Malgun Gothic','맑은 고딕','Apple SD Gothic Neo','Noto Sans KR','Pretendard','Source Han Serif K Old Hangul',sans-serif"
 }
 
 // ============================================================
@@ -921,8 +948,8 @@ mod tests {
 
     #[test]
     fn test_generic_fallback() {
-        let serif = "'Batang','바탕','AppleMyungjo','Noto Serif KR',serif";
-        let sans = "'Malgun Gothic','맑은 고딕','Apple SD Gothic Neo','Noto Sans KR','Pretendard',sans-serif";
+        let serif = "'Batang','바탕','Nanum Myeongjo','AppleMyungjo','Noto Serif KR','Noto Serif CJK KR','Source Han Serif K Old Hangul',serif";
+        let sans = "'Malgun Gothic','맑은 고딕','Apple SD Gothic Neo','Noto Sans KR','Pretendard','Source Han Serif K Old Hangul',sans-serif";
         let mono = "'GulimChe','굴림체','D2Coding','Noto Sans Mono',monospace";
         // 세리프 계열
         assert_eq!(generic_fallback("함초롬바탕"), serif);

@@ -96,7 +96,7 @@ export class AboutDialog extends ModalDialog {
     // footer를 "닫기" 버튼 하나로 교체
     const footer = this.dialog.querySelector('.dialog-footer');
     if (footer) {
-      footer.innerHTML = '';
+      footer.replaceChildren();
       const closeBtn = document.createElement('button');
       closeBtn.className = 'dialog-btn dialog-btn-primary';
       closeBtn.textContent = '닫기';

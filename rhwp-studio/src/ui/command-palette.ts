@@ -161,7 +161,7 @@ export class CommandPalette {
 
   private renderList(filtered: CommandDef[]): void {
     if (!this.list) return;
-    this.list.innerHTML = '';
+    this.list.replaceChildren();
 
     if (filtered.length === 0) {
       const empty = document.createElement('div');

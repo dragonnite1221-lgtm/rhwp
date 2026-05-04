@@ -719,7 +719,7 @@ export class ParaShapeDialog {
     if (checkedRadio?.value === 'indent') indent = parseFloat(this.indentInput.value) || 0;
     else if (checkedRadio?.value === 'hanging') indent = -(parseFloat(this.indentInput.value) || 0);
 
-    this.previewEl.innerHTML = '';
+    this.previewEl.replaceChildren();
     const sampleLines = [
       '이것은 문단 미리보기입니다. 이렇게 문단의 정렬과 여백, 들여쓰기가 적용된 모습을 확인할 수 있습니다.',
       '두 번째 줄은 보통 여백만 적용됩니다.',

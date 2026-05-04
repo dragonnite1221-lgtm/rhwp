@@ -50,6 +50,25 @@ fn find_in_text(text: &str, query: &str, case_sensitive: bool) -> Vec<usize> {
     results
 }
 
+/// 문서 본문에서 query의 첫 번째 매치만 반환 (표/글상자 내부 제외, early-exit)
+fn search_first_body(doc: &DocumentCore, query: &str, case_sensitive: bool) -> Option<SearchHit> {
+    let qlen = query.chars().count();
+    for (sec_idx, section) in doc.document.sections.iter().enumerate() {
+        for (para_idx, para) in section.paragraphs.iter().enumerate() {
+            if let Some(&offset) = find_in_text(&para.text, query, case_sensitive).first() {
+                return Some(SearchHit {
+                    sec: sec_idx,
+                    para: para_idx,
+                    char_offset: offset,
+                    length: qlen,
+                    cell_context: None,
+                });
+            }
+        }
+    }
+    None
+}
+
 /// 문서 전체를 순회하며 query와 일치하는 모든 위치를 반환
 fn search_all(doc: &DocumentCore, query: &str, case_sensitive: bool) -> Vec<SearchHit> {
     let mut results = vec![];
@@ -188,6 +207,36 @@ impl DocumentCore {
         ))
     }
 
+    /// 단일 치환 (검색어 기반)
+    ///
+    /// 문서 본문에서 query의 첫 번째 매치를 new_text로 교체한다.
+    /// 표/글상자 내부는 대상에서 제외 (search_text_native와 동일 범위).
+    /// 반환: JSON `{"ok":true,"sec":N,"para":N,"charOffset":N,"newLength":N}` 또는 `{"ok":false}`
+    pub fn replace_one_native(
+        &mut self,
+        query: &str,
+        new_text: &str,
+        case_sensitive: bool,
+    ) -> Result<String, HwpError> {
+        if query.is_empty() {
+            return Ok(r#"{"ok":false}"#.to_string());
+        }
+
+        let hit = match search_first_body(self, query, case_sensitive) {
+            Some(h) => h,
+            None => return Ok(r#"{"ok":false}"#.to_string()),
+        };
+
+        let new_len = new_text.chars().count();
+        self.delete_text_native(hit.sec, hit.para, hit.char_offset, hit.length)?;
+        self.insert_text_native(hit.sec, hit.para, hit.char_offset, new_text)?;
+
+        Ok(format!(
+            "{{\"ok\":true,\"sec\":{},\"para\":{},\"charOffset\":{},\"newLength\":{}}}",
+            hit.sec, hit.para, hit.char_offset, new_len
+        ))
+    }
+
     /// 전체 치환
     ///
     /// 문서 전체에서 query를 new_text로 모두 교체한다.
@@ -319,4 +368,38 @@ fn format_search_hit(hit: &SearchHit, wrapped: bool) -> String {
         "{{\"found\":true,\"wrapped\":{},\"sec\":{},\"para\":{},\"charOffset\":{},\"length\":{}{}}}",
         wrapped, hit.sec, hit.para, hit.char_offset, hit.length, cell_ctx
     )
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn find_in_text_case_sensitive() {
+        assert_eq!(find_in_text("hello world", "world", true), vec![6usize]);
+        assert_eq!(find_in_text("hello world", "World", true), Vec::<usize>::new());
+    }
+
+    #[test]
+    fn find_in_text_case_insensitive() {
+        assert_eq!(find_in_text("Hello World", "hello", false), vec![0]);
+        assert_eq!(find_in_text("Hello World", "WORLD", false), vec![6]);
+    }
+
+    #[test]
+    fn find_in_text_multiple_matches() {
+        assert_eq!(find_in_text("abcabc", "abc", true), vec![0, 3]);
+    }
+
+    #[test]
+    fn find_in_text_empty_inputs() {
+        assert_eq!(find_in_text("", "abc", true), Vec::<usize>::new());
+        assert_eq!(find_in_text("abc", "", true), Vec::<usize>::new());
+    }
+
+    #[test]
+    fn find_in_text_korean() {
+        assert_eq!(find_in_text("안녕하세요 세계", "세계", true), vec![6]);
+        assert_eq!(find_in_text("가나가나", "가나", true), vec![0, 2]);
+    }
 }
