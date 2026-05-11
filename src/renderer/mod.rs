@@ -559,6 +559,7 @@ pub fn generic_fallback(font_family: &str) -> &'static str {
     if font_family.contains("굴림체") || font_family.contains("바탕체")
         || lower.contains("gulimche") || lower.contains("batangche")
         || lower.contains("coding") || lower.contains("courier")
+        || lower.contains("mono")
     {
         // Monospace: Windows → 오픈소스 → generic
         return "'GulimChe','굴림체','D2Coding','Noto Sans Mono',monospace";
@@ -574,10 +575,11 @@ pub fn generic_fallback(font_family: &str) -> &'static str {
         // 영역 (U+1100-11FF, U+A960-A97F, U+D7B0-D7FF) 만 매칭하므로 일반 한글에 영향 없음.
         return "'Batang','바탕','Nanum Myeongjo','AppleMyungjo','Noto Serif KR','Noto Serif CJK KR','Source Han Serif K Old Hangul',serif";
     }
-    // 세리프 키워드 (영문)
+    // 세리프 키워드 (영문) — "serif" 포함 but "sans-serif" 제외
     if lower.contains("times") || lower.contains("hymjre")
         || lower.contains("palatino") || lower.contains("georgia")
         || lower.contains("batang") || lower.contains("gungsuh")
+        || (lower.contains("serif") && !lower.contains("sans"))
     {
         return "'Batang','바탕','Nanum Myeongjo','AppleMyungjo','Noto Serif KR','Noto Serif CJK KR','Source Han Serif K Old Hangul',serif";
     }
