@@ -1,7 +1,10 @@
 mod clipboard;
+mod cross_document_migrate;
 mod document;
 mod footnote_ops;
 mod formatting;
+pub(crate) mod fragment_paste;
+pub(crate) mod fragment_paste_in_document;
 mod header_footer_ops;
 mod html_import;
 mod object_ops;

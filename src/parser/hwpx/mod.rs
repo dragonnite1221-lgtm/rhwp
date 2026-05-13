@@ -59,6 +59,15 @@ impl From<quick_xml::Error> for HwpxError {
 
 /// HWPX 파일 바이트 데이터를 파싱하여 Document IR로 변환
 pub fn parse_hwpx(data: &[u8]) -> Result<Document, HwpxError> {
+    parse_hwpx_with_raw_xmls(data).map(|(doc, _, _)| doc)
+}
+
+/// HWPX 파싱 결과 raw XML 보존 변형. paste fragment wasm bridge 용.
+///
+/// 반환: (Document IR, section{N}.xml 원본 문자열들, header.xml 원본 문자열).
+/// 인덱스는 `Document.sections` 와 1:1 대응한다.
+/// 섹션 파싱 실패로 `Section::default()` 가 들어간 경우에도 raw XML 자체는 원본을 유지한다.
+pub fn parse_hwpx_with_raw_xmls(data: &[u8]) -> Result<(Document, Vec<String>, String), HwpxError> {
     // 1. ZIP 컨테이너 열기
     let mut reader = reader::HwpxReader::open(data)?;
 
@@ -66,8 +75,9 @@ pub fn parse_hwpx(data: &[u8]) -> Result<Document, HwpxError> {
     let content_xml = reader.read_file("Contents/content.hpf")?;
     let package_info = content::parse_content_hpf(&content_xml)?;
 
-    // 3. header.xml → DocInfo, DocProperties
+    // 3. header.xml → DocInfo, DocProperties (+raw 보존)
     let header_xml = reader.read_file("Contents/header.xml")?;
+    let raw_header_xml = header_xml.clone();
     let (mut doc_info, doc_properties) = header::parse_hwpx_header(&header_xml)?;
 
     // [Task #554] HWP3 → HWPX 변환본 식별: hwpml 스키마 버전 = "1.4"
@@ -96,10 +106,12 @@ pub fn parse_hwpx(data: &[u8]) -> Result<Document, HwpxError> {
         });
     }
 
-    // 4. section*.xml → Section 변환
+    // 4. section*.xml → Section 변환 (+raw 보존)
     let mut sections = Vec::new();
+    let mut raw_section_xmls: Vec<String> = Vec::new();
     for section_href in &package_info.section_files {
         let section_xml = reader.read_file(section_href)?;
+        raw_section_xmls.push(section_xml.clone());
         match section::parse_hwpx_section(&section_xml) {
             Ok(section) => sections.push(section),
             Err(e) => {
@@ -190,7 +202,7 @@ pub fn parse_hwpx(data: &[u8]) -> Result<Document, HwpxError> {
     // dir 영역 basename 매칭 영역 image 영역 자동 load. HWP5 parser 와 동일 처리.
     super::populate_link_image_paths(&mut doc);
 
-    Ok(doc)
+    Ok((doc, raw_section_xmls, raw_header_xml))
 }
 
 #[cfg(test)]

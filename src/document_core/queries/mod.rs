@@ -5,4 +5,5 @@ pub(crate) mod doc_tree_nav;
 pub(crate) mod field_query;
 mod form_query;
 pub mod rendering;
+mod raw_xml;
 mod search_query;
