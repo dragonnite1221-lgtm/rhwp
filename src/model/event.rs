@@ -34,6 +34,8 @@ pub enum DocumentEvent {
     // ── 클립보드/HTML ──
     ContentPasted { section: usize, para: usize },
     HtmlImported { section: usize, para: usize },
+    /// 외부 HWPX fragment paste (cross-document migration)
+    FragmentPasted { section: usize, para: usize },
 }
 
 impl DocumentEvent {
@@ -87,6 +89,8 @@ impl DocumentEvent {
                 format!(r#"{{"type":"ContentPasted","section":{},"para":{}}}"#, section, para),
             DocumentEvent::HtmlImported { section, para } =>
                 format!(r#"{{"type":"HtmlImported","section":{},"para":{}}}"#, section, para),
+            DocumentEvent::FragmentPasted { section, para } =>
+                format!(r#"{{"type":"FragmentPasted","section":{},"para":{}}}"#, section, para),
         }
     }
 }
