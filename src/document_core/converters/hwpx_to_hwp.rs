@@ -414,9 +414,14 @@ fn adapt_table(table: &mut Table, report: &mut AdapterReport) {
                 table.raw_ctrl_data[2],
                 table.raw_ctrl_data[3],
             ]);
-            if table.attr != packed {
-                table.attr = packed;
-                report.tables_attr_packed += 1;
+            if materialize_hancom_table || materialize_tac_table {
+                if table.attr != packed {
+                    table.attr = packed;
+                    report.tables_attr_packed += 1;
+                }
+            } else {
+                table.raw_ctrl_data[0..4].copy_from_slice(&0u32.to_le_bytes());
+                table.attr = 0;
             }
         }
     }

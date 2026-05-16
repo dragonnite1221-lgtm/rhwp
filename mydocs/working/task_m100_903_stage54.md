@@ -51,8 +51,11 @@ materialize한다.
 Stage53에서 `CTRL_HEADER` raw graft가 성공 조건이었다.
 Stage54에서는 raw graft가 아니라 모델 기반 합성 경로를 보강한다.
 
-우선 표 `raw_ctrl_data` 합성 시 HWPX 출처라는 이유로 attr를 0으로 되돌리는 경로를 제거하고,
-`CommonObjAttr`에서 pack한 attr를 유지한다.
+표 `raw_ctrl_data`는 기존 adapter의 성공 조건을 유지한다.
+즉 한컴 호환성이 확인된 table 계열에 대해서만 `CommonObjAttr`에서 pack한 attr를
+`CTRL_HEADER`에 반영하고, 그 밖의 table은 기존처럼 attr를 0으로 정규화한다.
+Stage54 후 `hwpx-h-02` 회귀 확인에서 모든 table attr를 유지하는 방식은 9페이지가
+10페이지로 늘어나는 부작용이 확인되었으므로 제외한다.
 
 ## 4. 생성 명령
 
@@ -103,10 +106,23 @@ compression=Default
 status=Success
 ```
 
-### 7.2 table CTRL_HEADER attr 보존
+### 7.2 table CTRL_HEADER attr 보존 범위 유지
 
-HWPX table의 `raw_ctrl_data`를 합성한 뒤, 일부 guard에서 attr를 다시 0으로
-되돌리던 경로를 제거했다. 이제 `CommonObjAttr`에서 pack된 attr를 유지한다.
+HWPX table의 `raw_ctrl_data` 합성 경로는 유지하되, attr 보존 범위를 기존 성공
+guard 안으로 제한했다.
+
+```text
+보존 대상:
+- materialize_hancom_table
+- materialize_tac_table
+
+정규화 대상:
+- 그 밖의 table attr는 0 유지
+```
+
+모든 table의 packed attr를 보존하면 `hwpx-h-01`은 통과하지만 `hwpx-h-02`가
+9페이지에서 10페이지로 늘어나는 회귀가 발생했다. 따라서 Stage54의 실제 최소
+구현 후보는 `BIN_DATA 보강 + 기존 CTRL_HEADER 보존 guard 유지`이다.
 
 ### 7.3 HWPX table/picture parser 보강
 
@@ -216,10 +232,38 @@ Stage54 최소 구현 후보가 통과했다.
 
 ```text
 - BinData attr/status 보강
-- table CTRL_HEADER attr 유지
+- table CTRL_HEADER attr 보존 guard 유지
 - HWPX table id/zOrder 파싱
 - HWPX picture shapeComment 파싱
 ```
 
 Stage54는 raw graft 없이 current implementation path에서 성공했으므로,
 이번 변경은 POC 결과를 실제 adapter/parser 경로에 반영한 것으로 판단한다.
+
+## 11. devel 반영 전 회귀 확인
+
+Stage54 성공 후보를 `local/devel`에 fast-forward 반영한 뒤 기존 회귀 테스트를
+확인했다.
+
+처음 적용한 "모든 table packed attr 보존" 방식은 다음 회귀를 만들었다.
+
+```text
+hwpx-h-02.hwpx: orig=9, after_adapter=10
+```
+
+따라서 table attr 보존은 Stage53 이전부터 검증된 guard 범위로 되돌렸고,
+다시 확인한 결과는 다음과 같다.
+
+```text
+stage5_all_three_samples_recover_via_unified_entry_point: ok
+task903_stage54_generate_minimal_impl_candidate: ok
+```
+
+이 해석에 따라 #903 최소 구현 범위는 다음으로 확정한다.
+
+```text
+1. HWPX embedded BIN_DATA metadata materialize
+2. 기존 table CTRL_HEADER attr 보존 guard 유지
+3. HWPX table id/zOrder 파싱
+4. HWPX picture shapeComment 파싱
+```
