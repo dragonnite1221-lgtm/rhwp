@@ -1,5 +1,19 @@
 # Changelog
 
+## [0.7.12] - 2026-05-18
+
+라이브러리 버전 동기화. v0.7.11 후속 사이클 (5/12~18) — 외부 기여자 PR 19건 머지 + @jangster77 PR 시리즈 7건 (#956~#968). 핵심 변경:
+
+**원 Issue #952 (1 통합 → 5 분리 결함) 완결**: 쪽 테두리 paper-based outline (#956) + sample16 page 18 빈 caption phantom advance (#958) + 시험지 page 1 문9 column picture advance skip (#961) + 시험지 page 2 cases formula off-by-one (#963) + 시험지 page 2 보기 textbox inline equation duplicate 차단 (#964).
+
+**WMF SetTextAlign vertical bits 정정** (#966): `mode & VTA_TOP(=0)` 항상-true 버그 → WMF [MS-WMF] 2.1.2.18 spec 정합 (PR #918 거대 PR root cause ~60 lines 단독 포팅).
+
+**HWP3 sample18 페이지 수 +2 inflate 정정** (#968): 빈 paragraph + [쪽나누기] + overflow case 단독 page 차단.
+
+**release 빌드 LTO + codegen-units=1 + strip** (#818): rhwp CLI -28% / WASM -6.5%.
+
+**rhwp-studio 신규 기능** (5/12~18): F5/F3 블록 선택 (#811) + 메뉴 hotkey 인프라 (#810) + 쪽 새 번호로 시작 (#809) + searchAllText API + rhwpDev.goto (#814) + 문서 비교·이력 분리 PR 1/3 (#799).
+
 ## [0.7.11] - 2026-05-11
 
 라이브러리 버전 동기화. v0.7.10 후속 사이클 (5/10 + 5/11) — 외부 기여자 다수 PR 30+ 머지. 핵심 변경:

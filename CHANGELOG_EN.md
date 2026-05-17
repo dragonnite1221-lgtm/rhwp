@@ -4,6 +4,31 @@ This document records the major changes of the rhwp project.
 
 > 한국어 버전은 [CHANGELOG.md](CHANGELOG.md) 를 참조하세요.
 
+## [0.7.12] — 2026-05-18
+
+> Patch cycle following v0.7.11 (May 12–18) — 19 external contributor PRs merged + @jangster77 PR series of 7 (#956–#968). 416 files / +64383 / -3323.
+
+### Key Changes
+
+- **Original Issue #952 (1 umbrella → 5 separated defects) completed** — @jangster77 diagnostic methodology (partial fix + clear separation):
+  - Issue 1 (#956): force paper-based page border outline — fixes `#920` bit-interpretation regression (verified against 5+ samples in Hancom viewer)
+  - Issue 2 (#958, #957): sample16 page 18 empty caption phantom advance fix
+  - Issue 3 (#961, #959): exam page 1 Q9 — horz_rel_to=Column picture out-of-column emit advance skip
+  - Issue 4 (#963, #960): exam page 2 cases formula off-by-one — include end-position TAC in last run of has_line_break line
+  - Issue 5 (#964, #962): exam page 2 example textbox inline equation duplicate emit block
+- **WMF SetTextAlign vertical bits fix** (#966, #965): `mode & VTA_TOP(=0)` always-true bug → WMF [MS-WMF] 2.1.2.18 spec compliance (ported root cause ~60 lines from large PR #918 Stage 33-A)
+- **HWP3 sample18 page count +2 inflate fix** (#968, #967): block standalone page for empty paragraph + [page break] + overflow case (v2 refinement — resolves aift.hwp snapshot regression)
+- **Release build LTO + codegen-units=1 + strip** (#818, #790): rhwp CLI -28% (14→10 MB) / WASM -6.5% (4.6→4.3 MB)
+- **rhwp-studio new features** (May 12–18): F5 block selection + F3 expand (#811) + menu hotkey infra (#810) + start with new page number (#809) + searchAllText API + rhwpDev.goto (#814) + Task #571 document compare/history split PR 1/3 (#799)
+
+## [0.7.11] — 2026-05-11
+
+> Patch cycle following v0.7.10 (May 10–11) — 30+ external contributor PRs merged. (CHANGELOG_EN.md retroactive supplement — omitted at v0.7.11 release)
+
+- **Skia native raster incremental progress** (Issue #536): P8 (#761) Layer IR contract hardening + P9 (#769) text replay parity + P11 (#797) Text IR v2 compatibility contract
+- **HWP3 native rendering** (#753): hwp3-sample10.hwp Oracle 763-page 8-stage fix + Git LFS pdf-large/ isolation
+- **rhwp-studio interactions** (#781/#786–#818): scrollbar drag + chord key Ctrl+N→Ctrl+M + Korean IME chord e.code detection + Alt/Option+Arrow word navigation (#794) + table cell drag context (#795)
+
 ## [0.7.10] — 2026-05-06
 
 > Post-v0.7.9 patch cycle — Absorbed 7 external contributors (13 PR cherry-picks) + introduced AI pipeline / VLM integration + CLI binary release pipeline (Issues #608/#612).

@@ -2,6 +2,42 @@
 
 이 프로젝트의 주요 변경 사항을 기록합니다.
 
+## [0.7.12] — 2026-05-18
+
+> v0.7.11 후속 patch 사이클 (5/12~18) — 외부 기여자 다수 PR 19건 머지 + 본 사이클 @jangster77 PR 시리즈 7건 (#956~#968). 416 files / +64383 / -3323.
+
+### 핵심 변경
+
+- **원 Issue #952 (1 통합 → 5 분리 결함) 완결** — @jangster77 진단 방법론 (부분 해결 + 명확한 분리, archive/task936 "9회 시도 + 5회 revert" 대조 교훈):
+  - Issue 1 (#956): 쪽 테두리 paper-based outline 강제 — `#920` 비트 해석 회귀 정정 (5+ samples 한컴 viewer 실측 정합)
+  - Issue 2 (#958, #957): sample16 page 18 빈 caption phantom advance 정정 (RHWP_DEBUG_TAC_CURSOR)
+  - Issue 3 (#961, #959): 시험지 page 1 문9 — horz_rel_to=Column picture column 외부 emit advance skip
+  - Issue 4 (#963, #960): 시험지 page 2 cases formula off-by-one — has_line_break line 마지막 run end-position TAC 포함
+  - Issue 5 (#964, #962): 시험지 page 2 보기 textbox inline equation duplicate emit 차단
+- **WMF SetTextAlign vertical bits 정정** (#966, #965): `mode & VTA_TOP(=0)` 항상-true 버그 → WMF [MS-WMF] 2.1.2.18 spec 정합 (PR #918 거대 PR Stage 33-A root cause ~60 lines 단독 포팅)
+- **HWP3 sample18 페이지 수 +2 inflate 정정** (#968, #967): 빈 paragraph + [쪽나누기] + overflow case 단독 page 차단 (v2 정밀화 — aift.hwp snapshot 회귀 해소)
+- **release 빌드 LTO + codegen-units=1 + strip** (#818, #790): rhwp CLI -28% (14→10 MB) / WASM -6.5% (4.6→4.3 MB)
+- **rhwp-studio 신규 기능** (5/12~18): F5 본문 블록 선택 + F3 영역 확장 (#811/#220) + 메뉴 hotkey 인프라 (#810/#792) + 쪽 새 번호로 시작 (#809/#791) + searchAllText API + rhwpDev.goto (#814/#692) + Task #571 문서 비교·이력 분리 PR 1/3 (#799/#571)
+- **HWP3/WMF/EMF 렌더링 정정** (5/12~18): EMF/WMF image 콘텐츠 렌더 (#860/#864) + HWP3 ch=9 탭 spec §10.5 (#934/#929) + 다수 외부 PR cherry-pick (#933/#939/#941/#947/#953/#954 등)
+
+### 외부 PR (19 머지 + @jangster77 시리즈 7)
+
+5/12~18 누적 외부 기여자 PR 19건 cherry-pick + 본 세션 @jangster77 7 PR (#956~#968) — 각 PR cargo test 1288 + 광범위 sweep 169 페이지 회귀 0 + 작업지시자 시각 판정 일관 검증.
+
+### 잔존
+
+- HWPX sample18-hwp5.hwpx +7 inflate (별도 task)
+- `samples/hwp3-sample18.hwp` fixture 별도 추가 권장 (#968 회귀 가드)
+
+## [0.7.11] — 2026-05-11
+
+> v0.7.10 후속 patch 사이클 (5/10 + 5/11) — 외부 기여자 다수 PR 30+ 머지. (CHANGELOG.md 소급 보강 — v0.7.11 릴리즈 시 누락분)
+
+- **Skia native raster 단계적 진전** (Issue #536): P8 (#761) Layer IR contract hardening + P9 (#769) text replay parity + P11 (#797) Text IR v2 compatibility contract
+- **HWP3 native 렌더링** (#753): hwp3-sample10.hwp Oracle 763 페이지 8 단계 정정 + Git LFS pdf-large/ 격리
+- **rhwp-studio 인터랙션** (#781/#786~#818): scrollbar drag + chord 키 Ctrl+N→Ctrl+M (Chrome reserved shortcut 회피) + 한글 IME chord e.code 판별 + 표 셀 pattern_type 가드 + Alt/Option+Arrow 단어 이동 (#794) + 표 셀 드래그 셀 컨텍스트 (#795) + 줄 끝/문서 끝 커서 (#807/#808)
+- **rhwp-studio editor 신규 기능**: 표 편집 Undo/Redo + 표 크기 조절 SnapshotCommand + 셀 편집 다수 + 다단/새 번호 dialog + Ctrl/Cmd+Arrow / Ctrl+E 단축키
+
 ## [0.7.10] — 2026-05-06
 
 > v0.7.9 후속 patch 사이클 — 외부 기여자 7명 흡수 (PR 13건 cherry-pick) + AI 파이프라인 / VLM 연동 도입 + CLI 바이너리 릴리즈 파이프라인 (Issue #608/#612).
