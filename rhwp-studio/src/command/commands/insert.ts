@@ -399,13 +399,17 @@ export const insertCommands: CommandDef[] = [
   },
   {
     id: 'insert:yangsik-parts',
-    label: '양식 부품',
-    canExecute: (ctx) => ctx.hasDocument && ctx.isEditable,
+    label: '서식 조각',
+    canExecute: (ctx) => ctx.hasDocument && ctx.isEditable && ctx.sourceFormat === 'hwpx',
     async execute(services) {
       try {
+        if (services.getContext().sourceFormat !== 'hwpx') {
+          window.alert('서식 조각 삽입은 HWPX 문서에서만 지원합니다.');
+          return;
+        }
         const fragments = await fetchYangsikFragmentManifest();
         if (fragments.length === 0) {
-          window.alert('양식 부품 카탈로그가 비어있습니다.');
+          window.alert('서식 조각 목록이 비어있습니다.');
           return;
         }
         const inserter = async (entry: FragmentManifestEntry): Promise<boolean> => {
@@ -435,7 +439,7 @@ export const insertCommands: CommandDef[] = [
       } catch (err) {
         const msg = err instanceof Error ? err.message : String(err);
         console.error('[insert:yangsik-parts]', msg);
-        window.alert(`양식 부품 목록을 불러오지 못했습니다:\n${msg}`);
+        window.alert(`서식 조각 목록을 불러오지 못했습니다:\n${msg}`);
       }
     },
   },

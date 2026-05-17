@@ -32,8 +32,7 @@ fn integration_paste_paragraphs_fragment() {
         para_prs: "<hh:paraPr id=\"9\" alignTag=\"left\"/>".into(),
         ..Default::default()
     };
-    let result =
-        paste_fragment_into_section(&section, &mut header, 0, fragment, &source).unwrap();
+    let result = paste_fragment_into_section(&section, &mut header, 0, fragment, &source).unwrap();
     assert_eq!(result.inserted_para_count, 1);
     assert!(result.new_section_xml.contains("integration paragraph"));
     let new_char_pr = result.id_remap.char_pr.get(&9).copied().unwrap();
@@ -60,8 +59,7 @@ fn integration_paste_table_fragment_recomputes_addrs() {
 </hp:tr>\
 </hp:tbl></hp:p>";
     let source = SourceDefinitions::default();
-    let result =
-        paste_fragment_into_section(&section, &mut header, 0, fragment, &source).unwrap();
+    let result = paste_fragment_into_section(&section, &mut header, 0, fragment, &source).unwrap();
     assert_eq!(result.inserted_para_count, 1);
     assert!(result.new_section_xml.contains("rowCnt=\"2\""));
     assert!(!result.new_section_xml.contains("rowAddr=\"99\""));
@@ -84,7 +82,8 @@ fn integration_paste_table_fragment_recomputes_addrs() {
 fn integration_paste_same_fragment_twice_reuses_ids() {
     let section = empty_section();
     let mut header = empty_header();
-    let fragment = r#"<hp:p paraPrIDRef="0"><hp:run charPrIDRef="9"><hp:t>x</hp:t></hp:run></hp:p>"#;
+    let fragment =
+        r#"<hp:p paraPrIDRef="0"><hp:run charPrIDRef="9"><hp:t>x</hp:t></hp:run></hp:p>"#;
     let source = SourceDefinitions {
         char_prs: "<hh:charPr id=\"9\" height=\"4242\"/>".into(),
         ..Default::default()

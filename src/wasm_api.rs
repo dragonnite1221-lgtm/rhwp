@@ -158,7 +158,7 @@ impl HwpDocument {
     /// 내장 HWPX 템플릿에서 빈 문서를 생성한다.
     ///
     /// `paste_hwpx_fragment_in_document` 같은 wasm bridge 기능이 raw section/header XML
-    /// 보존을 요구하므로, 양식 부품 paste 등을 사용하려면 본 함수로 새 문서를 시작한다.
+    /// 보존을 요구하므로, 서식 조각 paste 등을 사용하려면 본 함수로 새 문서를 시작한다.
     /// 시드: `saved/04-blank_hwpx_empty.hwpx` (1 section, 1 빈 단락, ~7KB).
     #[wasm_bindgen(js_name = createBlankHwpxDocument)]
     pub fn create_blank_hwpx_document(&mut self) -> Result<String, JsValue> {

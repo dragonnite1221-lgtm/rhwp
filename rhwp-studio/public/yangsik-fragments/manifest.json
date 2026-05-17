@@ -1,0 +1,20 @@
+{
+  "fragments": [
+    {
+      "part_name": "기본 2칸 표",
+      "category": "표",
+      "label_extra": "example",
+      "kind": "table",
+      "fragment_file": "basic-two-cell-table.xml",
+      "preview_text": "항목 / 내용"
+    },
+    {
+      "part_name": "문서 제목 박스",
+      "category": "제목박스",
+      "label_extra": "example",
+      "kind": "heading",
+      "fragment_file": "document-title-box.xml",
+      "preview_text": "문서 제목 / 작성 부서"
+    }
+  ]
+}

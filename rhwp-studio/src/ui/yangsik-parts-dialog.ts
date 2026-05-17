@@ -1,11 +1,10 @@
 /**
- * ui/yangsik-parts-dialog.ts — 양식.hwpx 부품 즉시 삽입 다이얼로그
+ * ui/yangsik-parts-dialog.ts — 서식 조각 즉시 삽입 다이얼로그
  *
- * vite plugin endpoint 에서 manifest.json + fragment XML 을 fetch 하고,
+ * public/yangsik-fragments 의 manifest.json + fragment XML 을 fetch 하고,
  * 카드 클릭 시 wasm `pasteHwpxFragmentInDocument` 로 byte-preserving paste 한다.
  *
- * absorb_repo 의 `personal-yangsik-parts.ts` 를 본체에 흡수하면서 personal layer
- * (atoms/labels/registry) 의존성을 제거하고 manifest entry 만으로 카드를 합성.
+ * 개발 서버 전용 API나 추가 프론트엔드 의존성 없이 Vite public asset 규칙만 사용한다.
  */
 
 import { ModalDialog } from './dialog';
@@ -61,7 +60,7 @@ export class YangsikPartsDialog extends ModalDialog {
     fragments: FragmentManifestEntry[],
     private readonly insert: FragmentInserter,
   ) {
-    super('양식 부품', 760);
+    super('서식 조각', 760);
     this.fragments = fragments;
     const present = CATEGORY_ORDER.find((t) => fragments.some((f) => f.category === t));
     this.activeCategory = present ?? (fragments[0]?.category ?? '');
@@ -304,26 +303,29 @@ export class YangsikPartsDialog extends ModalDialog {
  * vite base 가 `/rhwp/` 같이 prefix 인 환경에서도 동작하도록 BASE_URL 을 사용한다.
  * BASE_URL 은 항상 trailing slash 포함 (예: `/`, `/rhwp/`).
  */
-function apiUrl(tail: string): string {
+function assetUrl(tail: string): string {
   const base = (import.meta as any).env?.BASE_URL ?? '/';
-  return `${base}api/personal-templates/yangsik-fragments/${tail}`;
+  return `${base}yangsik-fragments/${tail}`;
 }
 
 /**
- * vite plugin endpoint 에서 manifest 를 fetch 한다.
+ * Vite public asset 으로 번들된 manifest 를 fetch 한다.
  */
 export async function fetchYangsikFragmentManifest(): Promise<FragmentManifestEntry[]> {
-  const resp = await fetch(apiUrl('manifest'));
+  const resp = await fetch(assetUrl('manifest.json'));
   if (!resp.ok) return [];
   const data = (await resp.json()) as FragmentManifest;
   return data.fragments ?? [];
 }
 
 /**
- * vite plugin endpoint 에서 단일 fragment XML 을 fetch 한다.
+ * Vite public asset 으로 번들된 단일 fragment XML 을 fetch 한다.
  */
 export async function fetchYangsikFragmentXml(fragmentFile: string): Promise<string> {
-  const resp = await fetch(apiUrl(encodeURIComponent(fragmentFile)));
+  if (!/^[A-Za-z0-9][A-Za-z0-9._-]*\.xml$/.test(fragmentFile)) {
+    throw new Error('invalid fragment file name');
+  }
+  const resp = await fetch(assetUrl(encodeURIComponent(fragmentFile)));
   if (!resp.ok) throw new Error(`fragment fetch HTTP ${resp.status}`);
   return await resp.text();
 }

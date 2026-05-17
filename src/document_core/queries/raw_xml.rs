@@ -84,9 +84,7 @@ mod tests {
         assert_eq!(header, zip_header.as_str(), "header.xml byte-exact 일치");
 
         // 섹션 0 도 동일 검증.
-        let section0 = core
-            .get_source_section_xml(0)
-            .expect("section 0 보존 기대");
+        let section0 = core.get_source_section_xml(0).expect("section 0 보존 기대");
         let mut zip_section0 = String::new();
         std::io::Read::read_to_string(
             &mut zip.by_name("Contents/section0.xml").expect("section0"),
