@@ -55,11 +55,38 @@
 
 산출물: `output/poc/task987_stage5/hwp3-sample16_003.svg`
 
+## 설계 정정 (작업지시자 피드백 반영)
+
+초기 구현은 "쪽 테두리 하변 아래 + gap" 으로 baseline 산출 → 쪽 번호가
+용지 하단으로 과도하게 내려감 (작업지시자: "너무 아래로 내려갔다",
+"한컴은 꼬리말 영역에 출력, 우리는 꼬리말 다음에 출력").
+
+→ 최종 설계: `page_number_baseline_y` 를 **꼬리말 영역(footer_area)
+세로 중앙** 으로 정정 (기존 footer_center 와 동일 공식, footer_area 기준).
+body 기준 테두리 + 테두리 실제 그려질 때만 적용, 그 외는 기존 footer_center.
+
+## 측정 결과 (현재, sample16 page 3)
+
+| 항목 | y (px) |
+|------|--------|
+| footer_area (꼬리말 영역) | 1068.21 ~ 1084.69 (h=16.48) |
+| 쪽 번호 "- 1 -" SVG y | 1089.79 (footer 중앙 공식 + SVG baseline 변환) |
+| aift.hwp 쪽 번호 (paper 기준 대조) | 1079.16 (Task #634 정합 유지) |
+
+## 검증
+
+| 항목 | 결과 |
+|------|------|
+| `cargo test` | ✅ 1476 passed, 0 failed |
+| `cargo test --lib test_634` | ✅ 8 passed (aift 회귀 없음) |
+| `cargo clippy -- -D warnings` | ✅ 0 warnings |
+
 ## 시각 판정 요청
 
-sample16 페이지 3 쪽 번호 "- 1 -" 가 쪽 테두리 하단 경계선 **아래쪽**
-여백에 배치됨. 한컴 정답지와 위치 정합 여부 + gap(테두리~쪽번호 간격,
-현재 font_size*0.6 ≈ 6px) 적정 여부 작업지시자 시각 판정 요청.
+sample16 페이지 3 쪽 번호 "- 1 -" 를 꼬리말 영역(footer_area) 세로 중앙
+공식으로 배치. 한컴 정답지(꼬리말 영역 내 출력)와 위치 정합 여부
+작업지시자 시각 판정 요청. (SVG baseline 변환으로 footer_area 하단을
+약 5px 넘는 점 — 한컴 실측과 비교 필요)
 
 ## 다음 단계
 

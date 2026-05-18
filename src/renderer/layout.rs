@@ -929,27 +929,27 @@ impl LayoutEngine {
     }
 
     /// 쪽 테두리선을 렌더링하여 tree에 추가한다.
-    /// 쪽 번호 배치 보정용 — 쪽 테두리 하단 변의 y 좌표 (px).
+    /// 쪽 번호 배치 보정용 — 쪽 번호 baseline 의 y 좌표 (px).
     ///
     /// **body 기준 테두리일 때만** Some 을 반환한다. body 기준 테두리는
-    /// 본문을 감싸므로 한컴은 쪽 번호(꼬리말 영역)를 테두리 *바깥(아래)* 에 둔다
-    /// (sample16). paper 기준 테두리는 종이 전체를 감싸므로 쪽 번호가 테두리
-    /// *안쪽* 에 오며(aift.hwp Task #634), 이 경우 보정하지 않고 None.
-    fn page_border_bottom_y(
+    /// 본문을 감싸므로 한컴은 쪽 번호를 본문(테두리) 아래 꼬리말 영역에 둔다.
+    /// 한컴 정답지(sample16) 실측: 쪽 번호는 꼬리말 영역(footer_area)
+    /// *세로 중앙* 에 담겨 출력된다 (테두리 아래로 흘러나가지 않음).
+    /// paper 기준 테두리는 종이 전체를 감싸 쪽 번호가 테두리 *안쪽* 에 오며
+    /// (aift.hwp Task #634), 이 경우 보정하지 않고 None.
+    fn page_number_baseline_y(
         &self,
         layout: &PageLayoutInfo,
         page_border_fill: Option<&crate::model::page::PageBorderFill>,
+        font_size: f64,
     ) -> Option<f64> {
         let pbf = page_border_fill.filter(|p| p.border_fill_id > 0)?;
         let paper_based = (pbf.attr & 0x01) != 0;
         if paper_based {
             return None;
         }
-        let sp_b = hwpunit_to_px(pbf.spacing_bottom as i32, self.dpi);
-        // build_page_borders 와 동일 (body 기준): 하변 y = by + bh
-        //   = (body.y - sp_t) + (body.height + sp_t + sp_b)
-        //   = body.y + body.height + sp_b
-        Some(layout.body_area.y + layout.body_area.height + sp_b)
+        // 꼬리말 영역 세로 중앙 baseline (기존 footer 중앙 공식과 동일).
+        Some(layout.footer_area.y + layout.footer_area.height / 2.0 + font_size / 3.0)
     }
 
     fn build_page_borders(
@@ -1581,31 +1581,27 @@ impl LayoutEngine {
             };
 
             // 기본: target_area(머리말/꼬리말) 세로 중앙.
-            // 단 꼬리말 위치 + 쪽 테두리가 *이 페이지에 실제로 그려질 때*
-            // 한컴은 쪽 번호를 쪽 테두리 하단 경계선 *아래쪽* 여백에 배치한다
-            // (Task #987 Stage 5).
-            // 쪽 테두리 없거나 hide_border 인 페이지는 기존 중앙 로직 유지
-            // → 회귀 격리 (build_page_borders 의 hide_border 조건과 동일하게 판정).
+            // 단 꼬리말 위치 + body 기준 쪽 테두리가 *이 페이지에 실제로
+            // 그려질 때* 한컴은 쪽 번호를 꼬리말 영역 하단(= 용지 하단에서
+            // margin_footer 만큼 위)에 배치한다 (Task #987 Stage 5).
+            // 쪽 테두리 없거나 paper 기준이거나 hide_border 인 페이지는
+            // 기존 중앙 로직 유지 → 회귀 격리.
             let border_drawn = !page_content
                 .page_hide
                 .as_ref()
                 .map(|ph| ph.hide_border)
                 .unwrap_or(false);
             let is_footer = !matches!(pnp.position, 1..=3 | 7 | 9);
+            let footer_center = target_area.y + target_area.height / 2.0 + font_size / 3.0;
+            // body 기준 테두리 + 테두리 실제 그려질 때만 footer_area 중앙으로
+            // 보정 (target_area 가 footer_area 와 다를 수 있는 경우 정합).
+            // 그 외(paper 기준/테두리 없음/hide_border)는 기존 footer_center.
             let y = if is_footer {
-                if let Some(border_bottom) = self
-                    .page_border_bottom_y(layout, page_border_fill)
+                self.page_number_baseline_y(layout, page_border_fill, font_size)
                     .filter(|_| border_drawn)
-                {
-                    // 쪽 테두리 하변 아래로 gap 만큼 내린 뒤 baseline(=font_size).
-                    // gap: 테두리 선과 쪽 번호 사이 여유 (시각 판정으로 확정).
-                    let gap = font_size * 0.6;
-                    border_bottom + gap + font_size
-                } else {
-                    target_area.y + target_area.height / 2.0 + font_size / 3.0
-                }
+                    .unwrap_or(footer_center)
             } else {
-                target_area.y + target_area.height / 2.0 + font_size / 3.0
+                footer_center
             };
 
             let line_id = tree.next_id();
