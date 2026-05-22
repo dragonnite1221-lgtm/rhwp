@@ -21,7 +21,10 @@ fn diag_pi162_attr1() {
     // 비교: pi=124 (1. 일반사항 — 다른 heading)
     let para_124 = &doc.sections[0].paragraphs[124];
     let ps_124 = &doc.doc_info.para_shapes[para_124.para_shape_id as usize];
-    eprintln!("\n=== pi=124 ParaShape (id={}) — 다른 heading 비교 ===", para_124.para_shape_id);
+    eprintln!(
+        "\n=== pi=124 ParaShape (id={}) — 다른 heading 비교 ===",
+        para_124.para_shape_id
+    );
     eprintln!("attr1 = 0x{:08X}", ps_124.attr1);
     eprintln!("  bit 17 keep_with_next    = {}", (ps_124.attr1 >> 17) & 1);
     eprintln!("  bit 19 page_break_before = {}", (ps_124.attr1 >> 19) & 1);
@@ -29,7 +32,10 @@ fn diag_pi162_attr1() {
     // pi=192 "3. 제안서 작성기준" — 다른 heading
     let para_192 = &doc.sections[0].paragraphs[192];
     let ps_192 = &doc.doc_info.para_shapes[para_192.para_shape_id as usize];
-    eprintln!("\n=== pi=192 ParaShape (id={}) — 3. 제안서 작성기준 ===", para_192.para_shape_id);
+    eprintln!(
+        "\n=== pi=192 ParaShape (id={}) — 3. 제안서 작성기준 ===",
+        para_192.para_shape_id
+    );
     eprintln!("attr1 = 0x{:08X}", ps_192.attr1);
     eprintln!("  bit 17 keep_with_next    = {}", (ps_192.attr1 >> 17) & 1);
     eprintln!("  bit 19 page_break_before = {}", (ps_192.attr1 >> 19) & 1);

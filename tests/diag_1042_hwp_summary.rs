@@ -7,7 +7,10 @@ fn extract_summary_strings(path: &str) -> Vec<String> {
     let bytes = std::fs::read(path).unwrap();
     let mut cfb = CompoundFile::open(Cursor::new(&bytes)).unwrap();
     let mut data = Vec::new();
-    for name in &["/\u{0005}HwpSummaryInformation", "\u{0005}HwpSummaryInformation"] {
+    for name in &[
+        "/\u{0005}HwpSummaryInformation",
+        "\u{0005}HwpSummaryInformation",
+    ] {
         if let Ok(mut stream) = cfb.open_stream(name) {
             use std::io::Read;
             stream.read_to_end(&mut data).ok();

@@ -23,18 +23,28 @@ fn diag_2010_vs_2018_paragraph_diff() {
 
         if pa.line_segs.len() != pb.line_segs.len() {
             diff_ls_count += 1;
-            diffs.push(format!("ls.len 2010={} 2018={}", pa.line_segs.len(), pb.line_segs.len()));
+            diffs.push(format!(
+                "ls.len 2010={} 2018={}",
+                pa.line_segs.len(),
+                pb.line_segs.len()
+            ));
         }
         if pa.line_segs.len() == pb.line_segs.len() && !pa.line_segs.is_empty() {
             for (la, lb) in pa.line_segs.iter().zip(pb.line_segs.iter()) {
                 if la.line_height != lb.line_height {
                     diff_lh += 1;
-                    diffs.push(format!("lh 2010={} 2018={}", la.line_height, lb.line_height));
+                    diffs.push(format!(
+                        "lh 2010={} 2018={}",
+                        la.line_height, lb.line_height
+                    ));
                     break;
                 }
                 if la.line_spacing != lb.line_spacing {
                     diff_ls_field += 1;
-                    diffs.push(format!("ls 2010={} 2018={}", la.line_spacing, lb.line_spacing));
+                    diffs.push(format!(
+                        "ls 2010={} 2018={}",
+                        la.line_spacing, lb.line_spacing
+                    ));
                     break;
                 }
             }
@@ -48,8 +58,10 @@ fn diag_2010_vs_2018_paragraph_diff() {
             }
         }
     }
-    eprintln!("total diff: {} (ls.len diff: {}, lh diff: {}, ls diff: {})",
-        diff_count, diff_ls_count, diff_lh, diff_ls_field);
+    eprintln!(
+        "total diff: {} (ls.len diff: {}, lh diff: {}, ls diff: {})",
+        diff_count, diff_ls_count, diff_lh, diff_ls_field
+    );
 }
 
 #[test]
@@ -65,7 +77,10 @@ fn diag_2024_vs_2022_paragraph_diff() {
 
     let mut diff_count = 0;
     let mut diff_ls_count = 0;
-    eprintln!("\n2024 (HWP5 정상) vs 2022 (비정상) paragraphs ({}):", total);
+    eprintln!(
+        "\n2024 (HWP5 정상) vs 2022 (비정상) paragraphs ({}):",
+        total
+    );
     for i in 0..total {
         let pa = &sa.paragraphs[i];
         let pb = &sb.paragraphs[i];
@@ -73,20 +88,33 @@ fn diag_2024_vs_2022_paragraph_diff() {
 
         if pa.line_segs.len() != pb.line_segs.len() {
             diff_ls_count += 1;
-            diffs.push(format!("ls.len 2024={} 2022={}", pa.line_segs.len(), pb.line_segs.len()));
+            diffs.push(format!(
+                "ls.len 2024={} 2022={}",
+                pa.line_segs.len(),
+                pb.line_segs.len()
+            ));
         }
         if pa.line_segs.len() == pb.line_segs.len() && !pa.line_segs.is_empty() {
             for (la, lb) in pa.line_segs.iter().zip(pb.line_segs.iter()) {
                 if la.line_height != lb.line_height {
-                    diffs.push(format!("lh 2024={} 2022={}", la.line_height, lb.line_height));
+                    diffs.push(format!(
+                        "lh 2024={} 2022={}",
+                        la.line_height, lb.line_height
+                    ));
                     break;
                 }
                 if la.line_spacing != lb.line_spacing {
-                    diffs.push(format!("ls 2024={} 2022={}", la.line_spacing, lb.line_spacing));
+                    diffs.push(format!(
+                        "ls 2024={} 2022={}",
+                        la.line_spacing, lb.line_spacing
+                    ));
                     break;
                 }
                 if la.vertical_pos != lb.vertical_pos {
-                    diffs.push(format!("vpos 2024={} 2022={}", la.vertical_pos, lb.vertical_pos));
+                    diffs.push(format!(
+                        "vpos 2024={} 2022={}",
+                        la.vertical_pos, lb.vertical_pos
+                    ));
                     break;
                 }
             }
@@ -100,5 +128,8 @@ fn diag_2024_vs_2022_paragraph_diff() {
             }
         }
     }
-    eprintln!("total diff: {} (ls.len diff: {})", diff_count, diff_ls_count);
+    eprintln!(
+        "total diff: {} (ls.len diff: {})",
+        diff_count, diff_ls_count
+    );
 }

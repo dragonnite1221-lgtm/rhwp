@@ -30,28 +30,49 @@ fn diag_2022_vs_others_metadata() {
         // section_def metrics
         for (si, section) in doc.sections.iter().enumerate().take(1) {
             let pd = &section.section_def.page_def;
-            eprintln!("  section {}: paper {}×{}, margins L={} R={} T={} B={} (HU)",
-                si, pd.width, pd.height,
-                pd.margin_left, pd.margin_right, pd.margin_top, pd.margin_bottom);
-            eprintln!("    margin_header={}, margin_footer={}, margin_gutter={}",
-                pd.margin_header, pd.margin_footer, pd.margin_gutter);
-            eprintln!("    attr=0x{:08X}, landscape={}",
-                pd.attr, pd.landscape);
-            eprintln!("    pagination_bottom_tolerance={}",
-                pd.pagination_bottom_tolerance);
-            eprintln!("    section_def: flags=0x{:08X} column_spacing={} default_tab_spacing={}",
+            eprintln!(
+                "  section {}: paper {}×{}, margins L={} R={} T={} B={} (HU)",
+                si,
+                pd.width,
+                pd.height,
+                pd.margin_left,
+                pd.margin_right,
+                pd.margin_top,
+                pd.margin_bottom
+            );
+            eprintln!(
+                "    margin_header={}, margin_footer={}, margin_gutter={}",
+                pd.margin_header, pd.margin_footer, pd.margin_gutter
+            );
+            eprintln!("    attr=0x{:08X}, landscape={}", pd.attr, pd.landscape);
+            eprintln!(
+                "    pagination_bottom_tolerance={}",
+                pd.pagination_bottom_tolerance
+            );
+            eprintln!(
+                "    section_def: flags=0x{:08X} column_spacing={} default_tab_spacing={}",
                 section.section_def.flags,
                 section.section_def.column_spacing,
-                section.section_def.default_tab_spacing);
-            eprintln!("    page_num={}, page_num_type={}",
-                section.section_def.page_num,
-                section.section_def.page_num_type);
+                section.section_def.default_tab_spacing
+            );
+            eprintln!(
+                "    page_num={}, page_num_type={}",
+                section.section_def.page_num, section.section_def.page_num_type
+            );
         }
         // doc_properties
-        eprintln!("  paragraphs total: {}",
-            doc.sections.iter().map(|s| s.paragraphs.len()).sum::<usize>());
-        eprintln!("  para_shapes: {}, char_shapes: {}",
-            doc.doc_info.para_shapes.len(), doc.doc_info.char_shapes.len());
+        eprintln!(
+            "  paragraphs total: {}",
+            doc.sections
+                .iter()
+                .map(|s| s.paragraphs.len())
+                .sum::<usize>()
+        );
+        eprintln!(
+            "  para_shapes: {}, char_shapes: {}",
+            doc.doc_info.para_shapes.len(),
+            doc.doc_info.char_shapes.len()
+        );
     }
 }
 
@@ -74,33 +95,45 @@ fn diag_2022_vs_2010_paragraph_diff() {
         let pb = &sb.paragraphs[i];
         let mut diffs: Vec<String> = Vec::new();
         if pa.control_mask != pb.control_mask {
-            diffs.push(format!("ctrl_mask: 2010=0x{:08X} 2022=0x{:08X}",
-                pa.control_mask, pb.control_mask));
+            diffs.push(format!(
+                "ctrl_mask: 2010=0x{:08X} 2022=0x{:08X}",
+                pa.control_mask, pb.control_mask
+            ));
         }
         if pa.raw_break_type != pb.raw_break_type {
-            diffs.push(format!("break_type: 2010=0x{:02X} 2022=0x{:02X}",
-                pa.raw_break_type, pb.raw_break_type));
+            diffs.push(format!(
+                "break_type: 2010=0x{:02X} 2022=0x{:02X}",
+                pa.raw_break_type, pb.raw_break_type
+            ));
         }
         if pa.line_segs.len() != pb.line_segs.len() {
-            diffs.push(format!("ls.len: 2010={} 2022={}",
-                pa.line_segs.len(), pb.line_segs.len()));
+            diffs.push(format!(
+                "ls.len: 2010={} 2022={}",
+                pa.line_segs.len(),
+                pb.line_segs.len()
+            ));
         }
         if pa.raw_header_extra != pb.raw_header_extra {
-            diffs.push(format!("header_extra differ: 2010={:02X?} 2022={:02X?}",
-                pa.raw_header_extra, pb.raw_header_extra));
+            diffs.push(format!(
+                "header_extra differ: 2010={:02X?} 2022={:02X?}",
+                pa.raw_header_extra, pb.raw_header_extra
+            ));
         }
         // line_segs 정합 시 첫 ls 비교
         if pa.line_segs.len() == pb.line_segs.len() {
             for (j, (la, lb)) in pa.line_segs.iter().zip(pb.line_segs.iter()).enumerate() {
                 if la.line_height != lb.line_height || la.line_spacing != lb.line_spacing {
-                    diffs.push(format!("ls[{}]: 2010 lh={} ls={} vs 2022 lh={} ls={}",
-                        j, la.line_height, la.line_spacing,
-                        lb.line_height, lb.line_spacing));
+                    diffs.push(format!(
+                        "ls[{}]: 2010 lh={} ls={} vs 2022 lh={} ls={}",
+                        j, la.line_height, la.line_spacing, lb.line_height, lb.line_spacing
+                    ));
                     break;
                 }
                 if la.vertical_pos != lb.vertical_pos {
-                    diffs.push(format!("ls[{}].vpos: 2010={} 2022={}",
-                        j, la.vertical_pos, lb.vertical_pos));
+                    diffs.push(format!(
+                        "ls[{}].vpos: 2010={} 2022={}",
+                        j, la.vertical_pos, lb.vertical_pos
+                    ));
                     break;
                 }
             }

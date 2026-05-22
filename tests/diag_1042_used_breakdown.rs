@@ -12,12 +12,16 @@ fn diag_p6_used_breakdown() {
     let to_px = |hu: i32| hu as f64 * dpi / 7200.0;
 
     // p6 의 paragraph indices (dump-pages 결과 참조)
-    let p6_indices: Vec<usize> = vec![142, 143, 144, 145, 146, 147, 148, 149, 150, 151,
-                                       152, 153, 154, 155, 156, 157, 158, 159, 160, 161, 162];
+    let p6_indices: Vec<usize> = vec![
+        142, 143, 144, 145, 146, 147, 148, 149, 150, 151, 152, 153, 154, 155, 156, 157, 158, 159,
+        160, 161, 162,
+    ];
 
     eprintln!("\n=== sample16-2024 p6 paragraph 별 raw 분석 ===");
-    eprintln!("{:>4} | {:>5} | {:>6} | {:>6} | {:>6} | {:>6} | {:>6} | text",
-        "pi", "ls#", "vpos[0]", "vpos[L]", "lh[L]", "ls[L]", "spans");
+    eprintln!(
+        "{:>4} | {:>5} | {:>6} | {:>6} | {:>6} | {:>6} | {:>6} | text",
+        "pi", "ls#", "vpos[0]", "vpos[L]", "lh[L]", "ls[L]", "spans"
+    );
     let mut prev_vpos_end: Option<i32> = None;
     let mut sum_vpos_diffs = 0.0;
     let mut sum_raw_heights = 0.0;
@@ -33,7 +37,8 @@ fn diag_p6_used_breakdown() {
         let lcount = para.line_segs.len();
 
         // paragraph 의 raw height = last.vpos + last.lh + last.ls - first.vpos
-        let raw_h_hu = last.vertical_pos + last.line_height + last.line_spacing - first.vertical_pos;
+        let raw_h_hu =
+            last.vertical_pos + last.line_height + last.line_spacing - first.vertical_pos;
         let raw_h_px = to_px(raw_h_hu);
 
         // 이전 paragraph 끝 vs 현재 paragraph 시작 vpos diff
@@ -50,10 +55,18 @@ fn diag_p6_used_breakdown() {
         };
 
         let text_pre: String = para.text.chars().take(30).collect();
-        eprintln!("{:>4} | {:>5} | {:>6} | {:>6} | {:>6} | {:>6} | gap={:>5.1} h={:>5.1} | {}",
-            pi, lcount,
-            first.vertical_pos, last.vertical_pos, last.line_height, last.line_spacing,
-            vpos_diff_px, raw_h_px, text_pre);
+        eprintln!(
+            "{:>4} | {:>5} | {:>6} | {:>6} | {:>6} | {:>6} | gap={:>5.1} h={:>5.1} | {}",
+            pi,
+            lcount,
+            first.vertical_pos,
+            last.vertical_pos,
+            last.line_height,
+            last.line_spacing,
+            vpos_diff_px,
+            raw_h_px,
+            text_pre
+        );
 
         sum_vpos_diffs += vpos_diff_px;
         sum_raw_heights += raw_h_px;
@@ -62,7 +75,13 @@ fn diag_p6_used_breakdown() {
 
     eprintln!("\n합산:");
     eprintln!("  raw paragraph heights 합: {:.1} px", sum_raw_heights);
-    eprintln!("  paragraph 간 gap 합 (vpos diff): {:.1} px", sum_vpos_diffs);
-    eprintln!("  total (raw + gap): {:.1} px", sum_raw_heights + sum_vpos_diffs);
+    eprintln!(
+        "  paragraph 간 gap 합 (vpos diff): {:.1} px",
+        sum_vpos_diffs
+    );
+    eprintln!(
+        "  total (raw + gap): {:.1} px",
+        sum_raw_heights + sum_vpos_diffs
+    );
     eprintln!("  dump-pages 의 used: 969.5 px");
 }

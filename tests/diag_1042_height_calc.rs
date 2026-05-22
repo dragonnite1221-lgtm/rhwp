@@ -18,8 +18,10 @@ fn diag_kwater_p2_baseline_trace() {
 
     let dpi = 96.0;
     eprintln!("ensure_min_baseline diff:");
-    eprintln!("{:>4} | {:>6} | {:>6} | {:>6} | {:>+6} | {:>4} | text",
-        "p#", "raw_bl", "max_fs", "ensured", "diff", "ls");
+    eprintln!(
+        "{:>4} | {:>6} | {:>6} | {:>6} | {:>+6} | {:>4} | text",
+        "p#", "raw_bl", "max_fs", "ensured", "diff", "ls"
+    );
 
     let mut total_baseline_diff = 0.0;
     let mut affected_count = 0;
@@ -31,9 +33,17 @@ fn diag_kwater_p2_baseline_trace() {
         let raw_bl_hu = para.line_segs[0].baseline_distance;
         let raw_bl = raw_bl_hu as f64 * dpi / 7200.0;
 
-        let first_cs_id = para.char_shapes.first().map(|cs| cs.char_shape_id).unwrap_or(0);
-        let base_size = doc.doc_info.char_shapes.get(first_cs_id as usize)
-            .map(|cs| cs.base_size).unwrap_or(1000);
+        let first_cs_id = para
+            .char_shapes
+            .first()
+            .map(|cs| cs.char_shape_id)
+            .unwrap_or(0);
+        let base_size = doc
+            .doc_info
+            .char_shapes
+            .get(first_cs_id as usize)
+            .map(|cs| cs.base_size)
+            .unwrap_or(1000);
         let max_fs_px = base_size as f64 / 100.0 * dpi / 72.0;
 
         let ensured = ensure_min_baseline(raw_bl, max_fs_px);
@@ -43,13 +53,23 @@ fn diag_kwater_p2_baseline_trace() {
             affected_count += 1;
             if affected_count <= 15 {
                 let text_pre: String = para.text.chars().take(25).collect();
-                eprintln!("{:>4} | {:>6.2} | {:>6.2} | {:>6.2} | {:>+6.2} | {:>4} | {}",
-                    i, raw_bl, max_fs_px, ensured, diff, para.line_segs.len(), text_pre);
+                eprintln!(
+                    "{:>4} | {:>6.2} | {:>6.2} | {:>6.2} | {:>+6.2} | {:>4} | {}",
+                    i,
+                    raw_bl,
+                    max_fs_px,
+                    ensured,
+                    diff,
+                    para.line_segs.len(),
+                    text_pre
+                );
             }
         }
     }
-    eprintln!("affected: {}, total baseline diff: {:.2} px",
-        affected_count, total_baseline_diff);
+    eprintln!(
+        "affected: {}, total baseline diff: {:.2} px",
+        affected_count, total_baseline_diff
+    );
 }
 
 #[test]
@@ -63,18 +83,18 @@ fn diag_kwater_paragraph_total_height() {
     let to_px = |hu: i32| hu as f64 * dpi / 7200.0;
 
     eprintln!("paragraph 별 raw line_segs sum (lh+ls):");
-    eprintln!("{:>4} | {:>4} | {:>8} | {:>8} | {:>8} | text",
-        "p#", "ls#", "lh_sum", "ls_sum", "total");
+    eprintln!(
+        "{:>4} | {:>4} | {:>8} | {:>8} | {:>8} | text",
+        "p#", "ls#", "lh_sum", "ls_sum", "total"
+    );
 
     for i in 0..section.paragraphs.len().min(50) {
         let para = &section.paragraphs[i];
         if para.line_segs.is_empty() {
             continue;
         }
-        let lh_sum: f64 = para.line_segs.iter()
-            .map(|ls| to_px(ls.line_height)).sum();
-        let ls_sum: f64 = para.line_segs.iter()
-            .map(|ls| to_px(ls.line_spacing)).sum();
+        let lh_sum: f64 = para.line_segs.iter().map(|ls| to_px(ls.line_height)).sum();
+        let ls_sum: f64 = para.line_segs.iter().map(|ls| to_px(ls.line_spacing)).sum();
         let total = lh_sum + ls_sum;
         // raw vpos 기반 paragraph height
         let last = para.line_segs.last().unwrap();

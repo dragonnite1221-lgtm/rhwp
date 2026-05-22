@@ -119,7 +119,12 @@ fn diag_5files_raw_record_distribution() {
     for (label, path) in &files {
         let bytes = std::fs::read(path).expect("read");
         let doc = rhwp::parser::parse_hwp(&bytes).expect("parse");
-        eprintln!("\n=== {} ({}): {} sections ===", label, path, doc.sections.len());
+        eprintln!(
+            "\n=== {} ({}): {} sections ===",
+            label,
+            path,
+            doc.sections.len()
+        );
         for (si, section) in doc.sections.iter().enumerate() {
             let raw = section.raw_stream.as_ref();
             if let Some(raw) = raw {

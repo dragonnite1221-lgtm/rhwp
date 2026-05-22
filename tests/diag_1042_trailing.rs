@@ -15,6 +15,9 @@ fn diag_trailing_line_segs() {
     eprintln!("  char_count field: {}", para.char_count);
     eprintln!("  line_segs.len={}", para.line_segs.len());
     for (i, ls) in para.line_segs.iter().enumerate() {
-        eprintln!("    ls[{}]: text_start={}, vpos={}, lh={}", i, ls.text_start, ls.vertical_pos, ls.line_height);
+        eprintln!(
+            "    ls[{}]: text_start={}, vpos={}, lh={}",
+            i, ls.text_start, ls.vertical_pos, ls.line_height
+        );
     }
 }

@@ -24,18 +24,31 @@ fn diag_kwater_pi52_row3_cell_height() {
     let table = para
         .controls
         .iter()
-        .find_map(|c| if let Control::Table(t) = c { Some(t) } else { None })
+        .find_map(|c| {
+            if let Control::Table(t) = c {
+                Some(t)
+            } else {
+                None
+            }
+        })
         .expect("table at pi=52");
 
     let dpi = 96.0;
     let to_px = |hu: i32| hu as f64 * dpi / 7200.0;
 
     eprintln!("\n=== pi=52 표 (4행×4열) row 3 cell 별 height 진단 ===");
-    eprintln!("표 size: {}×{} HU = {:.1}×{:.1} px",
-        44496, 55880, to_px(44496), to_px(55880));
+    eprintln!(
+        "표 size: {}×{} HU = {:.1}×{:.1} px",
+        44496,
+        55880,
+        to_px(44496),
+        to_px(55880)
+    );
 
     // row 3 의 cell (row_span==1)
-    let row3_cells: Vec<&rhwp::model::table::Cell> = table.cells.iter()
+    let row3_cells: Vec<&rhwp::model::table::Cell> = table
+        .cells
+        .iter()
         .filter(|c| c.row as usize == 3 && c.row_span == 1)
         .collect();
 
@@ -47,7 +60,9 @@ fn diag_kwater_pi52_row3_cell_height() {
     for cell in &row3_cells {
         let cell_h_px = if cell.height < 0x8000_0000 {
             to_px(cell.height as i32)
-        } else { 0.0 };
+        } else {
+            0.0
+        };
         let paras_count = cell.paragraphs.len();
 
         // 3 방식 측정
@@ -77,8 +92,10 @@ fn diag_kwater_pi52_row3_cell_height() {
             }
         }
 
-        eprintln!("  cell[r=3,c={}] paras={} cell_h={:.1}px A={:.1}px B={:.1}px C={:.1}px",
-            cell.col, paras_count, cell_h_px, a, b, c);
+        eprintln!(
+            "  cell[r=3,c={}] paras={} cell_h={:.1}px A={:.1}px B={:.1}px C={:.1}px",
+            cell.col, paras_count, cell_h_px, a, b, c
+        );
 
         total_a = total_a.max(a);
         total_b = total_b.max(b);
@@ -89,8 +106,16 @@ fn diag_kwater_pi52_row3_cell_height() {
     eprintln!("\nrow 3 max:");
     eprintln!("  raw cell.height max: {:.1}px", max_cell_h_raw);
     eprintln!("  방식 A (현재): {:.1}px", total_a);
-    eprintln!("  방식 B (para last ls 제외): {:.1}px (diff vs A: {:+.1})", total_b, total_b - total_a);
-    eprintln!("  방식 C (cell last ls 제외): {:.1}px (diff vs A: {:+.1})", total_c, total_c - total_a);
+    eprintln!(
+        "  방식 B (para last ls 제외): {:.1}px (diff vs A: {:+.1})",
+        total_b,
+        total_b - total_a
+    );
+    eprintln!(
+        "  방식 C (cell last ls 제외): {:.1}px (diff vs A: {:+.1})",
+        total_c,
+        total_c - total_a
+    );
 
     // p6 의 hwp_used=479.1, used=920.6 — diff=441.6
     // row 3 측정값이 어느 방식에서 정답 가까운지 확인
@@ -108,15 +133,23 @@ fn diag_kwater_pi180_row_summary() {
     let table = para
         .controls
         .iter()
-        .find_map(|c| if let Control::Table(t) = c { Some(t) } else { None })
+        .find_map(|c| {
+            if let Control::Table(t) = c {
+                Some(t)
+            } else {
+                None
+            }
+        })
         .expect("table at pi=180");
 
     let dpi = 96.0;
     let to_px = |hu: i32| hu as f64 * dpi / 7200.0;
 
     eprintln!("\n=== pi=180 표 (32행×4열) 전체 row 별 max content height ===");
-    eprintln!("{:>4} | {:>5} | {:>8} | {:>8} | {:>8} | {:>8}",
-        "row", "paras", "cell_h", "A_max", "B_max", "C_max");
+    eprintln!(
+        "{:>4} | {:>5} | {:>8} | {:>8} | {:>8} | {:>8}",
+        "row", "paras", "cell_h", "A_max", "B_max", "C_max"
+    );
 
     let mut grand_a = 0.0_f64;
     let mut grand_b = 0.0_f64;
@@ -124,10 +157,14 @@ fn diag_kwater_pi180_row_summary() {
     let mut grand_raw = 0.0_f64;
 
     for r in 0..32 {
-        let row_cells: Vec<&rhwp::model::table::Cell> = table.cells.iter()
+        let row_cells: Vec<&rhwp::model::table::Cell> = table
+            .cells
+            .iter()
             .filter(|c| c.row as usize == r && c.row_span == 1)
             .collect();
-        if row_cells.is_empty() { continue; }
+        if row_cells.is_empty() {
+            continue;
+        }
 
         let mut max_cell_h = 0.0_f64;
         let mut max_a = 0.0_f64;
@@ -138,7 +175,9 @@ fn diag_kwater_pi180_row_summary() {
         for cell in &row_cells {
             let cell_h_px = if cell.height < 0x8000_0000 {
                 to_px(cell.height as i32)
-            } else { 0.0 };
+            } else {
+                0.0
+            };
             let para_count = cell.paragraphs.len();
             total_paras += para_count;
 
@@ -169,8 +208,10 @@ fn diag_kwater_pi180_row_summary() {
         let used_b = max_b.max(max_cell_h);
         let used_c = max_c.max(max_cell_h);
 
-        eprintln!("{:>4} | {:>5} | {:>8.1} | {:>8.1} | {:>8.1} | {:>8.1}",
-            r, total_paras, max_cell_h, used_a, used_b, used_c);
+        eprintln!(
+            "{:>4} | {:>5} | {:>8.1} | {:>8.1} | {:>8.1} | {:>8.1}",
+            r, total_paras, max_cell_h, used_a, used_b, used_c
+        );
 
         grand_raw += max_cell_h;
         grand_a += used_a;
@@ -180,7 +221,19 @@ fn diag_kwater_pi180_row_summary() {
 
     eprintln!("\n전체 row 합 (max(cell_h, content)):");
     eprintln!("  raw cell.h sum: {:.1}px", grand_raw);
-    eprintln!("  A (현재) sum: {:.1}px (vs raw: {:+.1})", grand_a, grand_a - grand_raw);
-    eprintln!("  B (para last ls 제외) sum: {:.1}px (vs A: {:+.1})", grand_b, grand_b - grand_a);
-    eprintln!("  C (cell last ls 제외) sum: {:.1}px (vs A: {:+.1})", grand_c, grand_c - grand_a);
+    eprintln!(
+        "  A (현재) sum: {:.1}px (vs raw: {:+.1})",
+        grand_a,
+        grand_a - grand_raw
+    );
+    eprintln!(
+        "  B (para last ls 제외) sum: {:.1}px (vs A: {:+.1})",
+        grand_b,
+        grand_b - grand_a
+    );
+    eprintln!(
+        "  C (cell last ls 제외) sum: {:.1}px (vs A: {:+.1})",
+        grand_c,
+        grand_c - grand_a
+    );
 }
