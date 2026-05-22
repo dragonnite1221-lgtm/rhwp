@@ -46,7 +46,15 @@ E2E는 다음을 확인했다.
 
 작업지시자 시각 판정 통과.
 
-## 6. 후속 후보
+## 6. Git 반영
+
+- 작업 브랜치 커밋: `729c98f7`
+- `local/devel` 병합 커밋: `8ed437c4`
+- `devel` 병합 커밋: `3b820806`
+- `origin/devel` push 완료
+- GitHub Issue #1053 close 완료: `2026-05-22T06:37:28Z`
+
+## 7. 후속 후보
 
 - 실제 HWPML 2.1 fixture 확보 시 실파일 회귀 테스트 추가
 - JS/WASM 경계의 구조화 오류 객체 API는 별도 task로 분리 가능
