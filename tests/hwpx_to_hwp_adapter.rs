@@ -428,7 +428,7 @@ fn task888_expense_report_parses_page_border_fills() {
     let core = DocumentCore::from_bytes(&bytes).expect("HWPX 로드 실패");
     let section_def = &core.document().sections[0].section_def;
 
-    assert_eq!(section_def.page_border_fill.attr, 0x0000_0041);
+    assert_eq!(section_def.page_border_fill.attr, 0x0000_0001);
     assert_eq!(section_def.page_border_fill.border_fill_id, 3);
     assert_eq!(section_def.page_border_fill.spacing_left, 4252);
     assert_eq!(section_def.page_border_fill.spacing_right, 4252);
@@ -436,7 +436,7 @@ fn task888_expense_report_parses_page_border_fills() {
     assert_eq!(section_def.page_border_fill.spacing_bottom, 4252);
 
     assert_eq!(section_def.extra_page_border_fills.len(), 2);
-    assert_eq!(section_def.extra_page_border_fills[0].attr, 0x0000_0041);
+    assert_eq!(section_def.extra_page_border_fills[0].attr, 0x0000_0001);
     assert_eq!(section_def.extra_page_border_fills[0].border_fill_id, 3);
     assert_eq!(section_def.extra_page_border_fills[1].attr, 0x0000_0001);
     assert_eq!(section_def.extra_page_border_fills[1].border_fill_id, 3);
@@ -451,7 +451,7 @@ fn task888_expense_report_page_border_fills_survive_hwp_save_reload() {
     let reloaded = DocumentCore::from_bytes(&hwp_bytes).expect("HWP 재로드 실패");
     let section_def = &reloaded.document().sections[0].section_def;
 
-    assert_eq!(section_def.page_border_fill.attr, 0x0000_0041);
+    assert_eq!(section_def.page_border_fill.attr, 0x0000_0001);
     assert_eq!(section_def.page_border_fill.border_fill_id, 3);
     assert_eq!(section_def.page_border_fill.spacing_left, 4252);
     assert_eq!(section_def.page_border_fill.spacing_right, 4252);
@@ -459,7 +459,7 @@ fn task888_expense_report_page_border_fills_survive_hwp_save_reload() {
     assert_eq!(section_def.page_border_fill.spacing_bottom, 4252);
 
     assert_eq!(section_def.extra_page_border_fills.len(), 2);
-    assert_eq!(section_def.extra_page_border_fills[0].attr, 0x0000_0041);
+    assert_eq!(section_def.extra_page_border_fills[0].attr, 0x0000_0001);
     assert_eq!(section_def.extra_page_border_fills[0].border_fill_id, 3);
     assert_eq!(section_def.extra_page_border_fills[1].attr, 0x0000_0001);
     assert_eq!(section_def.extra_page_border_fills[1].border_fill_id, 3);

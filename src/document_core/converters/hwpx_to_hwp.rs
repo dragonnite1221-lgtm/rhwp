@@ -445,6 +445,8 @@ fn adapt_paragraph(para: &mut Paragraph, report: &mut AdapterReport) {
     for (idx, ctrl) in controls.iter_mut().enumerate() {
         match ctrl {
             Control::Table(table) => adapt_table(table, report),
+            Control::Header(header) => adapt_paragraphs(&mut header.paragraphs, report),
+            Control::Footer(footer) => adapt_paragraphs(&mut footer.paragraphs, report),
             Control::Picture(pic) => {
                 adapt_picture_href_ctrl_data(pic, &mut ctrl_data_records[idx], report)
             }
@@ -452,6 +454,12 @@ fn adapt_paragraph(para: &mut Paragraph, report: &mut AdapterReport) {
             Control::Equation(eq) => adapt_equation(eq, report),
             _ => {}
         }
+    }
+}
+
+fn adapt_paragraphs(paragraphs: &mut [Paragraph], report: &mut AdapterReport) {
+    for para in paragraphs {
+        adapt_paragraph(para, report);
     }
 }
 
@@ -482,9 +490,7 @@ fn adapt_section_def(section_def: &mut SectionDef, report: &mut AdapterReport) {
     materialize_section_def_master_page_tail(section_def, report);
 
     for master_page in &mut section_def.master_pages {
-        for para in &mut master_page.paragraphs {
-            adapt_paragraph(para, report);
-        }
+        adapt_paragraphs(&mut master_page.paragraphs, report);
     }
 }
 
@@ -538,9 +544,7 @@ fn adapt_shape(shape: &mut ShapeObject, report: &mut AdapterReport) {
     if let Some(drawing) = shape.drawing_mut() {
         if let Some(text_box) = &mut drawing.text_box {
             materialize_text_box_hwp5_envelope(text_box, report);
-            for para in &mut text_box.paragraphs {
-                adapt_paragraph(para, report);
-            }
+            adapt_paragraphs(&mut text_box.paragraphs, report);
         }
     }
 
@@ -1111,6 +1115,65 @@ mod tests {
         let mut second = AdapterReport::new();
         adapt_paragraph(&mut para, &mut second);
         assert_eq!(second.picture_href_ctrl_data_materialized, 0);
+    }
+
+    #[test]
+    fn header_footer_nested_tables_are_materialized() {
+        use crate::model::header_footer::{Footer, Header};
+
+        fn make_table_para() -> Paragraph {
+            let table = Table {
+                row_count: 1,
+                col_count: 1,
+                cells: vec![Cell {
+                    col: 0,
+                    row: 0,
+                    col_span: 1,
+                    row_span: 1,
+                    ..Default::default()
+                }],
+                repeat_header: true,
+                ..Default::default()
+            };
+
+            let mut para = Paragraph::default();
+            para.controls.push(Control::Table(Box::new(table)));
+            para
+        }
+
+        let mut para = Paragraph::default();
+        para.controls.push(Control::Header(Box::new(Header {
+            paragraphs: vec![make_table_para()],
+            ..Default::default()
+        })));
+        para.controls.push(Control::Footer(Box::new(Footer {
+            paragraphs: vec![make_table_para()],
+            ..Default::default()
+        })));
+
+        let mut report = AdapterReport::new();
+        adapt_paragraph(&mut para, &mut report);
+
+        for control in &para.controls {
+            let nested = match control {
+                Control::Header(header) => &header.paragraphs[0].controls[0],
+                Control::Footer(footer) => &footer.paragraphs[0].controls[0],
+                _ => continue,
+            };
+            let Control::Table(table) = nested else {
+                panic!("expected nested table");
+            };
+
+            assert!(!table.raw_ctrl_data.is_empty());
+            assert_eq!(table.raw_table_record_attr & 0x04, 0x04);
+            assert_eq!(table.row_sizes, vec![1]);
+            assert_eq!(table.raw_table_record_extra, vec![0, 0]);
+            assert_eq!(table.cells[0].raw_list_extra.len(), 13);
+        }
+
+        assert_eq!(report.tables_ctrl_data_synthesized, 2);
+        assert_eq!(report.table_record_extra_materialized, 2);
+        assert_eq!(report.cells_list_header_contract_materialized, 2);
     }
 
     #[test]
