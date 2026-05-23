@@ -15,7 +15,7 @@ use crate::model::footnote::{Endnote, Footnote};
 use crate::model::header_footer::{Footer, Header, HeaderFooterApply};
 use crate::model::image::{CropInfo, ImageAttr, ImageEffect};
 use crate::model::page::{ColumnDef, ColumnDirection, ColumnType, PageBorderFill, PageDef};
-use crate::model::paragraph::{CharShapeRef, LineSeg, Paragraph};
+use crate::model::paragraph::{CharShapeRef, FieldRange, LineSeg, Paragraph};
 use crate::model::shape::{
     ArcShape, CommonObjAttr, CurveShape, DrawingObjAttr, EllipseShape, GroupShape, HorzAlign,
     HorzRelTo, LineShape, PolygonShape, RectangleShape, ShapeComponentAttr, ShapeObject, TextBox,
@@ -358,6 +358,45 @@ fn parse_paragraph(
         }
         buf.clear();
     }
+
+    // FIELD_BEGIN/FIELD_END 쌍은 HWP PARA_TEXT에서 각각 8 code unit을 차지한다.
+    // HWPX 파싱 결과를 HWP로 다시 저장할 때 FIELD_END를 복원하려면, visible text
+    // 범위와 해당 Field 컨트롤 index를 field_ranges에 남겨야 한다.
+    let mut field_ranges: Vec<FieldRange> = Vec::new();
+    let mut field_stack: Vec<(usize, usize)> = Vec::new();
+    let mut control_idx: usize = 0;
+    let mut visible_char_idx: usize = 0;
+
+    for part in &text_parts {
+        match part.as_str() {
+            "\u{0003}" => {
+                if matches!(para.controls.get(control_idx), Some(Control::Field(_))) {
+                    field_stack.push((visible_char_idx, control_idx));
+                }
+                control_idx += 1;
+            }
+            "\u{0004}" => {
+                if let Some((start_char_idx, control_idx)) = field_stack.pop() {
+                    field_ranges.push(FieldRange {
+                        start_char_idx,
+                        end_char_idx: visible_char_idx,
+                        control_idx,
+                    });
+                }
+            }
+            "\u{0002}" => {
+                control_idx += 1;
+            }
+            "\u{0012}" => {
+                control_idx += 1;
+                visible_char_idx += 1;
+            }
+            _ => {
+                visible_char_idx += part.chars().count();
+            }
+        }
+    }
+    para.field_ranges = field_ranges;
 
     // 텍스트 조립: 제어 문자(\u{0002}, \u{0003}, \u{0004})는 HWP와 동일하게 텍스트에서 제외
     // HWP에서 컨트롤 위치는 char_offsets의 갭으로 표현되므로 원본 순서를 유지해 계산한다.
@@ -3108,6 +3147,8 @@ fn parse_autonum_attrs(e: &quick_xml::events::BytesStart) -> AutoNumber {
 fn parse_field_begin_attrs(e: &quick_xml::events::BytesStart) -> Field {
     let mut f = Field::default();
     let mut field_name: Option<String> = None;
+    let mut id_attr: Option<u32> = None;
+    let mut fieldid_attr: Option<u32> = None;
     for attr in e.attributes().flatten() {
         match attr.key.as_ref() {
             b"type" => f.field_type = parse_field_type(&attr_str(&attr)),
@@ -3115,13 +3156,13 @@ fn parse_field_begin_attrs(e: &quick_xml::events::BytesStart) -> Field {
             // [Task #852 Stage 2.5] HWP5 직렬화에 필요한 필드 메타
             b"id" => {
                 if let Ok(v) = attr_str(&attr).parse::<u32>() {
-                    f.field_id = v;
+                    id_attr = Some(v);
                 }
             }
             b"fieldid" => {
                 if let Ok(v) = attr_str(&attr).parse::<u32>() {
                     // fieldid (instance ID) — 정답지의 CTRL_HEADER 끝에 저장
-                    f.field_id = v;
+                    fieldid_attr = Some(v);
                 }
             }
             b"editable" => {
@@ -3133,6 +3174,11 @@ fn parse_field_begin_attrs(e: &quick_xml::events::BytesStart) -> Field {
             _ => {}
         }
     }
+    f.field_id = if matches!(f.field_type, FieldType::Memo) {
+        id_attr.or(fieldid_attr).unwrap_or(0)
+    } else {
+        fieldid_attr.or(id_attr).unwrap_or(0)
+    };
     // [Task #852 Stage 2.5] field_type → ctrl_id 매핑.
     // 정답지 (samples/form-01.hwp) reverse engineering: ClickHere CTRL_HEADER 의 ctrl_id 가
     // "%clk" (FIELD_CLICKHERE). HWPX parser 가 이전엔 ctrl_id 미설정 → serializer 가
@@ -3386,6 +3432,8 @@ fn parse_ctrl_field_begin(
                 let local = local_name(cname.as_ref());
                 if local == b"parameters" {
                     parse_field_parameters(reader, &mut f)?;
+                } else if local == b"subList" && f.field_type == FieldType::Memo {
+                    f.memo_paragraphs = parse_sublist_paragraphs(reader, b"subList")?;
                 } else {
                     let tag = local.to_vec();
                     skip_element(reader, &tag)?;
@@ -3410,6 +3458,7 @@ fn parse_ctrl_field_begin(
 fn parse_field_parameters(reader: &mut Reader<&[u8]>, field: &mut Field) -> Result<(), HwpxError> {
     let mut buf = Vec::new();
     let mut in_command = false;
+    let mut in_memo_number = false;
     loop {
         match reader.read_event_into(&mut buf) {
             Ok(Event::Start(ref ce)) => {
@@ -3420,6 +3469,12 @@ fn parse_field_parameters(reader: &mut Reader<&[u8]>, field: &mut Field) -> Resu
                         if attr.key.as_ref() == b"name" && attr_str(&attr) == "Command" {
                             in_command = true;
                             field.command.clear();
+                        }
+                    }
+                } else if local == b"integerParam" {
+                    for attr in ce.attributes().flatten() {
+                        if attr.key.as_ref() == b"name" && attr_str(&attr) == "Number" {
+                            in_memo_number = true;
                         }
                     }
                 }
@@ -3438,6 +3493,10 @@ fn parse_field_parameters(reader: &mut Reader<&[u8]>, field: &mut Field) -> Resu
             Ok(Event::Text(ref t)) => {
                 if in_command {
                     field.command.push_str(&t.decode().unwrap_or_default());
+                } else if in_memo_number {
+                    if let Ok(value) = t.decode().unwrap_or_default().trim().parse::<u32>() {
+                        field.memo_index = value;
+                    }
                 }
             }
             Ok(Event::GeneralRef(ref r)) => {
@@ -3450,6 +3509,8 @@ fn parse_field_parameters(reader: &mut Reader<&[u8]>, field: &mut Field) -> Resu
                 let local = local_name(eename.as_ref());
                 if local == b"stringParam" {
                     in_command = false;
+                } else if local == b"integerParam" {
+                    in_memo_number = false;
                 } else if local == b"parameters" {
                     break;
                 }
@@ -4357,6 +4418,39 @@ mod tests {
     }
 
     #[test]
+    fn test_parse_field_begin_end_materializes_field_range() {
+        let xml = r#"<?xml version="1.0" encoding="UTF-8"?>
+<hs:sec xmlns:hp="http://www.hancom.co.kr/hwpml/2011/paragraph"
+        xmlns:hs="http://www.hancom.co.kr/hwpml/2011/section">
+  <hp:p paraPrIDRef="0" styleIDRef="0">
+    <hp:run charPrIDRef="0">
+      <hp:ctrl>
+        <hp:fieldBegin type="MEMO" id="2135782115" fieldid="623209829"/>
+      </hp:ctrl>
+      <hp:t>ABC</hp:t>
+      <hp:ctrl>
+        <hp:fieldEnd beginIDRef="2135782115" fieldid="623209829"/>
+      </hp:ctrl>
+    </hp:run>
+  </hp:p>
+</hs:sec>"#;
+
+        let section = parse_hwpx_section(xml).unwrap();
+        let para = &section.paragraphs[0];
+
+        assert_eq!(para.text, "ABC");
+        assert_eq!(para.char_offsets, vec![8, 9, 10]);
+        assert_eq!(para.char_count, 20);
+        assert_eq!(para.controls.len(), 1);
+        assert_eq!(para.field_ranges.len(), 1);
+
+        let range = &para.field_ranges[0];
+        assert_eq!(range.start_char_idx, 0);
+        assert_eq!(range.end_char_idx, 3);
+        assert_eq!(range.control_idx, 0);
+    }
+
+    #[test]
     fn test_rendering_info_materializes_hwp5_raw_rendering_count() {
         let xml = r#"<hp:renderingInfo xmlns:hp="http://www.hancom.co.kr/hwpml/2011/paragraph"
             xmlns:hc="http://www.hancom.co.kr/hwpml/2011/core">
@@ -4435,6 +4529,59 @@ mod tests {
             f64::from(0.723636f32)
         );
         assert_eq!(read_f64(&shape_attr.raw_rendering, scale_start + 16), 310.0);
+    }
+
+    #[test]
+    fn test_parse_memo_field_parameters_preserves_number_as_memo_index() {
+        let xml = r#"<hp:parameters xmlns:hp="http://www.hancom.co.kr/hwpml/2011/paragraph">
+  <hp:stringParam name="Command">MEMO/65535/2/1650281184/31247371/user/\;;</hp:stringParam>
+  <hp:integerParam name="Number">2</hp:integerParam>
+</hp:parameters>"#;
+        let mut reader = Reader::from_str(xml);
+        let mut buf = Vec::new();
+        let mut field = Field {
+            field_type: FieldType::Memo,
+            ..Default::default()
+        };
+
+        loop {
+            match reader.read_event_into(&mut buf).unwrap() {
+                Event::Start(ref e) if local_name(e.name().as_ref()) == b"parameters" => {
+                    parse_field_parameters(&mut reader, &mut field).unwrap();
+                    break;
+                }
+                Event::Eof => panic!("parameters not found"),
+                _ => {}
+            }
+            buf.clear();
+        }
+
+        assert_eq!(field.command, "MEMO/65535/2/1650281184/31247371/user/\\;;");
+        assert_eq!(field.memo_index, 2);
+    }
+
+    #[test]
+    fn test_parse_memo_field_begin_uses_id_as_hwp5_field_id() {
+        let xml = r#"<hp:fieldBegin xmlns:hp="http://www.hancom.co.kr/hwpml/2011/paragraph" type="MEMO" id="2135782115" fieldid="623209829" />"#;
+        let mut reader = Reader::from_str(xml);
+        let mut buf = Vec::new();
+
+        loop {
+            match reader.read_event_into(&mut buf).unwrap() {
+                Event::Empty(ref e) | Event::Start(ref e)
+                    if local_name(e.name().as_ref()) == b"fieldBegin" =>
+                {
+                    let field = parse_field_begin_attrs(e);
+                    assert_eq!(field.field_type, FieldType::Memo);
+                    assert_eq!(field.field_id, 2_135_782_115);
+                    assert_eq!(field.ctrl_id, tags::FIELD_MEMO);
+                    break;
+                }
+                Event::Eof => panic!("fieldBegin not found"),
+                _ => {}
+            }
+            buf.clear();
+        }
     }
 
     #[test]

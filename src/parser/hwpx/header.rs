@@ -240,7 +240,9 @@ fn parse_memo_shape(e: &quick_xml::events::BytesStart, doc_info: &mut DocInfo) {
 
 fn parse_memo_line_type(value: &str) -> u8 {
     match value {
-        "SOLID" => 0,
+        // HWPX memoPr lineType uses the OWPML name, but HWP5 MEMO_SHAPE stores
+        // the Hancom memo line enum where 0 means "no/unknown" and SOLID is 1.
+        "SOLID" => 1,
         "DOT" => 1,
         "DASH_DOT" => 2,
         "DASH" => 3,
@@ -507,6 +509,8 @@ fn parse_char_shape(
                                         };
                                     }
                                     b"color" => cs.shadow_color = parse_color(&attr),
+                                    b"offsetX" => cs.shadow_offset_x = parse_i8(&attr),
+                                    b"offsetY" => cs.shadow_offset_y = parse_i8(&attr),
                                     _ => {}
                                 }
                             }
@@ -1674,6 +1678,40 @@ mod tests {
                 0xc0, 0xdb, 0xfb, 0x00, 0x00, 0x00, 0x00, 0x00,
             ]
         );
+    }
+
+    #[test]
+    fn test_parse_hwpx_memo_shape_solid_line_type_uses_hwp5_value() {
+        assert_eq!(parse_memo_line_type("SOLID"), 1);
+        assert_eq!(parse_memo_line_type("DASH"), 3);
+    }
+
+    #[test]
+    fn test_parse_char_pr_preserves_shadow_offsets_even_when_shadow_is_none() {
+        let xml = r##"<?xml version="1.0" encoding="UTF-8"?>
+<hh:head xmlns:hh="http://www.hancom.co.kr/hwpml/2011/head">
+  <hh:refList>
+    <hh:fontfaces itemCnt="1">
+      <hh:fontface lang="HANGUL" fontCnt="1">
+        <hh:font id="0" face="함초롬바탕" type="TTF"/>
+      </hh:fontface>
+    </hh:fontfaces>
+    <hh:charProperties itemCnt="1">
+      <hh:charPr id="0" height="1200" textColor="#000000" shadeColor="none" useFontSpace="0" useKerning="0" symMark="NONE">
+        <hh:fontRef hangul="0" latin="0" hanja="0" japanese="0" other="0" symbol="0" user="0"/>
+        <hh:shadow type="NONE" color="#C0C0C0" offsetX="10" offsetY="10"/>
+      </hh:charPr>
+    </hh:charProperties>
+  </hh:refList>
+</hh:head>"##;
+
+        let (doc_info, _) = parse_hwpx_header(xml).unwrap();
+        let cs = &doc_info.char_shapes[0];
+
+        assert_eq!(cs.shadow_type, 0);
+        assert_eq!(cs.shadow_color, 0x00C0C0C0);
+        assert_eq!(cs.shadow_offset_x, 10);
+        assert_eq!(cs.shadow_offset_y, 10);
     }
 
     #[test]

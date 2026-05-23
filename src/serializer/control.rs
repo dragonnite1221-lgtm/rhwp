@@ -103,11 +103,21 @@ pub fn serialize_control(
                 } else {
                     f.field_id
                 };
+            let ctrl_id = if matches!(f.field_type, FieldType::Memo) {
+                tags::FIELD_UNKNOWN
+            } else {
+                f.ctrl_id
+            };
+            let properties = if matches!(f.field_type, FieldType::Memo) {
+                f.properties | 0x8000
+            } else {
+                f.properties
+            };
             let cmd_utf16: Vec<u16> = f.command.encode_utf16().collect();
             let cmd_len = cmd_utf16.len();
             let mut data = Vec::with_capacity(4 + 4 + 1 + 2 + cmd_len * 2 + 4);
-            data.extend_from_slice(&f.ctrl_id.to_le_bytes());
-            data.extend_from_slice(&f.properties.to_le_bytes());
+            data.extend_from_slice(&ctrl_id.to_le_bytes());
+            data.extend_from_slice(&properties.to_le_bytes());
             data.push(f.extra_properties);
             data.extend_from_slice(&(cmd_len as u16).to_le_bytes());
             for ch in &cmd_utf16 {
