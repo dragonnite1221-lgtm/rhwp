@@ -172,3 +172,84 @@ PR 본문 초안:
 Refs #1105
 Stacked on #1103 until #1103 lands.
 ```
+
+## Stage 6 — sample16 2010/2022 변환본 page break 후속 정합
+
+### 6.1 재현
+
+`hwp3-sample16-hwp5-2010.hwp`와 `hwp3-sample16-hwp5-2022.hwp`에서 HWP3 원본 및
+한컴오피스 정답지 기준 page break가
+`pi=140` 뒤, `pi=141 "(4) 사업자 선정방식"` 앞에 있어야 한다.
+
+현재 rhwp:
+
+```text
+page 5: pi=140, pi=141, pi=142 lines=0..1
+page 6: pi=142 lines=1..3, pi=144...
+```
+
+정답 기준:
+
+```text
+page 4: pi=118 까지
+page 5: pi=119 ... pi=140
+page 6: pi=141, pi=142, pi=144...
+```
+
+### 6.2 원인
+
+2010 변환본은 page break 대상 제목이 이전 페이지 하단에 단일 `LINE_SEG`로 남고, 다음 본문
+문단이 페이지 상단 좌표대로 돌아간다.
+
+```text
+pi=140: vpos=55868, 57820
+pi=141: vpos=59772
+pi=142: vpos=2584, 4600, 6616
+```
+
+2022 변환본의 해당 구간은 `LINE_SEG.vpos`가 음수 좌표대로 이어진다.
+
+```text
+pi=140: vpos=57560, -13060
+pi=141: vpos=-11108
+pi=142: vpos=-9092, -7076, -5060
+```
+
+현재 cross-paragraph reset 판단은 직전 문단의 마지막 줄과 현재 문단 first `vpos`만 기준으로
+삼는다. 따라서 2010에서는 하단 단일 제목 뒤의 다음 문단 상단 복귀를 놓치고, 2022에서는
+`pi=140`의 마지막 음수 좌표가 직전 좌표로 들어가 `pi=141`의 page reset 판단이 실패한다.
+
+또한 2022 변환본은 page 5 시작 경계도 흔들린다.
+
+```text
+pi=117: vpos=52472
+pi=118: vpos=0
+pi=119: vpos=1692, 3772, 5852
+```
+
+정답 기준은 `pi=118`이 page 4 끝, `pi=119`가 page 5 첫 문단이다. 일반 `vpos=0` reset 가드를
+그대로 적용하면 `pi=118`이 page 5로 밀리고, 이를 단순 억제하면 `pi=119`까지 page 4에 붙는다.
+따라서 낮은 spacing의 단일 본문 `vpos=0` 뒤에 큰 bullet heading이 이어지는 지연 reset 패턴을
+별도로 다뤄야 한다.
+
+### 6.3 구현 방향
+
+1. `tests/issue_1105.rs`에 2010/2022 변환본 경계 회귀 테스트를 먼저 추가한다.
+2. HWP3-origin 변환본 한정으로, 직전 문단 마지막 줄이 음수이고 같은 문단 앞쪽에 큰 양수
+   `vpos`가 있으면 reset 판단용 직전 끝 좌표를 양수 line segment 기준으로 계산한다.
+3. 현재 문단이 단일 `LINE_SEG` heading이고 first `vpos`가 음수이면서 resolved spacing 기준
+   `spacing_before >= 250 HU`, visible text일 때 page break를 인정한다.
+4. 현재 문단이 body 하단의 단일 `LINE_SEG` heading이고 다음 real 문단 first `vpos`가 상단
+   좌표대로 작아지면 page break를 인정한다.
+5. 낮은 spacing의 단일 `vpos=0` 본문 문단 바로 뒤에 상단 좌표대의 큰 bullet heading이 있으면
+   본문 문단 앞 reset은 억제하고 heading 앞 지연 reset을 인정한다.
+6. 동일 시맨틱을 fallback paginator에도 반영한다.
+
+### 6.4 검증
+
+```bash
+cargo test --test issue_1105 -- --nocapture
+cargo test --test issue_1035_alignment --test issue_1086 --test issue_554 --test issue_nested_table_border -- --nocapture
+cargo fmt --all -- --check
+git diff --check
+```

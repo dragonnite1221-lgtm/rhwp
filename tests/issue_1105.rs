@@ -38,6 +38,69 @@ fn task1105_sample16_hwp5_page_break_before_section_4_matches_hancom() {
     assert!(page22.contains("FullParagraph  pi=449"));
 }
 
+fn assert_sample16_hwp5_business_selection_starts_next_page(rel_path: &str) {
+    let doc = load_doc(rel_path);
+    assert_eq!(doc.page_count(), 64, "{rel_path}");
+
+    let page4 = doc.dump_page_items(Some(3));
+    assert!(
+        page4.contains("FullParagraph  pi=118"),
+        "WAN line must stay on page 4 for {rel_path}:\n{page4}"
+    );
+
+    let page5 = doc.dump_page_items(Some(4));
+    assert!(
+        !page5.contains("pi=118"),
+        "page 5 must start at the information-system importance paragraph, not the WAN line, for {rel_path}:\n{page5}"
+    );
+    assert!(
+        page5.contains("FullParagraph  pi=119"),
+        "information-system importance paragraph must start page 5 for {rel_path}:\n{page5}"
+    );
+    assert!(
+        page5.contains("FullParagraph  pi=140"),
+        "joint supply paragraph must close page 5 for {rel_path}:\n{page5}"
+    );
+    assert!(
+        !page5.contains("pi=141"),
+        "business selection heading must not remain on page 5 for {rel_path}:\n{page5}"
+    );
+
+    let page6 = doc.dump_page_items(Some(5));
+    assert!(
+        page6.contains("FullParagraph  pi=141"),
+        "business selection heading must start page 6 for {rel_path}:\n{page6}"
+    );
+    assert!(
+        page6.contains("FullParagraph  pi=142"),
+        "business selection body must follow the heading for {rel_path}:\n{page6}"
+    );
+    assert!(
+        page6.contains("FullParagraph  pi=144"),
+        "successful bidder heading must remain on page 6 for {rel_path}:\n{page6}"
+    );
+}
+
+#[test]
+fn task1105_sample16_hwp5_2010_business_selection_break_matches_hancom() {
+    assert_sample16_hwp5_business_selection_starts_next_page("samples/hwp3-sample16-hwp5-2010.hwp");
+}
+
+#[test]
+fn task1105_sample16_hwp5_2018_business_selection_break_matches_hancom() {
+    assert_sample16_hwp5_business_selection_starts_next_page("samples/hwp3-sample16-hwp5-2018.hwp");
+}
+
+#[test]
+fn task1105_sample16_hwp5_2022_business_selection_break_matches_hancom() {
+    assert_sample16_hwp5_business_selection_starts_next_page("samples/hwp3-sample16-hwp5-2022.hwp");
+}
+
+#[test]
+fn task1105_sample16_hwp5_2024_business_selection_break_matches_hancom() {
+    assert_sample16_hwp5_business_selection_starts_next_page("samples/hwp3-sample16-hwp5-2024.hwp");
+}
+
 #[test]
 fn task1105_k_water_rfp_2024_page_count_matches_hancom_pdf() {
     let doc = load_doc("samples/k-water-rfp-2024.hwp");

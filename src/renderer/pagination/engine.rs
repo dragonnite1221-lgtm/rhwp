@@ -5,13 +5,34 @@ use super::*;
 use crate::model::control::Control;
 use crate::model::header_footer::HeaderFooterApply;
 use crate::model::page::{ColumnDef, PageDef};
-use crate::model::paragraph::{ColumnBreakType, Paragraph};
+use crate::model::paragraph::{ColumnBreakType, LineSeg, Paragraph};
 use crate::model::shape::CaptionDirection;
 use crate::renderer::height_measurer::{HeightMeasurer, MeasuredSection};
 use crate::renderer::page_layout::PageLayoutInfo;
 
 fn para_has_visible_text(para: &Paragraph) -> bool {
     para.text.chars().any(|c| c > '\u{001F}' && c != '\u{FFFC}')
+}
+
+fn is_synthetic_line_seg(ls: &LineSeg) -> bool {
+    ls.tag & 0x80000000 != 0
+}
+
+fn positive_vpos_end_before_negative_wrap(para: &Paragraph) -> Option<i32> {
+    let last_real = para
+        .line_segs
+        .iter()
+        .rev()
+        .find(|ls| !is_synthetic_line_seg(ls))?;
+    if last_real.vertical_pos >= 0 {
+        return None;
+    }
+
+    para.line_segs
+        .iter()
+        .filter(|ls| !is_synthetic_line_seg(ls) && ls.vertical_pos > 0)
+        .map(|ls| ls.vertical_pos.saturating_add(ls.line_height))
+        .max()
 }
 
 impl Paginator {
@@ -183,19 +204,54 @@ impl Paginator {
                     .get(para.para_shape_id as usize)
                     .map(|ps| (ps.spacing_before * 7200.0 / 96.0) as i32)
                     .unwrap_or(0);
-                let is_synth = |ls: &crate::model::paragraph::LineSeg| ls.tag & 0x80000000 != 0;
                 let prev_real_idx_and_ls = prev_pagination_para.and_then(|prev_pi| {
                     (0..=prev_pi).rev().find_map(|i| {
                         paragraphs
                             .get(i)
                             .and_then(|p| p.line_segs.last())
-                            .filter(|ls| !is_synth(ls))
+                            .filter(|ls| !is_synthetic_line_seg(ls))
                             .map(|ls| (i, ls))
                     })
                 });
-                let curr_real = para.line_segs.first().filter(|ls| !is_synth(ls));
+                let curr_real = para
+                    .line_segs
+                    .first()
+                    .filter(|ls| !is_synthetic_line_seg(ls));
                 if let Some((prev_real_idx, prev_last)) = prev_real_idx_and_ls {
                     let prev_end_vpos = prev_last.vertical_pos + prev_last.line_height;
+                    let prev_positive_wrap_end = paragraphs
+                        .get(prev_real_idx)
+                        .and_then(positive_vpos_end_before_negative_wrap);
+                    let prev_prev_end_vpos = if prev_real_idx > 0 {
+                        (0..prev_real_idx).rev().find_map(|i| {
+                            paragraphs.get(i).and_then(|p| {
+                                p.line_segs
+                                    .last()
+                                    .filter(|ls| !is_synthetic_line_seg(ls))
+                                    .map(|ls| ls.vertical_pos.saturating_add(ls.line_height))
+                            })
+                        })
+                    } else {
+                        None
+                    };
+                    let prev_top_content_reset = paragraphs.get(prev_real_idx).is_some_and(|p| {
+                        let prev_sb_hu = para_styles
+                            .get(p.para_shape_id as usize)
+                            .map(|ps| (ps.spacing_before * 7200.0 / 96.0) as i32)
+                            .unwrap_or(0);
+                        p.line_segs.len() == 1
+                            && p.line_segs.first().is_some_and(|ls| {
+                                !is_synthetic_line_seg(ls) && ls.vertical_pos == 0
+                            })
+                            && p.controls.is_empty()
+                            && para_has_visible_text(p)
+                            && prev_sb_hu < 250
+                    });
+                    let next_first_real_vpos = paragraphs
+                        .get(para_idx + 1)
+                        .and_then(|next_para| next_para.line_segs.first())
+                        .filter(|ls| !is_synthetic_line_seg(ls))
+                        .map(|ls| ls.vertical_pos);
                     let high_threshold = body_height_hu_for_variant * 95 / 100;
                     let table_heading_reset = prev_real_idx + 1 == para_idx
                         && para.line_segs.is_empty()
@@ -212,7 +268,7 @@ impl Paginator {
                         && paragraphs
                             .get(para_idx + 1)
                             .and_then(|next_para| next_para.line_segs.first())
-                            .filter(|ls| !is_synth(ls))
+                            .filter(|ls| !is_synthetic_line_seg(ls))
                             .is_some_and(|ls| ls.vertical_pos <= 4000);
 
                     let real_heading_or_bridge_reset = curr_real.is_some_and(|curr_first| {
@@ -220,6 +276,16 @@ impl Paginator {
                         let strict_heading_reset = para_sb_hu >= 500
                             && prev_end_vpos > high_threshold
                             && curr_first_vpos < 1500;
+                        let delayed_heading_after_top_content_reset = prev_real_idx + 1 == para_idx
+                            && para.line_segs.len() >= 2
+                            && para_sb_hu >= 500
+                            && para.controls.is_empty()
+                            && para_has_visible_text(para)
+                            && curr_first_vpos > 0
+                            && curr_first_vpos <= 2500
+                            && prev_top_content_reset
+                            && prev_prev_end_vpos
+                                .is_some_and(|end| end > body_height_hu_for_variant * 70 / 100);
                         let bridge_missing_count = (prev_real_idx + 1..para_idx)
                             .filter(|&i| {
                                 paragraphs.get(i).is_some_and(|p| {
@@ -234,7 +300,28 @@ impl Paginator {
                             && para_has_visible_text(para)
                             && curr_first_vpos <= 1500
                             && prev_end_vpos > body_height_hu_for_variant * 75 / 100;
-                        strict_heading_reset || bridged_reset
+                        let negative_wrap_heading_reset = prev_real_idx + 1 == para_idx
+                            && para.line_segs.len() == 1
+                            && para_sb_hu >= 250
+                            && para.controls.is_empty()
+                            && para_has_visible_text(para)
+                            && curr_first_vpos < 0
+                            && prev_positive_wrap_end
+                                .is_some_and(|end| end > body_height_hu_for_variant * 75 / 100);
+                        let bottom_heading_before_next_reset = prev_real_idx + 1 == para_idx
+                            && para.line_segs.len() == 1
+                            && para_sb_hu >= 250
+                            && para.controls.is_empty()
+                            && para_has_visible_text(para)
+                            && curr_first_vpos > body_height_hu_for_variant * 75 / 100
+                            && next_first_real_vpos.is_some_and(|next_vpos| {
+                                next_vpos > 0 && next_vpos <= 4000 && curr_first_vpos > next_vpos
+                            });
+                        strict_heading_reset
+                            || delayed_heading_after_top_content_reset
+                            || bridged_reset
+                            || negative_wrap_heading_reset
+                            || bottom_heading_before_next_reset
                     });
 
                     if table_heading_reset || real_heading_or_bridge_reset {
