@@ -2813,6 +2813,18 @@ fn parse_shape_fill_brush(reader: &mut Reader<&[u8]>) -> Result<Fill, HwpxError>
                         }
                         fill.gradient = Some(grad);
                     }
+                    b"color" => {
+                        // <hc:color value="#RRGGBB"/> -- shape gradation child.
+                        // Header BorderFill already handles the same construct; shape-local
+                        // fillBrush needs the same color stop materialization for rendering.
+                        if let Some(ref mut grad) = fill.gradient {
+                            for attr in ce.attributes().flatten() {
+                                if attr.key.as_ref() == b"value" {
+                                    grad.colors.push(parse_color(&attr));
+                                }
+                            }
+                        }
+                    }
                     b"imgBrush" => {
                         fill.fill_type = FillType::Image;
                         let mut img = ImageFill::default();
