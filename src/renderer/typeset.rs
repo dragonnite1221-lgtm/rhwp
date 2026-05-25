@@ -2033,7 +2033,8 @@ impl TypesetEngine {
             let vpos_h: Option<f64> = if let (Some(first), Some(last)) =
                 (para.line_segs.first(), para.line_segs.last())
             {
-                let span_hu = (last.vertical_pos + last.line_height) - first.vertical_pos;
+                let span_hu =
+                    (last.vertical_pos + last.line_height + last.line_spacing) - first.vertical_pos;
                 if span_hu > 0 {
                     Some(crate::renderer::hwpunit_to_px(span_hu, self.dpi))
                 } else {

@@ -16,8 +16,8 @@ use super::render_tree::{
     ShapeTransform,
 };
 use super::{
-    GradientFillInfo, LineStyle, PathCommand, PatternFillInfo, Renderer, ShapeStyle, StrokeDash,
-    TextStyle,
+    clamp_tab_leader_end_x, GradientFillInfo, LineStyle, PathCommand, PatternFillInfo, Renderer,
+    ShapeStyle, StrokeDash, TextStyle,
 };
 
 /// Hanyang-PUA 옛한글 코드포인트를 KS X 1026-1:2007 자모 시퀀스로 확장.
@@ -2418,21 +2418,28 @@ impl Renderer for SvgRenderer {
                 }
                 let char_x = x + char_positions[*char_idx] + dx;
                 let char_y = y + dy;
+                let length_attrs = svg_text_length_attrs(
+                    cluster_str,
+                    cluster_advance(*char_idx, cluster_str),
+                    ratio,
+                );
                 if has_ratio {
                     self.output.push_str(&format!(
-                        "<text transform=\"translate({},{}) scale({:.4},1)\" {}>{}</text>\n",
+                        "<text transform=\"translate({},{}) scale({:.4},1)\" {}{}>{}</text>\n",
                         char_x,
                         char_y,
                         ratio,
                         shadow_attrs,
+                        length_attrs,
                         escape_xml(cluster_str),
                     ));
                 } else {
                     self.output.push_str(&format!(
-                        "<text x=\"{}\" y=\"{}\" {}>{}</text>\n",
+                        "<text x=\"{}\" y=\"{}\" {}{}>{}</text>\n",
                         char_x,
                         char_y,
                         shadow_attrs,
+                        length_attrs,
                         escape_xml(cluster_str),
                     ));
                 }
@@ -2467,22 +2474,26 @@ impl Renderer for SvgRenderer {
                 continue;
             }
             let char_x = x + char_positions[*char_idx];
+            let length_attrs =
+                svg_text_length_attrs(cluster_str, cluster_advance(*char_idx, cluster_str), ratio);
 
             if has_ratio {
                 self.output.push_str(&format!(
-                    "<text transform=\"translate({},{}) scale({:.4},1)\" {}>{}</text>\n",
+                    "<text transform=\"translate({},{}) scale({:.4},1)\" {}{}>{}</text>\n",
                     char_x,
                     y,
                     ratio,
                     common_attrs,
+                    length_attrs,
                     escape_xml(cluster_str),
                 ));
             } else {
                 self.output.push_str(&format!(
-                    "<text x=\"{}\" y=\"{}\" {}>{}</text>\n",
+                    "<text x=\"{}\" y=\"{}\" {}{}>{}</text>\n",
                     char_x,
                     y,
                     common_attrs,
+                    length_attrs,
                     escape_xml(cluster_str),
                 ));
             }
@@ -2559,7 +2570,8 @@ impl Renderer for SvgRenderer {
                 continue;
             }
             let lx1 = x + leader.start_x;
-            let lx2 = x + leader.end_x;
+            let leader_end_x = clamp_tab_leader_end_x(text, &char_positions, leader, font_size);
+            let lx2 = x + leader_end_x;
             let ly = y - font_size * 0.35; // 글자 세로 중앙 (베이스라인에서 x-height 절반)
                                            // 채울 모양 12종: 0=없음, 1=실선, 2=파선, 3=점선, 4=일점쇄선,
                                            // 5=이점쇄선, 6=긴파선, 7=원형점선, 8=이중실선,
@@ -2795,6 +2807,25 @@ fn color_to_svg(color: u32) -> String {
     let g = (color >> 8) & 0xFF;
     let r = color & 0xFF;
     format!("#{:02x}{:02x}{:02x}", r, g, b)
+}
+
+fn svg_text_length_attrs(cluster_str: &str, cluster_advance: f64, scale_x: f64) -> String {
+    if !cluster_str.chars().any(|ch| ch.is_ascii_alphanumeric()) {
+        return String::new();
+    }
+    if !cluster_advance.is_finite() || cluster_advance <= 0.0 {
+        return String::new();
+    }
+    let scale_x = if scale_x.is_finite() && scale_x.abs() > 0.0001 {
+        scale_x.abs()
+    } else {
+        1.0
+    };
+    let text_length = cluster_advance / scale_x;
+    format!(
+        " textLength=\"{:.4}\" lengthAdjust=\"spacingAndGlyphs\"",
+        text_length
+    )
 }
 
 /// XML 특수문자 이스케이프

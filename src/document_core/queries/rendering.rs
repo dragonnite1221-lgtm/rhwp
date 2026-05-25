@@ -1513,8 +1513,11 @@ impl DocumentCore {
     pub(crate) fn paginate(&mut self) {
         self.invalidate_page_tree_cache();
         let paginator = Paginator::new(self.dpi);
-        let measurer =
-            HeightMeasurer::new(self.dpi).with_hwp3_variant(self.document.is_hwp3_variant);
+        let hwp3_origin_flow_spacing_before =
+            self.document.is_hwp3_variant || self.document.header.version.major == 3;
+        let measurer = HeightMeasurer::new(self.dpi)
+            .with_hwp3_variant(self.document.is_hwp3_variant)
+            .with_hwp3_origin_flow_spacing_before(hwp3_origin_flow_spacing_before);
 
         if self.document.sections.is_empty() {
             self.pagination.clear();
@@ -2351,12 +2354,16 @@ impl DocumentCore {
                                     .map(|mp| {
                                         let sb = mp.spacing_before;
                                         let sa = mp.spacing_after;
-                                        let lines: f64 = mp.line_heights.iter().sum();
+                                        let lh_sum: f64 = mp.line_heights.iter().sum();
+                                        let ls_sum: f64 = mp.line_spacings.iter().sum();
+                                        let lines = lh_sum + ls_sum;
                                         format!(
-                                            "h={:.1} (sb={:.1} lines={:.1} sa={:.1})",
+                                            "h={:.1} (sb={:.1} lines={:.1} lh={:.1} ls={:.1} sa={:.1})",
                                             sb + lines + sa,
                                             sb,
                                             lines,
+                                            lh_sum,
+                                            ls_sum,
                                             sa
                                         )
                                     })
@@ -2543,6 +2550,9 @@ impl DocumentCore {
             .set_show_control_codes(self.show_control_codes);
         self.layout_engine
             .set_hwp3_variant(self.document.is_hwp3_variant);
+        self.layout_engine.set_hwp3_origin_flow_spacing_before(
+            self.document.is_hwp3_variant || self.document.header.version.major == 3,
+        );
         // 활성 필드 정보를 레이아웃 엔진에 전달 (안내문 숨김용)
         self.layout_engine
             .set_active_field(self.active_field.as_ref().map(|af| {
@@ -3143,7 +3153,7 @@ fn compute_hwp_used_height(
             if let Some(seg) = p.line_segs.get(i) {
                 if seg.vertical_pos == 0 {
                     if let Some(prev) = p.line_segs.get(i.saturating_sub(1)) {
-                        let bottom_hwpu = prev.vertical_pos + prev.line_height;
+                        let bottom_hwpu = prev.vertical_pos + prev.line_height + prev.line_spacing;
                         return Some(hwpunit_to_px(bottom_hwpu, dpi));
                     }
                 }
@@ -3179,7 +3189,7 @@ fn compute_hwp_used_height(
     };
     let p = paragraphs.get(para_idx)?;
     let seg = p.line_segs.get(line_idx)?;
-    let bottom_hwpu = seg.vertical_pos + seg.line_height;
+    let bottom_hwpu = seg.vertical_pos + seg.line_height + seg.line_spacing;
     Some(hwpunit_to_px(bottom_hwpu, dpi))
 }
 

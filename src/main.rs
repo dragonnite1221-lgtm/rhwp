@@ -69,7 +69,7 @@ fn print_help() {
     println!("      --show-control-codes    조판부호 보이기 (문단부호 + 개체 마커 등)");
     println!("      --debug-overlay         디버그 오버레이 (문단/표 경계 + 인덱스 라벨)");
     println!("      --respect-vpos-reset    LINE_SEG vpos=0 리셋을 단/페이지 강제 경계로 처리");
-    println!("      --show-grid             1mm 격자 오버레이 (레이아웃 디버깅용)");
+    println!("      --show-grid[=Nmm]       격자 오버레이 (기본: 1mm, 예: --show-grid=3mm)");
     println!("      --font-style            @font-face local() 참조 삽입 (폰트 데이터 미포함)");
     println!("      --embed-fonts           폰트 서브셋 임베딩 (사용 글자만 base64)");
     println!("      --embed-fonts=full      폰트 전체 임베딩 (base64)");
@@ -190,7 +190,7 @@ fn export_svg(args: &[String]) {
     let mut show_para_marks = false;
     let mut show_control_codes = false;
     let mut debug_overlay = false;
-    let mut show_grid = false;
+    let mut grid_mm: Option<f64> = None;
     let mut respect_vpos_reset = false;
     let mut font_embed_mode = rhwp::renderer::svg::FontEmbedMode::None;
     let mut font_paths: Vec<std::path::PathBuf> = Vec::new();
@@ -238,8 +238,20 @@ fn export_svg(args: &[String]) {
                 respect_vpos_reset = true;
                 i += 1;
             }
-            "--show-grid" => {
-                show_grid = true;
+            arg if arg == "--show-grid" || arg.starts_with("--show-grid=") => {
+                grid_mm = if let Some(value) = arg.strip_prefix("--show-grid=") {
+                    match parse_grid_mm(value) {
+                        Some(v) => Some(v),
+                        None => {
+                            eprintln!(
+                                "오류: --show-grid 값이 올바르지 않습니다. 예: --show-grid=3mm"
+                            );
+                            return;
+                        }
+                    }
+                } else {
+                    Some(1.0)
+                };
                 i += 1;
             }
             "--font-style" => {
@@ -352,8 +364,8 @@ fn export_svg(args: &[String]) {
         match svg_result {
             Ok(mut svg) => {
                 // 격자 오버레이 삽입
-                if show_grid {
-                    svg = insert_grid_overlay(&svg);
+                if let Some(mm) = grid_mm {
+                    svg = insert_grid_overlay(&svg, mm);
                 }
                 let svg_filename = if page_count == 1 {
                     format!("{}.svg", file_stem)
@@ -380,15 +392,28 @@ fn export_svg(args: &[String]) {
     );
 }
 
-/// SVG에 1mm 격자 오버레이를 삽입한다.
+fn parse_grid_mm(value: &str) -> Option<f64> {
+    let trimmed = value.trim();
+    let number = trimmed
+        .strip_suffix("mm")
+        .or_else(|| trimmed.strip_suffix("MM"))
+        .unwrap_or(trimmed)
+        .trim();
+    let mm = number.parse::<f64>().ok()?;
+    if mm.is_finite() && mm > 0.0 {
+        Some(mm)
+    } else {
+        None
+    }
+}
+
+/// SVG에 mm 단위 격자 오버레이를 삽입한다.
 /// `<svg ...>` 태그 직후에 격자 패턴 정의와 배경 rect를 추가.
-fn insert_grid_overlay(svg: &str) -> String {
+fn insert_grid_overlay(svg: &str, grid_mm: f64) -> String {
     // SVG viewBox에서 크기 추출
     let (width, height) = extract_svg_dimensions(svg);
-    // 1mm = 96dpi 기준 3.7795px
-    let grid_px = 96.0 * 25.4 / 96.0; // 1mm in px at 96dpi... 실제로 SVG 좌표는 px
-                                      // 96dpi: 1inch = 25.4mm, 1px = 25.4/96 = 0.2646mm, 1mm = 96/25.4 = 3.7795px
-    let grid_size = 96.0 / 25.4; // 3.7795 px per mm
+    // 96dpi: 1inch = 25.4mm, 1px = 25.4/96 = 0.2646mm.
+    let grid_size = 96.0 / 25.4 * grid_mm;
 
     let g = format!("{:.4}", grid_size);
     let w = format!("{:.2}", width);

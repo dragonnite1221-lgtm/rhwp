@@ -84,6 +84,28 @@ pub struct TabLeaderInfo {
     pub fill_type: u8,
 }
 
+pub(crate) fn clamp_tab_leader_end_x(
+    text: &str,
+    char_positions: &[f64],
+    leader: &TabLeaderInfo,
+    font_size: f64,
+) -> f64 {
+    let content_stop = text.chars().enumerate().find_map(|(i, ch)| {
+        if ch != '\t'
+            && !ch.is_whitespace()
+            && i < char_positions.len()
+            && char_positions[i] > leader.start_x + 0.5
+        {
+            Some(char_positions[i] - font_size * 0.25)
+        } else {
+            None
+        }
+    });
+    content_stop
+        .map(|stop| stop.min(leader.end_x).max(leader.start_x))
+        .unwrap_or(leader.end_x)
+}
+
 /// 텍스트 렌더링 스타일
 #[derive(Debug, Clone, Serialize)]
 pub struct TextStyle {
@@ -604,6 +626,20 @@ pub fn corrected_line_height_for_variant_synthetic(
         max_fs
     } else {
         corrected_line_height(raw_lh, max_fs, ls_type, ls_val)
+    }
+}
+
+/// [Task #1116] HWP3-origin HWP5 변환본의 문단 앞 간격 보정.
+///
+/// 기존 style resolver는 변환본의 ParaShape spacing 계열을 절반으로 줄인다.
+/// 이는 페이지 수 회귀를 막기 위해 유지하되, 본문 흐름에서 다음 문단을
+/// 배치할 때 쓰는 `spacing_before`는 한컴 PDF의 3mm 격자와 같이 원래 값을 쓴다.
+#[inline]
+pub(crate) fn hwp3_variant_flow_spacing_before(base: f64, is_hwp3_variant: bool) -> f64 {
+    if is_hwp3_variant {
+        base * 2.0
+    } else {
+        base
     }
 }
 

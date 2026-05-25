@@ -161,6 +161,7 @@ pub struct MeasuredSection {
 pub struct HeightMeasurer {
     dpi: f64,
     is_hwp3_variant: bool,
+    use_hwp3_origin_flow_spacing_before: bool,
 }
 
 impl HeightMeasurer {
@@ -168,11 +169,18 @@ impl HeightMeasurer {
         Self {
             dpi,
             is_hwp3_variant: false,
+            use_hwp3_origin_flow_spacing_before: false,
         }
     }
 
     pub fn with_hwp3_variant(mut self, enabled: bool) -> Self {
         self.is_hwp3_variant = enabled;
+        self.use_hwp3_origin_flow_spacing_before = enabled;
+        self
+    }
+
+    pub fn with_hwp3_origin_flow_spacing_before(mut self, enabled: bool) -> Self {
+        self.use_hwp3_origin_flow_spacing_before = enabled;
         self
     }
 
@@ -254,7 +262,10 @@ impl HeightMeasurer {
         // 문단 스타일에서 spacing 조회
         let para_style_id = composed.map(|c| c.para_style_id as usize).unwrap_or(0);
         let para_style = styles.para_styles.get(para_style_id);
-        let spacing_before = para_style.map(|s| s.spacing_before).unwrap_or(0.0);
+        let spacing_before = crate::renderer::hwp3_variant_flow_spacing_before(
+            para_style.map(|s| s.spacing_before).unwrap_or(0.0),
+            self.use_hwp3_origin_flow_spacing_before,
+        );
         let spacing_after = para_style.map(|s| s.spacing_after).unwrap_or(0.0);
 
         // [Task #1042 Stage 6c] line_segs.empty paragraph 의 compose_lines fallback

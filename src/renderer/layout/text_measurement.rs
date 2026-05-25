@@ -136,6 +136,55 @@ fn measure_segment_from(
     w
 }
 
+fn tab_suffix_is_ascii_page_number(chars: &[char], start: usize) -> bool {
+    let mut seen_digit = false;
+    for ch in chars.iter().skip(start) {
+        if *ch == '\t' {
+            return false;
+        }
+        if ch.is_whitespace() {
+            continue;
+        }
+        if ch.is_ascii_digit() {
+            seen_digit = true;
+            continue;
+        }
+        return false;
+    }
+    seen_digit
+}
+
+fn right_leader_tab_target_rel(style: &TextStyle, font_size: f64) -> Option<f64> {
+    style
+        .tab_stops
+        .iter()
+        .rev()
+        .find(|tab| tab.tab_type == 1 && tab.fill_type != 0)
+        .map(|tab| tab.position - font_size * 0.25 - style.line_x_offset)
+        .filter(|target| target.is_finite())
+}
+
+fn right_leader_tab_fill(style: &TextStyle) -> Option<u8> {
+    style
+        .tab_stops
+        .iter()
+        .rev()
+        .find(|tab| tab.tab_type == 1 && tab.fill_type != 0)
+        .map(|tab| tab.fill_type)
+}
+
+fn right_leader_body_target_rel(style: &TextStyle) -> Option<f64> {
+    if style.available_width <= 0.0 || right_leader_tab_fill(style).is_none() {
+        return None;
+    }
+    let target = style.text_start_offset + style.available_width - style.line_x_offset;
+    if target.is_finite() {
+        Some(target)
+    } else {
+        None
+    }
+}
+
 /// 탭 문자의 위치로부터 탭 리더 정보를 추출한다.
 pub fn extract_tab_leaders(text: &str, positions: &[f64], style: &TextStyle) -> Vec<TabLeaderInfo> {
     extract_tab_leaders_with_extended(text, positions, style, &[])
@@ -149,6 +198,7 @@ pub fn extract_tab_leaders_with_extended(
     style: &TextStyle,
     tab_extended: &[[u16; 7]],
 ) -> Vec<TabLeaderInfo> {
+    let chars: Vec<char> = text.chars().collect();
     let tab_w = if style.default_tab_width > 0.0 {
         style.default_tab_width
     } else {
@@ -160,6 +210,15 @@ pub fn extract_tab_leaders_with_extended(
         if c == '\t' && i + 1 < positions.len() {
             let before_x = positions[i];
             let after_x = positions[i + 1];
+            let has_more_tabs_after = chars.iter().skip(i + 1).any(|ch| *ch == '\t');
+            let tabdef_page_number_fill = if tab_extended.is_empty()
+                && !has_more_tabs_after
+                && tab_suffix_is_ascii_page_number(&chars, i + 1)
+            {
+                right_leader_tab_fill(style)
+            } else {
+                None
+            };
 
             // 1. tab_extended에서 leader 가져오기 (HWPX 인라인 탭)
             let ext_fill = if tab_idx < tab_extended.len() {
@@ -169,7 +228,9 @@ pub fn extract_tab_leaders_with_extended(
             };
 
             // 2. TabDef에서 fill_type 가져오기 (HWP TabDef)
-            let tabdef_fill = if !style.tab_stops.is_empty() || style.auto_tab_right {
+            let tabdef_fill = if let Some(fill) = tabdef_page_number_fill {
+                fill
+            } else if !style.tab_stops.is_empty() || style.auto_tab_right {
                 let abs_before = style.line_x_offset + before_x;
                 let (_, _, ft) = find_next_tab_stop(
                     abs_before,
@@ -188,13 +249,33 @@ pub fn extract_tab_leaders_with_extended(
             let fill_type = if ext_fill > 0 { ext_fill } else { tabdef_fill };
             if fill_type > 0 && after_x > before_x + 1.0 {
                 let space_gap = style.font_size * 0.25;
+                let content_x = text.chars().enumerate().skip(i + 1).find_map(|(j, ch)| {
+                    if ch != '\t' && !ch.is_whitespace() && j < positions.len() {
+                        Some(positions[j])
+                    } else {
+                        None
+                    }
+                });
+                let end_x = content_x
+                    .map(|x| x - space_gap)
+                    .unwrap_or(after_x - space_gap)
+                    .min(after_x - space_gap);
                 leaders.push(TabLeaderInfo {
                     start_x: before_x,
-                    end_x: (after_x - space_gap).max(before_x),
+                    end_x: end_x.max(before_x),
                     fill_type,
                 });
             }
             tab_idx += 1;
+        }
+    }
+    if leaders.len() > 1 {
+        let mut min_following_end = f64::INFINITY;
+        for leader in leaders.iter_mut().rev() {
+            if min_following_end.is_finite() && leader.end_x > min_following_end {
+                leader.end_x = min_following_end.max(leader.start_x);
+            }
+            min_following_end = min_following_end.min(leader.end_x);
         }
     }
     leaders
@@ -323,6 +404,17 @@ impl TextMeasurer for EmbeddedTextMeasurer {
                         let right_edge_rel =
                             style.text_start_offset + style.available_width - style.line_x_offset;
                         total = (right_edge_rel - seg_w).max(total);
+                    } else if inline_type_hi == 0
+                        && !has_more_tabs_after
+                        && tab_suffix_is_ascii_page_number(&chars, i + 1)
+                    {
+                        if let Some(target_rel) = right_leader_tab_target_rel(style, font_size) {
+                            let seg_w =
+                                measure_segment_from(&chars, &cluster_len, i + 1, &char_width);
+                            total = (target_rel - seg_w).max(total);
+                        } else {
+                            total = tab_target.max(total);
+                        }
                     } else {
                         match tab_type {
                             1 => {
@@ -342,6 +434,16 @@ impl TextMeasurer for EmbeddedTextMeasurer {
                     }
                     tab_char_idx += 1;
                 } else if has_custom_tabs {
+                    let has_more_tabs_after = chars[i + 1..].contains(&'\t');
+                    if !has_more_tabs_after && tab_suffix_is_ascii_page_number(&chars, i + 1) {
+                        if let Some(target_rel) = right_leader_body_target_rel(style) {
+                            let seg_w =
+                                measure_segment_from(&chars, &cluster_len, i + 1, &char_width);
+                            total = (target_rel - seg_w).max(total);
+                            tab_char_idx += 1;
+                            continue;
+                        }
+                    }
                     let abs_x = style.line_x_offset + total;
                     let (tab_pos, tab_type, fill_type) = find_next_tab_stop(
                         abs_x,
@@ -525,6 +627,17 @@ impl TextMeasurer for EmbeddedTextMeasurer {
                             measure_segment_from(&chars, &cluster_len, seg_start, &char_width)
                         };
                         x = (body_right_text_rel - seg_w).max(x);
+                    } else if inline_type_hi == 0
+                        && !has_more_tabs_after
+                        && tab_suffix_is_ascii_page_number(&chars, i + 1)
+                    {
+                        if let Some(target_rel) = right_leader_tab_target_rel(style, font_size) {
+                            let seg_w =
+                                measure_segment_from(&chars, &cluster_len, i + 1, &char_width);
+                            x = (target_rel - seg_w).max(x);
+                        } else {
+                            x = tab_target.max(x);
+                        }
                     } else {
                         let high_byte = (tab_type_raw >> 8) & 0xFF;
                         let fill_low = tab_type_raw & 0xFF;
@@ -624,6 +737,17 @@ impl TextMeasurer for EmbeddedTextMeasurer {
                     }
                     tab_char_idx += 1;
                 } else if has_custom_tabs {
+                    let has_more_tabs_after = chars[i + 1..].contains(&'\t');
+                    if !has_more_tabs_after && tab_suffix_is_ascii_page_number(&chars, i + 1) {
+                        if let Some(target_rel) = right_leader_body_target_rel(style) {
+                            let seg_w =
+                                measure_segment_from(&chars, &cluster_len, i + 1, &char_width);
+                            x = (target_rel - seg_w).max(x);
+                            tab_char_idx += 1;
+                            positions.push(x);
+                            continue;
+                        }
+                    }
                     let abs_x = style.line_x_offset + x;
                     let (tab_pos, tab_type, fill_type) = find_next_tab_stop(
                         abs_x,
@@ -646,7 +770,9 @@ impl TextMeasurer for EmbeddedTextMeasurer {
                     match tab_type {
                         1 => {
                             // 오른쪽
-                            let seg_start = {
+                            let seg_start = if fill_type != 0 {
+                                i + 1
+                            } else {
                                 let mut s = i + 1;
                                 while s < chars.len() && chars[s] == ' ' && cluster_len[s] != 0 {
                                     s += 1;
@@ -974,6 +1100,17 @@ impl TextMeasurer for WasmTextMeasurer {
                         let right_edge_rel =
                             style.text_start_offset + style.available_width - style.line_x_offset;
                         total = (right_edge_rel - seg_w).max(total);
+                    } else if tab_type == 0
+                        && !has_more_tabs_after
+                        && tab_suffix_is_ascii_page_number(&chars, i + 1)
+                    {
+                        if let Some(target_rel) = right_leader_tab_target_rel(style, font_size) {
+                            let seg_w =
+                                measure_segment_from(&chars, &cluster_len, i + 1, &char_width);
+                            total = (target_rel - seg_w).max(total);
+                        } else {
+                            total = tab_target.max(total);
+                        }
                     } else {
                         match tab_type {
                             2 => {
@@ -996,6 +1133,16 @@ impl TextMeasurer for WasmTextMeasurer {
                     }
                     tab_char_idx += 1;
                 } else if has_custom_tabs {
+                    let has_more_tabs_after = chars[i + 1..].iter().any(|c| *c == '\t');
+                    if !has_more_tabs_after && tab_suffix_is_ascii_page_number(&chars, i + 1) {
+                        if let Some(target_rel) = right_leader_body_target_rel(style) {
+                            let seg_w =
+                                measure_segment_from(&chars, &cluster_len, i + 1, &char_width);
+                            total = (target_rel - seg_w).max(total);
+                            tab_char_idx += 1;
+                            continue;
+                        }
+                    }
                     let abs_x = style.line_x_offset + total;
                     let (tab_pos, tab_type, fill_type) = find_next_tab_stop(
                         abs_x,
@@ -1168,6 +1315,17 @@ impl TextMeasurer for WasmTextMeasurer {
                             measure_segment_from(&chars, &cluster_len, seg_start, &char_width)
                         };
                         x = (body_right_text_rel - seg_w).max(x);
+                    } else if tab_type == 0
+                        && !has_more_tabs_after
+                        && tab_suffix_is_ascii_page_number(&chars, i + 1)
+                    {
+                        if let Some(target_rel) = right_leader_tab_target_rel(style, font_size) {
+                            let seg_w =
+                                measure_segment_from(&chars, &cluster_len, i + 1, &char_width);
+                            x = (target_rel - seg_w).max(x);
+                        } else {
+                            x = tab_target.max(x);
+                        }
                     } else {
                         match tab_type {
                             2 if fill_low != 0 => {
@@ -1239,6 +1397,17 @@ impl TextMeasurer for WasmTextMeasurer {
                     }
                     tab_char_idx += 1;
                 } else if has_custom_tabs {
+                    let has_more_tabs_after = chars[i + 1..].iter().any(|c| *c == '\t');
+                    if !has_more_tabs_after && tab_suffix_is_ascii_page_number(&chars, i + 1) {
+                        if let Some(target_rel) = right_leader_body_target_rel(style) {
+                            let seg_w =
+                                measure_segment_from(&chars, &cluster_len, i + 1, &char_width);
+                            x = (target_rel - seg_w).max(x);
+                            tab_char_idx += 1;
+                            positions.push(x);
+                            continue;
+                        }
+                    }
                     let abs_x = style.line_x_offset + x;
                     let (tab_pos, tab_type, fill_type) = find_next_tab_stop(
                         abs_x,
@@ -1260,7 +1429,9 @@ impl TextMeasurer for WasmTextMeasurer {
                     };
                     match tab_type {
                         1 => {
-                            let seg_start = {
+                            let seg_start = if fill_type != 0 {
+                                i + 1
+                            } else {
                                 let mut s = i + 1;
                                 while s < chars.len() && chars[s] == ' ' && cluster_len[s] != 0 {
                                     s += 1;

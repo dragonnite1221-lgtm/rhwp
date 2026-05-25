@@ -168,7 +168,10 @@ impl LayoutEngine {
         let para_style = styles.para_styles.get(para_style_id);
         let margin_left = para_style.map(|s| s.margin_left).unwrap_or(0.0);
         let margin_right = para_style.map(|s| s.margin_right).unwrap_or(0.0);
-        let spacing_before = para_style.map(|s| s.spacing_before).unwrap_or(0.0);
+        let spacing_before = crate::renderer::hwp3_variant_flow_spacing_before(
+            para_style.map(|s| s.spacing_before).unwrap_or(0.0),
+            self.use_hwp3_origin_flow_spacing_before.get(),
+        );
         let spacing_after = para_style.map(|s| s.spacing_after).unwrap_or(0.0);
         let alignment = para_style.map(|s| s.alignment).unwrap_or(Alignment::Left);
 
@@ -956,7 +959,10 @@ impl LayoutEngine {
         let alignment = para_style
             .map(|s| s.alignment)
             .unwrap_or(Alignment::Justify);
-        let spacing_before = para_style.map(|s| s.spacing_before).unwrap_or(0.0);
+        let spacing_before = crate::renderer::hwp3_variant_flow_spacing_before(
+            para_style.map(|s| s.spacing_before).unwrap_or(0.0),
+            self.use_hwp3_origin_flow_spacing_before.get(),
+        );
         let spacing_after = para_style.map(|s| s.spacing_after).unwrap_or(0.0);
         // [Task #874 Case 3] `<...>` 단독 paragraph 의 paragraph-level extra spacing 제거.
         // typeset.rs::format_paragraph 측 동일 제거 — solo_zone_pad (zone 전환 패딩) 만 유지.
@@ -1412,6 +1418,7 @@ impl LayoutEngine {
             let mut est_x = effective_margin_left + line_cs_offset + inline_offset;
             let est_x_start = est_x;
             let mut pending_right_tab_est: Option<(f64, u8, u8)> = None;
+            let mut pending_right_leader_digit_est = false;
             let mut run_char_pos_est = comp_line.char_start;
             // cross-run 탭 감지용 inline_tabs(composed.tab_extended) 커서 — Task #290
             let mut inline_tab_cursor_est: usize = 0;
@@ -1434,6 +1441,34 @@ impl LayoutEngine {
                 ts.available_width = available_width;
                 ts.text_start_offset = effective_margin_left;
                 ts.inline_tabs = composed.tab_extended.clone();
+                if pending_right_leader_digit_est {
+                    if run.text.trim().is_empty() {
+                        pending_right_leader_digit_est = true;
+                    } else {
+                        if run.text.trim().chars().all(|ch| ch.is_ascii_digit()) {
+                            if let Some(tab) = tab_stops
+                                .iter()
+                                .rev()
+                                .find(|tab| tab.tab_type == 1 && tab.fill_type != 0)
+                            {
+                                let digit_w = estimate_text_width(run.text.trim(), &ts);
+                                let target =
+                                    if composed.tab_extended.is_empty() && available_width > 0.0 {
+                                        effective_margin_left + available_width
+                                    } else {
+                                        tab.position
+                                    };
+                                let gap = if composed.tab_extended.is_empty() {
+                                    0.0
+                                } else {
+                                    ts.font_size * 0.25
+                                };
+                                est_x = target - gap - digit_w;
+                            }
+                        }
+                        pending_right_leader_digit_est = false;
+                    }
+                }
                 // 교차 run 오른쪽/가운데 탭: 이 run의 시작 위치를 역방향으로 조정
                 if let Some((tab_pos, tab_type, fill_type)) = pending_right_tab_est.take() {
                     // [Task #279] 공백만 있는 run 은 right/center tab 정렬 단위가 아니다.
@@ -1586,6 +1621,18 @@ impl LayoutEngine {
                             available_width,
                         );
                     }
+                }
+                if run.text.contains('\t')
+                    && run
+                        .text
+                        .rsplit_once('\t')
+                        .map(|(_, after)| after.trim().is_empty())
+                        .unwrap_or(false)
+                    && tab_stops
+                        .iter()
+                        .any(|tab| tab.tab_type == 1 && tab.fill_type != 0)
+                {
+                    pending_right_leader_digit_est = true;
                 }
                 // 각주 마커 폭: run 내에 각주가 있으면 마커 위첨자 폭 추가
                 let is_last_run_est = run_char_end_est
@@ -1973,6 +2020,7 @@ impl LayoutEngine {
             let mut fn_marker_inserted = vec![false; fn_positions.len()];
 
             let mut pending_right_tab_render: Option<(f64, u8, u8)> = None;
+            let mut pending_right_leader_digit_render = false;
             let is_last_run_of_line = |idx: usize| idx == comp_line.runs.len() - 1;
             let mut run_char_pos = comp_line.char_start;
             // 이미 삽입한 도형 마커 추적
@@ -2025,6 +2073,34 @@ impl LayoutEngine {
                 text_style.available_width = available_width;
                 text_style.text_start_offset = effective_margin_left;
                 text_style.inline_tabs = composed.tab_extended.clone();
+                if pending_right_leader_digit_render {
+                    if run.text.trim().is_empty() {
+                        pending_right_leader_digit_render = true;
+                    } else {
+                        if run.text.trim().chars().all(|ch| ch.is_ascii_digit()) {
+                            if let Some(tab) = tab_stops
+                                .iter()
+                                .rev()
+                                .find(|tab| tab.tab_type == 1 && tab.fill_type != 0)
+                            {
+                                let digit_w = estimate_text_width(run.text.trim(), &text_style);
+                                let target =
+                                    if composed.tab_extended.is_empty() && available_width > 0.0 {
+                                        effective_margin_left + available_width
+                                    } else {
+                                        tab.position
+                                    };
+                                let gap = if composed.tab_extended.is_empty() {
+                                    0.0
+                                } else {
+                                    text_style.font_size * 0.25
+                                };
+                                x = col_area.x + target - gap - digit_w;
+                            }
+                        }
+                        pending_right_leader_digit_render = false;
+                    }
+                }
                 // 교차 run 오른쪽/가운데 탭: 이전 run이 \t로 끝났고
                 // 해당 탭이 오른쪽/가운데 탭이면 이 run을 역방향으로 이동
                 if let Some((tab_pos, tab_type, fill_type)) = pending_right_tab_render.take() {
@@ -2093,18 +2169,16 @@ impl LayoutEngine {
                             if let RenderNodeType::TextRun(prev_text_run) =
                                 &mut prev_run_node.node_type
                             {
-                                if let Some(last_leader) =
-                                    prev_text_run.style.tab_leaders.last_mut()
-                                {
-                                    let space_gap = if text_style.font_size > 0.0 {
-                                        text_style.font_size * 0.25
-                                    } else {
-                                        3.0
-                                    };
+                                let space_gap = if text_style.font_size > 0.0 {
+                                    text_style.font_size * 0.25
+                                } else {
+                                    3.0
+                                };
+                                for leader in &mut prev_text_run.style.tab_leaders {
                                     let new_end_x =
-                                        (x - prev_bbox_x - space_gap).max(last_leader.start_x);
-                                    if new_end_x < last_leader.end_x {
-                                        last_leader.end_x = new_end_x;
+                                        (x - prev_bbox_x - space_gap).max(leader.start_x);
+                                    if new_end_x < leader.end_x {
+                                        leader.end_x = new_end_x;
                                     }
                                 }
                             }
@@ -2200,6 +2274,19 @@ impl LayoutEngine {
                             available_width,
                         );
                     }
+                }
+                if has_tabs
+                    && run.text.contains('\t')
+                    && run
+                        .text
+                        .rsplit_once('\t')
+                        .map(|(_, after)| after.trim().is_empty())
+                        .unwrap_or(false)
+                    && tab_stops
+                        .iter()
+                        .any(|tab| tab.tab_type == 1 && tab.fill_type != 0)
+                {
+                    pending_right_leader_digit_render = true;
                 }
                 let run_char_count = if run.char_overlap.is_some() {
                     // 글자겹침(CharOverlap)은 HWP char_offset 공간에서 1개 위치만 차지
@@ -3626,6 +3713,45 @@ impl LayoutEngine {
             // 다음 줄의 TextRun.char_start가 올바른 문서 좌표를 가리키도록 한다.
             if comp_line.has_line_break {
                 char_offset += 1;
+            }
+
+            let following_text_xs: Vec<f64> = line_node
+                .children
+                .iter()
+                .filter_map(|child| {
+                    if let RenderNodeType::TextRun(tr) = &child.node_type {
+                        if !tr.text.trim().is_empty() {
+                            return Some(child.bbox.x);
+                        }
+                    }
+                    None
+                })
+                .collect();
+            for child in &mut line_node.children {
+                if let RenderNodeType::TextRun(tr) = &mut child.node_type {
+                    if tr.style.tab_leaders.is_empty() {
+                        continue;
+                    }
+                    let space_gap = if tr.style.font_size > 0.0 {
+                        tr.style.font_size * 0.25
+                    } else {
+                        3.0
+                    };
+                    for leader in &mut tr.style.tab_leaders {
+                        let abs_start = child.bbox.x + leader.start_x;
+                        if let Some(next_x) = following_text_xs
+                            .iter()
+                            .copied()
+                            .filter(|x| *x > abs_start + 0.5)
+                            .min_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal))
+                        {
+                            let new_end_x = (next_x - child.bbox.x - space_gap).max(leader.start_x);
+                            if new_end_x < leader.end_x {
+                                leader.end_x = new_end_x;
+                            }
+                        }
+                    }
+                }
             }
 
             col_node.children.push(line_node);

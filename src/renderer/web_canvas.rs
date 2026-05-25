@@ -18,8 +18,8 @@ use super::render_tree::{
     BoundingBox, FormObjectNode, PageRenderTree, RenderNode, RenderNodeType, ShapeTransform,
 };
 use super::{
-    GradientFillInfo, LineStyle, PathCommand, PatternFillInfo, Renderer, ShapeStyle, StrokeDash,
-    TextStyle,
+    clamp_tab_leader_end_x, GradientFillInfo, LineStyle, PathCommand, PatternFillInfo, Renderer,
+    ShapeStyle, StrokeDash, TextStyle,
 };
 use crate::model::style::ImageFillMode;
 use crate::model::style::UnderlineType;
@@ -2085,14 +2085,45 @@ impl Renderer for WebCanvasRenderer {
                     self.ctx.scale(0.5, 1.0).unwrap_or(());
                     let _ = self.ctx.fill_text(cluster_str, 0.0, 0.0);
                     self.ctx.restore();
-                } else if has_ratio {
+                } else {
+                    let cluster_advance = {
+                        let end = *char_idx + cluster_str.chars().count();
+                        if end < char_positions.len() {
+                            char_positions[end] - char_positions[*char_idx]
+                        } else {
+                            0.0
+                        }
+                    };
+                    let pin_ascii_advance =
+                        cluster_str.chars().any(|ch| ch.is_ascii_alphanumeric());
+                    let fit_scale = if cluster_advance > 0.0 {
+                        self.ctx
+                            .measure_text(cluster_str)
+                            .ok()
+                            .map(|metrics| metrics.width())
+                            .and_then(|actual_w| {
+                                let visual_w = actual_w * ratio;
+                                if visual_w <= 0.0 {
+                                    None
+                                } else if pin_ascii_advance {
+                                    Some((cluster_advance / visual_w).clamp(0.1, 2.0))
+                                } else if visual_w > cluster_advance + 0.25 {
+                                    Some((cluster_advance / visual_w).clamp(0.1, 1.0))
+                                } else {
+                                    None
+                                }
+                            })
+                    } else {
+                        None
+                    };
+
                     self.ctx.save();
                     self.ctx.translate(char_x, y).unwrap_or(());
-                    self.ctx.scale(ratio, 1.0).unwrap_or(());
+                    self.ctx
+                        .scale(ratio * fit_scale.unwrap_or(1.0), 1.0)
+                        .unwrap_or(());
                     let _ = self.ctx.fill_text(cluster_str, 0.0, 0.0);
                     self.ctx.restore();
-                } else {
-                    let _ = self.ctx.fill_text(cluster_str, char_x, y);
                 }
             }
         }
@@ -2173,7 +2204,8 @@ impl Renderer for WebCanvasRenderer {
                 continue;
             }
             let lx1 = x + leader.start_x;
-            let lx2 = x + leader.end_x;
+            let leader_end_x = clamp_tab_leader_end_x(text, &char_positions, leader, font_size);
+            let lx2 = x + leader_end_x;
             let ly = y - font_size * 0.35; // 글자 세로 중앙
             let stroke_color = color_to_css(style.color);
 
