@@ -36,7 +36,7 @@ export function applyGridOverlayBox(
 }
 
 function buildBackgroundImage(settings: GridViewSettings): string {
-  const color = 'rgba(0, 38, 160, 0.85)';
+  const color = 'rgba(0, 22, 135, 0.95)';
   switch (settings.pattern) {
     case 'horizontal':
       return `linear-gradient(to bottom, ${color} 0, ${color} 1px, transparent 1px)`;
@@ -49,7 +49,7 @@ function buildBackgroundImage(settings: GridViewSettings): string {
       ].join(', ');
     case 'dots':
     default:
-      return `radial-gradient(circle, ${color} 0 0.55px, transparent 0.75px)`;
+      return `radial-gradient(circle, ${color} 0 0.42px, transparent 0.6px)`;
   }
 }
 
@@ -95,10 +95,11 @@ function getGridOriginPx(
 }
 
 function getPageGridAreaPx(pageInfo: PageInfo): { left: number; right: number; top: number; bottom: number } {
+  const bottom = pageInfo.pageBorderBottom ?? pageInfo.marginBottom;
   return {
     left: pageInfo.pageBorderLeft ?? pageInfo.marginLeft,
     right: pageInfo.pageBorderRight ?? pageInfo.marginRight,
     top: pageInfo.pageBorderTop ?? pageInfo.marginTop,
-    bottom: pageInfo.pageBorderBottom ?? pageInfo.marginBottom,
+    bottom: Math.max(bottom, pageInfo.marginBottom),
   };
 }
