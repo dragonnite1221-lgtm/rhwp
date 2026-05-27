@@ -36,6 +36,7 @@ impl LayoutEngine {
         control_index: Option<usize>,
     ) {
         // [Task #825] 본문 picture 경로 — header_footer_ref = None
+        // [Task #1138] table_cell_ref = None (셀 외부, 본 wrapper 는 외부 picture 만)
         self.layout_picture_full(
             tree,
             parent_node,
@@ -47,12 +48,15 @@ impl LayoutEngine {
             para_index,
             control_index,
             None,
+            None,
         );
     }
 
     /// [Task #825] 머리말/꼬리말 picture 전용 — outer Header/Footer 위치 marker 전달.
     /// `header_footer_ref` 가 `Some` 일 때 ImageNode 에 마커 설정 → rhwp-studio
     /// 머리말/꼬리말 그림 클릭 hit-test + 개체 속성 dialog dispatch 활성화.
+    /// [Task #1138] `table_cell_ref` 가 `Some` 일 때 ImageNode 에 셀 정보 설정 →
+    /// 표 셀 내부 그림 hit-test + 개체 속성 dialog dispatch 활성화.
     #[allow(clippy::too_many_arguments)]
     pub(crate) fn layout_picture_full(
         &self,
@@ -66,6 +70,8 @@ impl LayoutEngine {
         para_index: Option<usize>,
         control_index: Option<usize>,
         header_footer_ref: Option<crate::renderer::render_tree::HeaderFooterImageRef>,
+        // [Task #1138] (cell_idx, cell_para_idx, outer_table_ctrl_idx)
+        table_cell_ref: Option<(usize, usize, usize)>,
     ) {
         // 그림 크기 (HWPUNIT → 픽셀)
         // CommonObjAttr의 width/height가 개체의 실제 표시 크기
@@ -161,6 +167,9 @@ impl LayoutEngine {
                 transform: extract_shape_transform(&picture.shape_attr),
                 external_path: picture.image_attr.external_path.clone(),
                 header_footer_ref: header_footer_ref.clone(),
+                cell_index: table_cell_ref.map(|(ci, _, _)| ci),
+                cell_para_index: table_cell_ref.map(|(_, cpi, _)| cpi),
+                outer_table_control_index: table_cell_ref.map(|(_, _, otci)| otci),
                 ..ImageNode::new(bin_data_id, image_data)
             }),
             BoundingBox::new(pic_x, pic_y, pic_width, pic_height),

@@ -942,16 +942,19 @@ impl LayoutEngine {
                                             width: clamped_w,
                                             height: clamped_h,
                                         };
-                                        self.layout_picture(
+                                        // [Task #1138] 분할 표 셀 안 TAC picture — cell ctx 전달
+                                        self.layout_picture_full(
                                             tree,
                                             &mut cell_node,
                                             pic,
                                             &pic_area,
                                             bin_data_content,
                                             Alignment::Left,
+                                            Some(section_index),
+                                            Some(para_index),
+                                            Some(ctrl_idx),
                                             None,
-                                            None,
-                                            None,
+                                            Some((cell_idx, cp_idx, control_index)),
                                         );
                                         inline_x += clamped_w;
                                         continue;
@@ -965,16 +968,19 @@ impl LayoutEngine {
                                             .max(0.0),
                                         ..inner_area
                                     };
-                                    self.layout_picture(
+                                    // [Task #1138] 분할 표 셀 안 비-TAC picture — cell ctx 전달
+                                    self.layout_picture_full(
                                         tree,
                                         &mut cell_node,
                                         pic,
                                         &pic_area,
                                         bin_data_content,
                                         para_alignment,
+                                        Some(section_index),
+                                        Some(para_index),
+                                        Some(ctrl_idx),
                                         None,
-                                        None,
-                                        None,
+                                        Some((cell_idx, cp_idx, control_index)),
                                     );
                                     let pic_h = hwpunit_to_px(pic.common.height as i32, self.dpi);
                                     para_y += pic_h;
