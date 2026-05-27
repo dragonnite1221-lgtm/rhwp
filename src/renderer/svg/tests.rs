@@ -334,8 +334,11 @@ fn test_page_background_image_realpic_watermark_preserves_color_with_opacity() {
         "RealPic PageBackground watermark should render as a tone-baked PNG: {output}"
     );
     assert!(
-        output.contains("<g opacity=\"0.21729612\">"),
-        "PageBackground watermark preset should apply watermark opacity: {output}"
+        output.contains(&format!(
+            "<g opacity=\"{}\">",
+            REAL_PICTURE_WATERMARK_PAGE_OPACITY
+        )),
+        "PageBackground watermark preset should apply page watermark opacity: {output}"
     );
     assert!(
         output.contains(
@@ -369,8 +372,11 @@ fn test_background_image_realpic_watermark_fill_preserves_color_with_opacity() {
         "RealPic background watermark fill should bake the shared tone transform into image pixels: {output}"
     );
     assert!(
-        output.contains("<g opacity=\"0.21729612\">"),
-        "RealPic background watermark fill should apply shared watermark opacity: {output}"
+        output.contains(&format!(
+            "<g opacity=\"{}\">",
+            REAL_PICTURE_WATERMARK_FILL_OPACITY
+        )),
+        "RealPic background watermark fill should apply fill watermark opacity: {output}"
     );
 }
 
