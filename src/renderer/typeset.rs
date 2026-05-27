@@ -3613,6 +3613,7 @@ impl TypesetEngine {
         // 셀 패딩/중첩 표 높이 계산에만 의존하므로 ad hoc 인스턴스로 충분하다.
         let layout_engine = crate::renderer::layout::LayoutEngine::new(self.dpi);
         layout_engine.set_hwp3_variant(st.is_hwp3_variant);
+        layout_engine.set_hwpx_source(st.is_hwpx_source);
         // [Task #993] rowspan(row_span>1) 셀이 걸친 행 — 컷 모델(advance_row_cut)은
         // row_span==1 셀만 다루므로 rowspan 셀 높이를 측정하지 못한다. 구현계획서
         // §4대로 rowspan 행은 MeasuredTable 행 높이를 권위로 쓴다(렌더러도 동일).
