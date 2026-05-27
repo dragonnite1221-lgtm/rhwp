@@ -29,4 +29,3 @@
 - `cargo test test_parse_section_with_section_def --lib -- --nocapture` 통과
 - `cargo test test_parse_section_grid_preserves_line_and_char_grid --lib -- --nocapture` 통과
 - `cargo test test_parse_hwpx_para_shape_snap_to_grid_bit --lib -- --nocapture` 통과
-
