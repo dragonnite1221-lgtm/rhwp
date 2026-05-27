@@ -239,7 +239,9 @@ export class PicturePropsDialog {
     this.cellPath = cellPath;
     this.innerControlIdx = innerControlIdx ?? 0;
 
-    // getter 3-way 분기: cellPath > headerFooter > 외부
+    // getter 분기:
+    // - shape/line: cellPath > 외부 (셀 안 도형은 by_path API)
+    // - picture: headerFooter > 외부 (picture 는 paragraph_layout path 가 처리하므로 cellPath 미사용)
     if (type === 'shape' || type === 'line') {
       if (cellPath) {
         this.shapeProps = this.wasm.getCellShapePropertiesByPath(sec, para, cellPath, this.innerControlIdx);
@@ -249,10 +251,7 @@ export class PicturePropsDialog {
       this.props = this.shapeProps as unknown as PictureProperties;
     } else {
       this.shapeProps = null;
-      if (cellPath) {
-        // [Task #1138] 표 셀 내 picture — by_path API
-        this.props = this.wasm.getCellPicturePropertiesByPath(sec, para, cellPath, this.innerControlIdx);
-      } else if (headerFooter) {
+      if (headerFooter) {
         // [Task #825] 머리말/꼬리말 그림 — 별도 5-tuple API
         this.props = this.wasm.getHeaderFooterPictureProperties(
           sec, headerFooter.outerParaIdx, headerFooter.outerControlIdx, para, ci,
@@ -2152,7 +2151,9 @@ export class PicturePropsDialog {
     }
 
     if (Object.keys(updated).length > 0) {
-      // [Task #1138] setter 3-way 분기: cellPath > headerFooter > 외부
+      // setter 분기:
+      // - shape/line: cellPath > 외부
+      // - picture: headerFooter > 외부 (cellPath 미사용 — paragraph_layout path 가 처리)
       if (this.objectType === 'shape' || this.objectType === 'line') {
         if (this.cellPath) {
           this.wasm.setCellShapePropertiesByPath(
@@ -2161,11 +2162,6 @@ export class PicturePropsDialog {
         } else {
           this.wasm.setShapeProperties(this.sec, this.para, this.ci, updated);
         }
-      } else if (this.cellPath) {
-        // [Task #1138] 표 셀 내 picture — by_path API
-        this.wasm.setCellPicturePropertiesByPath(
-          this.sec, this.para, this.cellPath, this.innerControlIdx, updated,
-        );
       } else if (this.headerFooter) {
         // [Task #825] 머리말/꼬리말 그림은 별도 API — 5-tuple lookup. 캡션 신규
         // 생성은 미지원 (set_header_footer_picture_properties_native 가 NotSupported

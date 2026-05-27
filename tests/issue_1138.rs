@@ -97,21 +97,6 @@ fn cell_shape_properties_by_path_out_of_range_inner_ctrl() {
 }
 
 #[test]
-fn cell_shape_properties_by_path_type_mismatch_picture_api() {
-    // 사각형 위치에 picture API 호출 → "그림이 아닙니다" 에러
-    let core = load_inner_table_01();
-    let path_json = r#"[{"controlIdx":2,"cellIdx":5,"cellParaIdx":0}]"#;
-    let result = core.get_cell_picture_properties_by_path_native(0, 0, path_json, 0);
-    assert!(result.is_err(), "타입 불일치 (사각형 위치 → picture API) 거부");
-    let err_msg = format!("{:?}", result.err().unwrap());
-    assert!(
-        err_msg.contains("그림이 아닙니다"),
-        "에러 메시지 확인: {}",
-        err_msg
-    );
-}
-
-#[test]
 fn cell_shape_properties_by_path_wrong_table_ctrl() {
     // controlIdx=0 (구역정의) — 표가 아님
     let core = load_inner_table_01();

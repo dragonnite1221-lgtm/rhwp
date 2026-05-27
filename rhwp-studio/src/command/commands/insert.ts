@@ -181,12 +181,14 @@ export const insertCommands: CommandDef[] = [
         picturePropsDialog = new PicturePropsDialog(services.wasm, services.eventBus);
       }
       // [Task #825] 머리말/꼬리말 그림은 ref.headerFooter 동반 — dialog 에 전달.
-      // [Task #1138] 표 셀 내 객체 (ref.cellIdx + outerTableControlIdx 동반) 는
-      // cellPath 구성하여 dialog 에 전달 → by_path API 사용.
+      // [Task #1138] 표 셀 내 도형(shape/line) 은 cellPath 구성하여 dialog 에 전달
+      // → by_path API 사용. picture (image) 는 paragraph_layout path 가 처리하므로
+      // cellPath 미사용 (검증 결과 picture 는 외부 좌표 path 로 정상 동작).
       const cellPath = (
         ref.cellIdx !== undefined &&
         ref.cellParaIdx !== undefined &&
-        (ref as any).outerTableControlIdx !== undefined
+        (ref as any).outerTableControlIdx !== undefined &&
+        (ref.type === 'shape' || ref.type === 'line')
       )
         ? [{
             controlIdx: (ref as any).outerTableControlIdx as number,

@@ -867,7 +867,6 @@ impl LayoutEngine {
                                 Some(i),
                                 Some(ci),
                                 outer_hf_ref.clone(),
-                                None, // [Task #1138] 머리말/꼬리말 picture — 셀 외부
                             );
                             let pic_h = hwpunit_to_px(pic.common.height as i32, self.dpi);
                             y_offset += pic_h;

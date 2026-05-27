@@ -1237,20 +1237,10 @@ impl DocumentCore {
                         }
                         None => String::new(),
                     };
-                    // [Task #1138] 표 셀 안 그림: cellIdx/cellParaIdx/outerTableControlIdx 노출
-                    let cell_str = match (image_node.cell_index, image_node.cell_para_index) {
-                        (Some(ci), Some(cpi)) => format!(",\"cellIdx\":{},\"cellParaIdx\":{}", ci, cpi),
-                        _ => String::new(),
-                    };
-                    let outer_table_str = match image_node.outer_table_control_index {
-                        Some(otci) => format!(",\"outerTableControlIdx\":{}", otci),
-                        None => String::new(),
-                    };
-
                     controls.push(format!(
-                        "{{\"type\":\"image\",\"x\":{:.1},\"y\":{:.1},\"w\":{:.1},\"h\":{:.1}{}{}{}{}{}}}",
+                        "{{\"type\":\"image\",\"x\":{:.1},\"y\":{:.1},\"w\":{:.1},\"h\":{:.1}{}{}{}}}",
                         node.bbox.x, node.bbox.y, node.bbox.width, node.bbox.height,
-                        doc_coords, wrap_str, hf_str, cell_str, outer_table_str
+                        doc_coords, wrap_str, hf_str
                     ));
                     return;
                 }

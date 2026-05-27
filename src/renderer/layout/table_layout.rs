@@ -2221,8 +2221,7 @@ impl LayoutEngine {
                                             width: clamped_w,
                                             height: clamped_h,
                                         };
-                                        // [Task #1138] 셀 안 TAC picture — layout_picture_full 로 cell ctx 전달
-                                        self.layout_picture_full(
+                                        self.layout_picture(
                                             tree,
                                             &mut cell_node,
                                             pic,
@@ -2230,10 +2229,8 @@ impl LayoutEngine {
                                             bin_data_content,
                                             Alignment::Left,
                                             Some(section_index),
-                                            table_meta.map(|(opi, _)| opi),
-                                            Some(ctrl_idx),
                                             None,
-                                            table_meta.map(|(_, otci)| (cell_idx, cp_idx, otci)),
+                                            None,
                                         );
                                         inline_x += clamped_w;
                                         continue;
@@ -2283,8 +2280,7 @@ impl LayoutEngine {
                                         width: pic_w,
                                         height: pic_h,
                                     };
-                                    // [Task #1138] 셀 안 비-TAC picture — cell ctx 전달
-                                    self.layout_picture_full(
+                                    self.layout_picture(
                                         tree,
                                         &mut cell_node,
                                         pic,
@@ -2292,10 +2288,8 @@ impl LayoutEngine {
                                         bin_data_content,
                                         Alignment::Left,
                                         Some(section_index),
-                                        table_meta.map(|(opi, _)| opi),
-                                        Some(ctrl_idx),
                                         None,
-                                        table_meta.map(|(_, otci)| (cell_idx, cp_idx, otci)),
+                                        None,
                                     );
                                     para_y += pic_h;
                                 }

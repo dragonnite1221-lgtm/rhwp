@@ -724,18 +724,13 @@ impl LayoutEngine {
                             let img_data =
                                 find_bin_data(bin_data_content, bin_id).map(|bd| bd.data.clone());
                             let img_node_id = tree.next_id();
-                            // [Task #1138] enclosing_ctx 에서 cell 정보 추출
-                            // enclosing_ctx: (section_index, body_para_index, parent_path, table_ctrl_idx)
-                            let img_section_index = enclosing_ctx.map(|(s, _, _, _)| s);
-                            let img_para_index = enclosing_ctx.map(|(_, opi, _, _)| opi);
-                            let img_outer_table_ctrl = enclosing_ctx.map(|(_, _, _, otci)| otci);
                             let img_node = RenderNode::new(
                                 img_node_id,
                                 RenderNodeType::Image(ImageNode {
                                     bin_data_id: bin_id,
                                     data: img_data,
-                                    section_index: img_section_index,
-                                    para_index: img_para_index,
+                                    section_index: None,
+                                    para_index: None,
                                     control_index: Some(ctrl_idx),
                                     fill_mode: None,
                                     original_size: None,
@@ -748,9 +743,6 @@ impl LayoutEngine {
                                     text_wrap: None,
                                     external_path: pic.image_attr.external_path.clone(),
                                     header_footer_ref: None,
-                                    cell_index: Some(cell_idx),
-                                    cell_para_index: Some(pidx),
-                                    outer_table_control_index: img_outer_table_ctrl,
                                 }),
                                 BoundingBox::new(pic_x, pic_y, fit_w, fit_h),
                             );
