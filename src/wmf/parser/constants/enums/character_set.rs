@@ -1,4 +1,5 @@
 use crate::wmf::imports::*;
+use std::sync::OnceLock;
 
 /// The CharacterSet Enumeration defines the possible sets of character glyphs
 /// that are defined in fonts for graphics output.
@@ -59,19 +60,14 @@ impl From<CharacterSet> for &'static encoding_rs::Encoding {
     }
 }
 
-static SYMBOL_CHARSET_TABLE_INITIALIZED: core::sync::atomic::AtomicBool =
-    core::sync::atomic::AtomicBool::new(false);
-static mut SYMBOL_CHARSET_TABLE: BTreeMap<u8, char> = BTreeMap::new();
+static SYMBOL_CHARSET_TABLE: OnceLock<BTreeMap<u8, char>> = OnceLock::new();
 
 #[rustfmt::skip]
 pub(in crate::wmf::parser) fn symbol_charset_table(
 ) -> &'static BTreeMap<u8, char> {
-    if !SYMBOL_CHARSET_TABLE_INITIALIZED.load(core::sync::atomic::Ordering::Acquire) {
-        SYMBOL_CHARSET_TABLE_INITIALIZED.store(true, core::sync::atomic::Ordering::Release);
-
-        unsafe {
-            // via: https://en.wikipedia.org/wiki/Symbol_(typeface)
-            SYMBOL_CHARSET_TABLE = BTreeMap::from_iter([
+    SYMBOL_CHARSET_TABLE.get_or_init(|| {
+        // via: https://en.wikipedia.org/wiki/Symbol_(typeface)
+        BTreeMap::from_iter([
                 // 2x
                 (0x20, ' '), (0x21, '!'), (0x22, '∀'), (0x23, '#'),
                 (0x24, '∃'), (0x25, '%'), (0x26, '&'), (0x27, '∍'),
@@ -132,52 +128,33 @@ pub(in crate::wmf::parser) fn symbol_charset_table(
                 (0xF5, '⌡'), (0xF6, '⎞'), (0xF7, '⎟'), (0xF8, '⎠'),
                 (0xF9, '⎤'), (0xFA, '⎥'), (0xFB, '⎦'), (0xFC, '⎫'),
                 (0xFD, '⎬'), (0xFE, '⎭'),
-            ]);
-        }
-    }
-
-    // SAFETY: Mutable access is not possible after state has been
-    // initialized.
-    #[allow(clippy::deref_addrof)]
-    unsafe { &*&raw const SYMBOL_CHARSET_TABLE }
+        ])
+    })
 }
 
-static CODEPAGE_TABLE_INITIALIZED: core::sync::atomic::AtomicBool =
-    core::sync::atomic::AtomicBool::new(false);
-static mut CODEPAGE_TABLE: BTreeMap<CharacterSet, u16> = BTreeMap::new();
+static CODEPAGE_TABLE: OnceLock<BTreeMap<CharacterSet, u16>> = OnceLock::new();
 
 fn codepage_table() -> &'static BTreeMap<CharacterSet, u16> {
-    if !CODEPAGE_TABLE_INITIALIZED.load(core::sync::atomic::Ordering::Acquire) {
-        CODEPAGE_TABLE_INITIALIZED.store(true, core::sync::atomic::Ordering::Release);
-
-        unsafe {
-            // via: https://en.wikipedia.org/wiki/Code_page
-            CODEPAGE_TABLE = BTreeMap::from_iter([
-                (CharacterSet::ANSI_CHARSET, 1252),
-                (CharacterSet::SYMBOL_CHARSET, 42),
-                (CharacterSet::SHIFTJIS_CHARSET, 932),
-                (CharacterSet::HANGUL_CHARSET, 949),
-                (CharacterSet::JOHAB_CHARSET, 1361),
-                (CharacterSet::GB2312_CHARSET, 936),
-                (CharacterSet::CHINESEBIG5_CHARSET, 950),
-                (CharacterSet::GREEK_CHARSET, 1253),
-                (CharacterSet::TURKISH_CHARSET, 1254),
-                (CharacterSet::VIETNAMESE_CHARSET, 1258),
-                (CharacterSet::HEBREW_CHARSET, 1255),
-                (CharacterSet::ARABIC_CHARSET, 1256),
-                (CharacterSet::BALTIC_CHARSET, 1257),
-                (CharacterSet::RUSSIAN_CHARSET, 1251),
-                (CharacterSet::THAI_CHARSET, 874),
-                (CharacterSet::EASTEUROPE_CHARSET, 1250),
-                (CharacterSet::OEM_CHARSET, 437),
-            ]);
-        }
-    }
-
-    // SAFETY: Mutable access is not possible after state has been
-    // initialized.
-    #[allow(clippy::deref_addrof)]
-    unsafe {
-        &*&raw const CODEPAGE_TABLE
-    }
+    CODEPAGE_TABLE.get_or_init(|| {
+        // via: https://en.wikipedia.org/wiki/Code_page
+        BTreeMap::from_iter([
+            (CharacterSet::ANSI_CHARSET, 1252),
+            (CharacterSet::SYMBOL_CHARSET, 42),
+            (CharacterSet::SHIFTJIS_CHARSET, 932),
+            (CharacterSet::HANGUL_CHARSET, 949),
+            (CharacterSet::JOHAB_CHARSET, 1361),
+            (CharacterSet::GB2312_CHARSET, 936),
+            (CharacterSet::CHINESEBIG5_CHARSET, 950),
+            (CharacterSet::GREEK_CHARSET, 1253),
+            (CharacterSet::TURKISH_CHARSET, 1254),
+            (CharacterSet::VIETNAMESE_CHARSET, 1258),
+            (CharacterSet::HEBREW_CHARSET, 1255),
+            (CharacterSet::ARABIC_CHARSET, 1256),
+            (CharacterSet::BALTIC_CHARSET, 1257),
+            (CharacterSet::RUSSIAN_CHARSET, 1251),
+            (CharacterSet::THAI_CHARSET, 874),
+            (CharacterSet::EASTEUROPE_CHARSET, 1250),
+            (CharacterSet::OEM_CHARSET, 437),
+        ])
+    })
 }

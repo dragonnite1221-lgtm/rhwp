@@ -7,6 +7,13 @@ Cargo.lock
 /pkg/
 *.wasm
 
+# Node
+node_modules/
+
+# Local HTTPS certificates
+/web/certs/*
+!/web/certs/README.md
+
 # Output (렌더링 결과물)
 /output/
 /dist/swift/

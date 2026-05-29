@@ -11,8 +11,8 @@ Implemented HWP's F5 cell block selection mode. Pressing F5 inside a table cell 
 | `src/wasm_api.rs` | Modified | Added `getTableCellBboxes` API — returns all cell bboxes of a table |
 | `rhwp-studio/src/core/types.ts` | Modified | Added `CellBbox` interface |
 | `rhwp-studio/src/core/wasm-bridge.ts` | Modified | Added `getTableCellBboxes()` bridge method |
-| `rhwp-studio/src/engine/cursor.ts` | Modified | Cell selection mode state management (enter/exit/move/shift/ctrl/getRange) |
-| `rhwp-studio/src/engine/input-handler.ts` | Modified | F5 key handler, arrow/ESC/Shift+click/Ctrl+click handling |
+| `rhwp-studio/src/engine/cursor.ts` | Modified | Cell selection mode state management for enter, exit, move, modifier keys, and range lookup |
+| `rhwp-studio/src/engine/input-handler.ts` | Modified | F5 key handler plus arrow, escape, shift-click, and modifier-click handling |
 | `rhwp-studio/src/engine/cell-selection-renderer.ts` | New | Cell range highlight overlay renderer (excluded cell support) |
 | `rhwp-studio/src/command/types.ts` | Modified | Added `inCellSelectionMode` to EditorContext |
 | `rhwp-studio/src/main.ts` | Modified | CellSelectionRenderer creation/injection, getContext extension |
