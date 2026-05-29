@@ -94,7 +94,7 @@ fn issue_884_diagnostic_dump() {
                         let name = document
                             .doc_info
                             .font_faces
-                            .get(0)
+                            .first()
                             .and_then(|fonts| fonts.get(s.font_ids[0] as usize))
                             .map(|f| f.name.clone())
                             .unwrap_or_default();

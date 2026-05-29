@@ -4802,6 +4802,7 @@ impl DocumentCore {
 }
 
 #[cfg(test)]
+#[allow(clippy::items_after_test_module)]
 mod resize_clamp_tests {
     use super::*;
     use crate::model::document::{Document, Section, SectionDef};

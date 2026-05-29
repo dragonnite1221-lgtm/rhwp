@@ -332,8 +332,8 @@ mod tests {
     /// 시나리오: 표1.fragment.xml(2x2) 1회 paste 후
     /// - IR `Section.paragraphs[*].controls` 에 Table >= 1
     /// - `core.composed[0]` 에 Table inline_control >= 1
-    /// 둘 다 존재해야 한다. fixture 시드에 `composed` 가 비어있는 채로 paste 만 진행하면
-    /// IR 만 채워지고 composed 는 그대로 비어있어 RED.
+    ///   둘 다 존재해야 한다. fixture 시드에 `composed` 가 비어있는 채로 paste 만 진행하면
+    ///   IR 만 채워지고 composed 는 그대로 비어있어 RED.
     #[test]
     fn table_paste_syncs_composed() {
         let fragment = r#"<hp:p paraPrIDRef="21" styleIDRef="0"><hp:tbl rowCnt="99" colCnt="2"><hp:tr><hp:tc rowAddr="99" colAddr="99" rowSpan="1" colSpan="1"><hp:subList><hp:p paraPrIDRef="22" styleIDRef="0"><hp:run charPrIDRef="9"><hp:t>A</hp:t></hp:run></hp:p></hp:subList></hp:tc><hp:tc rowAddr="99" colAddr="99" rowSpan="1" colSpan="1"><hp:subList><hp:p paraPrIDRef="22" styleIDRef="0"><hp:run charPrIDRef="11"><hp:t>B</hp:t></hp:run></hp:p></hp:subList></hp:tc></hp:tr><hp:tr><hp:tc rowAddr="99" colAddr="99" rowSpan="1" colSpan="1"><hp:subList><hp:p paraPrIDRef="22" styleIDRef="0"><hp:run charPrIDRef="9"><hp:t>C</hp:t></hp:run></hp:p></hp:subList></hp:tc><hp:tc rowAddr="99" colAddr="99" rowSpan="1" colSpan="1"><hp:subList><hp:p paraPrIDRef="22" styleIDRef="0"><hp:run charPrIDRef="11"><hp:t>D</hp:t></hp:run></hp:p></hp:subList></hp:tc></hp:tr></hp:tbl></hp:p>"#;
@@ -374,7 +374,7 @@ mod tests {
         use crate::renderer::composer::InlineControlType;
         let composed_section = core
             .composed
-            .get(0)
+            .first()
             .expect("composed[0] should exist after paste — composed sync 누락 시 빈 Vec");
         let composed_table_count: usize = composed_section
             .iter()
