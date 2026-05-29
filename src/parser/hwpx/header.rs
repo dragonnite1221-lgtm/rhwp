@@ -11,8 +11,8 @@ use crate::model::style::*;
 use crate::parser::tags;
 
 use super::utils::{
-    attr_str, local_name, parse_bool, parse_color, parse_hatch_style, parse_i16, parse_i32,
-    parse_i8, parse_u16, parse_u32, parse_u8,
+    attr_str, local_name, parse_bool, parse_color, parse_gradient_type, parse_hatch_style,
+    parse_i16, parse_i32, parse_i8, parse_u16, parse_u32, parse_u8, skip_element,
 };
 use super::HwpxError;
 
@@ -128,7 +128,9 @@ pub fn parse_hwpx_header(xml: &str) -> Result<(DocInfo, DocProperties), HwpxErro
                         }
                     }
                     b"beginNum" => parse_begin_num(e, &mut doc_props),
-                    b"font" => parse_font(e, &mut doc_info, current_font_group),
+                    b"font" => {
+                        parse_font(e, &mut reader, &mut doc_info, current_font_group, true)?;
+                    }
                     b"charPr" => {
                         parse_char_shape(e, &mut reader, &mut doc_info)?;
                     }
@@ -148,6 +150,16 @@ pub fn parse_hwpx_header(xml: &str) -> Result<(DocInfo, DocProperties), HwpxErro
                     b"memoPr" => {
                         parse_memo_shape(e, &mut doc_info);
                     }
+                    b"linkinfo" => {
+                        parse_doc_option_linkinfo(e, &mut doc_info);
+                    }
+                    // [Task #1058 후속] BULLET 누락 시 한컴이 default 글머리표를 본문
+                    // paragraph 에 자동 부여. HWPX `<hh:bullet id="N" char="❏" useImage="0">`
+                    // 4개 → HWP BULLET record 4개. 누락 시 일반 문단 시작 글머리표 부작용.
+                    b"bullet" => {
+                        let bullet = parse_bullet_hwpx(e, &mut reader)?;
+                        doc_info.bullets.push(bullet);
+                    }
                     _ => {}
                 }
             }
@@ -156,7 +168,9 @@ pub fn parse_hwpx_header(xml: &str) -> Result<(DocInfo, DocProperties), HwpxErro
                 let local = local_name(name.as_ref());
                 match local {
                     b"beginNum" => parse_begin_num(e, &mut doc_props),
-                    b"font" => parse_font(e, &mut doc_info, current_font_group),
+                    b"font" => {
+                        parse_font(e, &mut reader, &mut doc_info, current_font_group, false)?;
+                    }
                     b"style" => parse_style(e, &mut doc_info),
                     b"tabPr" => {
                         // 자기 닫힘 태그: 빈 TabDef만 push
@@ -173,6 +187,9 @@ pub fn parse_hwpx_header(xml: &str) -> Result<(DocInfo, DocProperties), HwpxErro
                     b"memoPr" => {
                         parse_memo_shape(e, &mut doc_info);
                     }
+                    b"linkinfo" => {
+                        parse_doc_option_linkinfo(e, &mut doc_info);
+                    }
                     _ => {}
                 }
             }
@@ -186,6 +203,76 @@ pub fn parse_hwpx_header(xml: &str) -> Result<(DocInfo, DocProperties), HwpxErro
     doc_props.section_count = 1; // content.hpf에서 갱신됨
 
     Ok((doc_info, doc_props))
+}
+
+fn parse_doc_option_linkinfo(e: &quick_xml::events::BytesStart, doc_info: &mut DocInfo) {
+    let mut page_inherit = false;
+    let mut footnote_inherit = false;
+
+    for attr in e.attributes().flatten() {
+        match attr.key.as_ref() {
+            b"pageInherit" => page_inherit = parse_bool(&attr),
+            b"footnoteInherit" => footnote_inherit = parse_bool(&attr),
+            _ => {}
+        }
+    }
+
+    let mut data = Vec::with_capacity(80);
+    data.extend_from_slice(&0x021c_u16.to_le_bytes());
+    data.extend_from_slice(&1_u16.to_le_bytes());
+    data.extend_from_slice(&0_u16.to_le_bytes());
+    data.extend_from_slice(&0x0207_u16.to_le_bytes());
+    data.extend_from_slice(&0x8000_u16.to_le_bytes());
+    data.extend_from_slice(&0x0207_u16.to_le_bytes());
+    data.extend_from_slice(&8_u16.to_le_bytes());
+    data.extend_from_slice(&0_u16.to_le_bytes());
+
+    let items = [
+        (0x400a_u16, 0x0006_u16, 0_u32),
+        (0x400e_u16, 0x0006_u16, 0_u32),
+        (0x4006_u16, 0x0006_u16, u32::from(page_inherit)),
+        (0x4010_u16, 0x0007_u16, u32::from(footnote_inherit)),
+        (0x401a_u16, 0x0006_u16, 0_u32),
+        (0x401d_u16, 0x0006_u16, 0_u32),
+        (0x401f_u16, 0x0007_u16, 100_u32),
+        (0x4020_u16, 0x0007_u16, 100_u32),
+    ];
+
+    for (item_id, item_type, value) in items {
+        data.extend_from_slice(&item_id.to_le_bytes());
+        data.extend_from_slice(&item_type.to_le_bytes());
+        data.extend_from_slice(&value.to_le_bytes());
+    }
+
+    doc_info.extra_records.push(RawRecord {
+        tag_id: tags::HWPTAG_DOC_DATA,
+        level: 0,
+        data,
+    });
+    doc_info.extra_records.push(RawRecord {
+        tag_id: tags::HWPTAG_FORBIDDEN_CHAR,
+        level: 1,
+        data: vec![0; 16],
+    });
+
+    doc_info.extra_records.push(RawRecord {
+        tag_id: tags::HWPTAG_COMPATIBLE_DOCUMENT,
+        level: 0,
+        data: vec![0; 4],
+    });
+    doc_info.extra_records.push(RawRecord {
+        tag_id: tags::HWPTAG_LAYOUT_COMPATIBILITY,
+        level: 1,
+        data: vec![0; 20],
+    });
+
+    let mut track_change = vec![0; 1032];
+    track_change[..4].copy_from_slice(&56_u32.to_le_bytes());
+    doc_info.extra_records.push(RawRecord {
+        tag_id: tags::HWPTAG_TRACKCHANGE,
+        level: 1,
+        data: track_change,
+    });
 }
 
 fn parse_memo_shape(e: &quick_xml::events::BytesStart, doc_info: &mut DocInfo) {
@@ -233,7 +320,9 @@ fn parse_memo_shape(e: &quick_xml::events::BytesStart, doc_info: &mut DocInfo) {
 
 fn parse_memo_line_type(value: &str) -> u8 {
     match value {
-        "SOLID" => 0,
+        // HWPX memoPr lineType uses the OWPML name, but HWP5 MEMO_SHAPE stores
+        // the Hancom memo line enum where 0 means "no/unknown" and SOLID is 1.
+        "SOLID" => 1,
         "DOT" => 1,
         "DASH_DOT" => 2,
         "DASH" => 3,
@@ -275,25 +364,146 @@ fn parse_begin_num(e: &quick_xml::events::BytesStart, props: &mut DocProperties)
 
 // ─── Font ───
 
-fn parse_font(e: &quick_xml::events::BytesStart, doc_info: &mut DocInfo, font_group: usize) {
+fn parse_font(
+    e: &quick_xml::events::BytesStart,
+    reader: &mut Reader<&[u8]>,
+    doc_info: &mut DocInfo,
+    font_group: usize,
+    has_children: bool,
+) -> Result<(), HwpxError> {
     let mut name = String::new();
+    let mut font_type = 0u8;
+    let mut type_info = None;
 
     for attr in e.attributes().flatten() {
         match attr.key.as_ref() {
             b"face" => name = attr_str(&attr),
+            b"type" => {
+                font_type = match attr_str(&attr).as_str() {
+                    "TTF" => 1,
+                    "HFT" => 2,
+                    _ => 0,
+                };
+            }
             _ => {}
         }
     }
 
+    if has_children {
+        let mut buf = Vec::new();
+        loop {
+            match reader.read_event_into(&mut buf) {
+                Ok(Event::Empty(ref ce)) => {
+                    if local_name(ce.name().as_ref()) == b"typeInfo" {
+                        type_info = Some(parse_font_type_info(ce, &name, font_type));
+                    }
+                }
+                Ok(Event::Start(ref ce)) => {
+                    if local_name(ce.name().as_ref()) == b"typeInfo" {
+                        type_info = Some(parse_font_type_info(ce, &name, font_type));
+                    } else {
+                        let tag = local_name(ce.name().as_ref()).to_vec();
+                        skip_element(reader, &tag)?;
+                    }
+                }
+                Ok(Event::End(ref ce)) if local_name(ce.name().as_ref()) == b"font" => break,
+                Ok(Event::Eof) => break,
+                Err(e) => return Err(HwpxError::XmlError(e.to_string())),
+                _ => {}
+            }
+            buf.clear();
+        }
+    }
+
     if !name.is_empty() {
+        let default_name = hwp5_default_font_name(&name).map(str::to_string);
         let font = Font {
             name,
+            alt_type: font_type,
+            type_info,
+            default_name,
             ..Default::default()
         };
         // fontface lang 컨텍스트에 따라 해당 언어 그룹에 추가
         if font_group < doc_info.font_faces.len() {
             doc_info.font_faces[font_group].push(font);
         }
+    }
+
+    Ok(())
+}
+
+fn parse_font_type_info(
+    e: &quick_xml::events::BytesStart,
+    font_name: &str,
+    font_type: u8,
+) -> [u8; 10] {
+    let mut info = [0u8; 10];
+    info[1] = synthesize_serif_type(font_name, font_type);
+
+    for attr in e.attributes().flatten() {
+        let value = attr_str(&attr);
+        match attr.key.as_ref() {
+            b"familyType" => info[0] = font_family_type_to_u8(&value),
+            b"weight" => info[2] = value.parse::<u8>().unwrap_or(0),
+            b"proportion" => info[3] = value.parse::<u8>().unwrap_or(0),
+            b"contrast" => info[4] = value.parse::<u8>().unwrap_or(0),
+            b"strokeVariation" => info[5] = value.parse::<u8>().unwrap_or(0),
+            b"armStyle" => info[6] = value.parse::<u8>().unwrap_or(0),
+            b"letterform" => info[7] = value.parse::<u8>().unwrap_or(0),
+            b"midline" => info[8] = value.parse::<u8>().unwrap_or(0),
+            b"xHeight" => info[9] = value.parse::<u8>().unwrap_or(0),
+            _ => {}
+        }
+    }
+
+    info
+}
+
+fn font_family_type_to_u8(value: &str) -> u8 {
+    match value {
+        "FCAT_MYUNGJO" => 1,
+        "FCAT_GOTHIC" => 2,
+        "FCAT_SSERIF" => 3,
+        "FCAT_BRUSHSCRIPT" => 4,
+        "FCAT_DECORATIVE" => 5,
+        "FCAT_NONRECTMJ" => 6,
+        "FCAT_NONRECTGT" => 7,
+        _ => 0,
+    }
+}
+
+fn synthesize_serif_type(font_name: &str, font_type: u8) -> u8 {
+    if font_type == 2 {
+        return 0;
+    }
+
+    match font_name {
+        "굴림" => 11,
+        name if name.contains("바탕") || name.contains("명조") => 3,
+        _ => 0,
+    }
+}
+
+fn hwp5_default_font_name(name: &str) -> Option<&'static str> {
+    match name {
+        "굴림" => Some("Gulim"),
+        "한컴바탕" => Some("Haansoft Batang"),
+        "함초롬바탕" => Some("HCR Batang"),
+        "함초롬돋움" => Some("HCR Dotum"),
+        "신명 견명조" => Some("Sinmyeong Gyeonmyeongjo"),
+        "신명 디나루" => Some("Sinmyeong Dinaru"),
+        "신명 신그래픽" => Some("Sinmyeong Singraphic"),
+        "신명 신명조" => Some("Sinmyeong Sinmyeongjo"),
+        "신명 중고딕" => Some("Sinmyeong JungGothic"),
+        "신명 중명조" => Some("Sinmyeong Jungmyeongjo"),
+        "신명 태고딕" => Some("Sinmyeong TaeGothic"),
+        "신명 태그래픽" => Some("Sinmyeong TaeGraphic"),
+        "한양견명조" => Some("HY GyeonMyeongJo"),
+        "한양신명조" => Some("HY ShinMyungJo"),
+        "한양중고딕" => Some("HY JungGothic"),
+        "명조" => Some("Myeongjo"),
+        _ => None,
     }
 }
 
@@ -500,6 +710,8 @@ fn parse_char_shape(
                                         };
                                     }
                                     b"color" => cs.shadow_color = parse_color(&attr),
+                                    b"offsetX" => cs.shadow_offset_x = parse_i8(&attr),
+                                    b"offsetY" => cs.shadow_offset_y = parse_i8(&attr),
                                     _ => {}
                                 }
                             }
@@ -547,7 +759,17 @@ fn parse_para_shape(
     for attr in e.attributes().flatten() {
         match attr.key.as_ref() {
             b"tabPrIDRef" => ps.tab_def_id = parse_u16(&attr),
-            b"condense" => {}
+            b"condense" => {
+                let condense = parse_u32(&attr).min(75);
+                ps.attr1 = (ps.attr1 & !(0x7f << 9)) | (condense << 9);
+            }
+            b"fontLineHeight" => {
+                if parse_bool(&attr) {
+                    ps.attr1 |= 1 << 22;
+                } else {
+                    ps.attr1 &= !(1 << 22);
+                }
+            }
             _ => {}
         }
     }
@@ -584,6 +806,17 @@ fn parse_para_shape(
             }
             buf.clear();
         }
+    }
+
+    // [Task #1058 후속] line_spacing_v2 (UINT32, 5.0.2.5 이상) 보정.
+    // HWPX 미명시 시 line_spacing (INT32) 값과 동기화 — 한컴 정답지의 모든 ParaShape 가
+    // line_spacing_v2 보유.
+    //
+    // 주의: attr1 bit 7 강제 set 은 부작용 (정답지가 0 인 ParaShape (예: ps[5]) 까지
+    // 한컴 default 와 다르게 만들어 글머리표 등 부정합 trigger). 본 본질은 Style record 의
+    // lang_id 필드 (Task #1058 의 Style 정정) 영역.
+    if ps.line_spacing_v2 == 0 {
+        ps.line_spacing_v2 = ps.line_spacing as u32;
     }
 
     doc_info.para_shapes.push(ps);
@@ -667,6 +900,20 @@ fn parse_para_shape_child(
                     b"offsetRight" => ps.border_spacing[1] = parse_i16(&attr),
                     b"offsetTop" => ps.border_spacing[2] = parse_i16(&attr),
                     b"offsetBottom" => ps.border_spacing[3] = parse_i16(&attr),
+                    b"connect" => {
+                        if parse_bool(&attr) {
+                            ps.attr1 |= 1 << 28;
+                        } else {
+                            ps.attr1 &= !(1 << 28);
+                        }
+                    }
+                    b"ignoreMargin" => {
+                        if parse_bool(&attr) {
+                            ps.attr1 |= 1 << 29;
+                        } else {
+                            ps.attr1 &= !(1 << 29);
+                        }
+                    }
                     _ => {}
                 }
             }
@@ -675,6 +922,21 @@ fn parse_para_shape_child(
         b"breakSetting" => {
             for attr in ce.attributes().flatten() {
                 match attr.key.as_ref() {
+                    b"breakNonLatinWord" => {
+                        // HWP5 ParaShape attr1 bit 7: non-Latin line-break unit.
+                        //
+                        // Do not force this bit globally. Some Hancom-exported
+                        // HWPX paraPr records require it (for example master-page
+                        // page-number AutoNumber paragraphs), while other records
+                        // explicitly do not. Preserve the HWPX contract only when
+                        // the attribute says so.
+                        let value = attr_str(&attr);
+                        if value == "KEEP_WORD" {
+                            ps.attr1 |= 1 << 7;
+                        } else {
+                            ps.attr1 &= !(1 << 7);
+                        }
+                    }
                     b"widowOrphan" => {
                         if parse_bool(&attr) {
                             ps.attr2 |= 1 << 5;
@@ -945,6 +1207,7 @@ fn parse_para_shape_switch(
 
 fn parse_style(e: &quick_xml::events::BytesStart, doc_info: &mut DocInfo) {
     let mut style = Style::default();
+    style.lang_id = 1042; // default 한국어 (HWPX 미지정 시)
     for attr in e.attributes().flatten() {
         match attr.key.as_ref() {
             b"name" => style.local_name = attr_str(&attr),
@@ -960,6 +1223,15 @@ fn parse_style(e: &quick_xml::events::BytesStart, doc_info: &mut DocInfo) {
             b"paraPrIDRef" => style.para_shape_id = parse_u16(&attr),
             b"charPrIDRef" => style.char_shape_id = parse_u16(&attr),
             b"nextStyleIDRef" => style.next_style_id = parse_u8(&attr),
+            // [Task #1058 후속] HWPX `langID` → Style.lang_id (spec 표 47).
+            // HWPX 의 `langID="1042"` 가 한컴 정답지의 Style record 의 INT16 lang_id.
+            b"langID" => {
+                if let Ok(s) = std::str::from_utf8(&attr.value) {
+                    if let Ok(v) = s.parse::<i16>() {
+                        style.lang_id = v;
+                    }
+                }
+            }
             _ => {}
         }
     }
@@ -1014,8 +1286,11 @@ fn parse_border_fill(
                         b"diagonal" => {
                             for attr in ce.attributes().flatten() {
                                 match attr.key.as_ref() {
-                                    b"type" => bf.diagonal.diagonal_type = parse_u8(&attr),
-                                    b"width" => bf.diagonal.width = parse_border_width(&attr),
+                                    b"type" => {
+                                        bf.diagonal.diagonal_type =
+                                            parse_border_line_type_code(&attr)
+                                    }
+                                    b"width" => bf.diagonal.width = parse_diagonal_width(&attr),
                                     b"color" => bf.diagonal.color = parse_color(&attr),
                                     _ => {}
                                 }
@@ -1059,11 +1334,20 @@ fn parse_border_fill(
                             let mut grad = GradientFill::default();
                             for attr in ce.attributes().flatten() {
                                 match attr.key.as_ref() {
-                                    b"type" => grad.gradient_type = parse_i16(&attr),
+                                    b"type" => {
+                                        grad.gradient_type = parse_gradient_type(&attr_str(&attr))
+                                    }
                                     b"angle" => grad.angle = parse_i16(&attr),
                                     b"centerX" => grad.center_x = parse_i16(&attr),
                                     b"centerY" => grad.center_y = parse_i16(&attr),
-                                    b"blur" => grad.blur = parse_i16(&attr),
+                                    b"blur" | b"step" => grad.blur = parse_i16(&attr),
+                                    b"stepCenter" => grad.step_center = parse_u8(&attr),
+                                    b"alpha" => {
+                                        let val = attr_str(&attr);
+                                        if let Ok(f) = val.parse::<f64>() {
+                                            bf.fill.alpha = (f.clamp(0.0, 1.0) * 255.0) as u8;
+                                        }
+                                    }
                                     _ => {}
                                 }
                             }
@@ -1122,12 +1406,22 @@ fn parse_border_fill(
                             }
                         }
                         b"slash" => {
+                            // slash/backSlash 의 type 은 대각선 "방향/형태" enum 이며
+                            // 선 종류가 아니다. 방향 비트(attr bits 2~4)만 설정하고,
+                            // 선 종류/굵기/색은 <hh:diagonal> 요소가 전담한다.
                             for attr in ce.attributes().flatten() {
-                                match attr.key.as_ref() {
-                                    b"type" => bf.diagonal.diagonal_type = parse_u8(&attr),
-                                    b"width" => bf.diagonal.width = parse_border_width(&attr),
-                                    b"color" => bf.diagonal.color = parse_color(&attr),
-                                    _ => {}
+                                if attr.key.as_ref() == b"type" {
+                                    let code = parse_slash_shape_code(&attr);
+                                    set_diagonal_attr_bits(&mut bf, 2, code);
+                                }
+                            }
+                        }
+                        b"backSlash" => {
+                            // backSlash 방향 비트(attr bits 5~7)만 설정.
+                            for attr in ce.attributes().flatten() {
+                                if attr.key.as_ref() == b"type" {
+                                    let code = parse_slash_shape_code(&attr);
+                                    set_diagonal_attr_bits(&mut bf, 5, code);
                                 }
                             }
                         }
@@ -1290,6 +1584,56 @@ fn parse_tab_def(
 
 // ─── Numbering ───
 
+/// [Task #1058 후속] `<hh:bullet>` 파싱 — HWP BULLET record (표 44).
+/// HWPX 의 4개 bullet 정의를 IR 의 bullets 에 매핑. 누락 시 한컴이 default 글머리표를
+/// 본문 paragraph 에 자동 부여 (글머리표 부작용).
+fn parse_bullet_hwpx(
+    e: &quick_xml::events::BytesStart,
+    reader: &mut Reader<&[u8]>,
+) -> Result<Bullet, HwpxError> {
+    let mut bullet = Bullet::default();
+
+    for attr in e.attributes().flatten() {
+        match attr.key.as_ref() {
+            b"char" => {
+                if let Ok(s) = std::str::from_utf8(&attr.value) {
+                    if let Some(c) = s.chars().next() {
+                        bullet.bullet_char = c;
+                    }
+                }
+            }
+            b"useImage" => {
+                if let Ok(s) = std::str::from_utf8(&attr.value) {
+                    if s == "1" {
+                        bullet.image_bullet = 1;
+                    }
+                }
+            }
+            _ => {}
+        }
+    }
+
+    // 자식 <hh:paraHead>, <hh:image> 등 skip
+    if !is_empty_event(e) {
+        let mut buf = Vec::new();
+        loop {
+            match reader.read_event_into(&mut buf) {
+                Ok(Event::End(ref ee)) => {
+                    if local_name(ee.name().as_ref()) == b"bullet" {
+                        break;
+                    }
+                }
+                Ok(Event::Eof) => break,
+                Err(e) => return Err(HwpxError::XmlError(format!("bullet: {}", e))),
+                _ => {}
+            }
+            buf.clear();
+        }
+    }
+
+    Ok(bullet)
+}
+
 fn parse_numbering(
     e: &quick_xml::events::BytesStart,
     reader: &mut Reader<&[u8]>,
@@ -1307,32 +1651,22 @@ fn parse_numbering(
         let mut buf = Vec::new();
         loop {
             match reader.read_event_into(&mut buf) {
-                Ok(Event::Empty(ref ce)) | Ok(Event::Start(ref ce)) => {
+                Ok(Event::Empty(ref ce)) => {
                     let cname = ce.name();
                     let local = local_name(cname.as_ref());
                     if local == b"paraHead" {
-                        let mut level: usize = 0;
-                        let mut head = NumberingHead::default();
-                        let mut format_str = String::new();
-                        for attr in ce.attributes().flatten() {
-                            match attr.key.as_ref() {
-                                b"level" => level = parse_u32(&attr) as usize,
-                                b"start" => {
-                                    let s = parse_u32(&attr);
-                                    if level > 0 && level <= 7 {
-                                        num.level_start_numbers[level - 1] = s;
-                                    }
-                                }
-                                b"text" => format_str = attr_str(&attr),
-                                b"numFormat" => head.number_format = parse_u8(&attr),
-                                b"charPrIDRef" => head.char_shape_id = parse_u32(&attr),
-                                _ => {}
-                            }
-                        }
-                        if level > 0 && level <= 7 {
-                            num.heads[level - 1] = head;
-                            num.level_formats[level - 1] = format_str;
-                        }
+                        let (level, head, start, format_str) = parse_numbering_para_head_attrs(ce);
+                        apply_numbering_para_head(&mut num, level, head, start, format_str);
+                    }
+                }
+                Ok(Event::Start(ref ce)) => {
+                    let cname = ce.name();
+                    let local = local_name(cname.as_ref());
+                    if local == b"paraHead" {
+                        let (level, head, start, mut format_str) =
+                            parse_numbering_para_head_attrs(ce);
+                        format_str.push_str(&read_numbering_para_head_text(reader)?);
+                        apply_numbering_para_head(&mut num, level, head, start, format_str);
                     }
                 }
                 Ok(Event::End(ref ee)) => {
@@ -1351,6 +1685,94 @@ fn parse_numbering(
 
     doc_info.numberings.push(num);
     Ok(())
+}
+
+fn parse_numbering_para_head_attrs(
+    e: &quick_xml::events::BytesStart,
+) -> (usize, NumberingHead, Option<u32>, String) {
+    let mut level: usize = 0;
+    let mut start: Option<u32> = None;
+    let mut head = NumberingHead::default();
+    let mut format_str = String::new();
+
+    for attr in e.attributes().flatten() {
+        match attr.key.as_ref() {
+            b"level" => level = parse_u32(&attr) as usize,
+            b"start" => start = Some(parse_u32(&attr)),
+            b"text" => format_str = attr_str(&attr),
+            b"numFormat" => {
+                head.number_format = parse_numbering_format_code(&attr_str(&attr));
+                head.attr = (head.attr & !(0x0f << 5)) | ((head.number_format as u32) << 5);
+            }
+            b"charPrIDRef" => head.char_shape_id = parse_u32(&attr),
+            b"widthAdjust" => head.width_adjust = parse_i16(&attr),
+            b"textOffset" => head.text_distance = parse_i16(&attr),
+            _ => {}
+        }
+    }
+
+    (level, head, start, format_str)
+}
+
+fn read_numbering_para_head_text(reader: &mut Reader<&[u8]>) -> Result<String, HwpxError> {
+    let mut buf = Vec::new();
+    let mut text = String::new();
+
+    loop {
+        match reader.read_event_into(&mut buf) {
+            Ok(Event::Text(ref t)) => {
+                text.push_str(&t.decode().unwrap_or_default());
+            }
+            Ok(Event::CData(ref t)) => {
+                text.push_str(&String::from_utf8_lossy(t.as_ref()));
+            }
+            Ok(Event::End(ref ee)) => {
+                if local_name(ee.name().as_ref()) == b"paraHead" {
+                    break;
+                }
+            }
+            Ok(Event::Eof) => break,
+            Err(e) => return Err(HwpxError::XmlError(format!("numbering paraHead: {}", e))),
+            _ => {}
+        }
+        buf.clear();
+    }
+
+    Ok(text)
+}
+
+fn apply_numbering_para_head(
+    num: &mut Numbering,
+    level: usize,
+    head: NumberingHead,
+    start: Option<u32>,
+    format_str: String,
+) {
+    if !(1..=7).contains(&level) {
+        return;
+    }
+
+    let idx = level - 1;
+    num.heads[idx] = head;
+    if let Some(start) = start {
+        num.level_start_numbers[idx] = start;
+    }
+    num.level_formats[idx] = format_str;
+}
+
+fn parse_numbering_format_code(value: &str) -> u8 {
+    match value {
+        "DIGIT" | "ARABIC" => 0,
+        "CIRCLED_DIGIT" => 1,
+        "ROMAN_CAPITAL" | "ROMAN_UPPER" | "ROMAN" => 2,
+        "ROMAN_SMALL" | "ROMAN_LOWER" => 3,
+        "LATIN_CAPITAL" | "LATIN_UPPER" | "ALPHA_CAPITAL" => 4,
+        "LATIN_SMALL" | "LATIN_LOWER" | "ALPHA_SMALL" => 5,
+        "HANGUL_SYLLABLE" | "HANGUL_JAMO" => 8,
+        "HANGUL_NUMBER" => 12,
+        "HANJA_NUMBER" | "IDEOGRAPH" => 13,
+        _ => value.parse().unwrap_or(0),
+    }
 }
 
 // ─── 유틸리티 함수 (header 전용) ───
@@ -1403,6 +1825,62 @@ fn parse_border_line_type(attr: &quick_xml::events::attributes::Attribute) -> Bo
     }
 }
 
+fn parse_border_line_type_code(attr: &quick_xml::events::attributes::Attribute) -> u8 {
+    match parse_border_line_type(attr) {
+        BorderLineType::None => 0,
+        BorderLineType::Solid => 1,
+        BorderLineType::Dash => 2,
+        BorderLineType::Dot => 3,
+        BorderLineType::DashDot => 4,
+        BorderLineType::DashDotDot => 5,
+        BorderLineType::LongDash => 6,
+        BorderLineType::Circle => 7,
+        BorderLineType::Double => 8,
+        BorderLineType::ThinThickDouble => 9,
+        BorderLineType::ThickThinDouble => 10,
+        BorderLineType::ThinThickThinTriple => 11,
+        BorderLineType::Wave => 12,
+        BorderLineType::DoubleWave => 13,
+        BorderLineType::Thick3D => 14,
+        BorderLineType::Thick3DReverse => 15,
+        BorderLineType::Thin3D => 16,
+        BorderLineType::Thin3DReverse => 17,
+    }
+}
+
+/// HWPX slash/backSlash 의 형태(type) enum 을 HWP5 BORDER_FILL attr 의
+/// 3비트 방향 코드로 변환한다. (선 종류가 아니라 대각선 방향/형태)
+///
+/// | HWPX type     | 3비트 | 의미              |
+/// |---------------|-------|-------------------|
+/// | NONE          | 0     | 없음              |
+/// | CENTER        | 0b010 | 단순 슬래시       |
+/// | CENTER_BELOW  | 0b011 | 가운데 + 아래     |
+/// | CENTER_ABOVE  | 0b110 | 가운데 + 위       |
+/// | 기타/ALL      | 0b111 | 3방향             |
+fn parse_slash_shape_code(attr: &quick_xml::events::attributes::Attribute) -> u8 {
+    match attr_str(attr).as_str() {
+        "NONE" => 0,
+        "CENTER" => 0b010,
+        "CENTER_BELOW" => 0b011,
+        "CENTER_ABOVE" => 0b110,
+        _ => 0b111,
+    }
+}
+
+/// HWP5 BORDER_FILL attr 의 대각선 방향 비트 필드를 설정한다.
+/// slash 는 shift=2, backSlash 는 shift=5 위치의 3비트.
+/// `code` 는 [`parse_slash_shape_code`] 가 반환한 3비트 방향 코드.
+fn set_diagonal_attr_bits(bf: &mut BorderFill, shift: u16, code: u8) {
+    let mask = 0x07u16 << shift;
+    bf.attr &= !mask;
+    bf.attr |= ((code as u16) & 0x07) << shift;
+}
+
+fn parse_diagonal_width(attr: &quick_xml::events::attributes::Attribute) -> u8 {
+    parse_border_width(attr).max(1)
+}
+
 fn parse_border_width(attr: &quick_xml::events::attributes::Attribute) -> u8 {
     let s = attr_str(attr);
     // "0.12 mm", "0.4 mm" 등의 형식에서 두께 인덱스 추출
@@ -1430,6 +1908,147 @@ fn parse_border_width(attr: &quick_xml::events::attributes::Attribute) -> u8 {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn test_parse_linkinfo_false_still_materializes_hwp5_docinfo_bundle() {
+        let xml = r##"<?xml version="1.0" encoding="UTF-8"?>
+<hh:head xmlns:hh="http://www.hancom.co.kr/hwpml/2011/head">
+  <hh:compatibleDocument targetProgram="HWP201X">
+    <hh:layoutCompatibility/>
+  </hh:compatibleDocument>
+  <hh:docOption>
+    <hh:linkinfo path="" pageInherit="0" footnoteInherit="0"/>
+  </hh:docOption>
+  <hh:trackchageConfig flags="56"/>
+</hh:head>"##;
+
+        let (doc_info, _) = parse_hwpx_header(xml).unwrap();
+        let records: Vec<_> = doc_info
+            .extra_records
+            .iter()
+            .map(|record| (record.tag_id, record.level, record.data.len()))
+            .collect();
+
+        assert_eq!(
+            records,
+            vec![
+                (tags::HWPTAG_DOC_DATA, 0, 80),
+                (tags::HWPTAG_FORBIDDEN_CHAR, 1, 16),
+                (tags::HWPTAG_COMPATIBLE_DOCUMENT, 0, 4),
+                (tags::HWPTAG_LAYOUT_COMPATIBILITY, 1, 20),
+                (tags::HWPTAG_TRACKCHANGE, 1, 1032),
+            ]
+        );
+    }
+
+    #[test]
+    fn test_parse_hwpx_numbering_para_head_text_body() {
+        let xml = r##"<?xml version="1.0" encoding="UTF-8"?>
+<hh:head xmlns:hh="http://www.hancom.co.kr/hwpml/2011/head">
+  <hh:refList>
+    <hh:numberings itemCnt="1">
+      <hh:numbering id="1" start="0">
+        <hh:paraHead start="1" level="1" numFormat="DIGIT"
+          widthAdjust="800" textOffset="50" charPrIDRef="7">^1.</hh:paraHead>
+        <hh:paraHead start="3" level="2" numFormat="HANGUL_SYLLABLE">(^2)</hh:paraHead>
+      </hh:numbering>
+    </hh:numberings>
+  </hh:refList>
+</hh:head>"##;
+
+        let (doc_info, _) = parse_hwpx_header(xml).unwrap();
+        let numbering = &doc_info.numberings[0];
+
+        assert_eq!(numbering.start_number, 0);
+        assert_eq!(numbering.level_formats[0], "^1.");
+        assert_eq!(numbering.level_formats[1], "(^2)");
+        assert_eq!(numbering.level_start_numbers[0], 1);
+        assert_eq!(numbering.level_start_numbers[1], 3);
+        assert_eq!(numbering.heads[0].number_format, 0);
+        assert_eq!(numbering.heads[1].number_format, 8);
+        assert_eq!(numbering.heads[0].width_adjust, 800);
+        assert_eq!(numbering.heads[0].text_distance, 50);
+        assert_eq!(numbering.heads[0].char_shape_id, 7);
+        assert_eq!((numbering.heads[1].attr >> 5) & 0x0f, 8);
+    }
+
+    #[test]
+    fn test_parse_hwpx_numbering_para_head_empty_text_attr() {
+        let xml = r##"<?xml version="1.0" encoding="UTF-8"?>
+<hh:head xmlns:hh="http://www.hancom.co.kr/hwpml/2011/head">
+  <hh:refList>
+    <hh:numberings itemCnt="1">
+      <hh:numbering id="1" start="1">
+        <hh:paraHead start="1" level="1" numFormat="CIRCLED_DIGIT" text="^1"/>
+      </hh:numbering>
+    </hh:numberings>
+  </hh:refList>
+</hh:head>"##;
+
+        let (doc_info, _) = parse_hwpx_header(xml).unwrap();
+        let numbering = &doc_info.numberings[0];
+
+        assert_eq!(numbering.level_formats[0], "^1");
+        assert_eq!(numbering.heads[0].number_format, 1);
+        assert_eq!((numbering.heads[0].attr >> 5) & 0x0f, 1);
+    }
+
+    #[test]
+    fn test_parse_hwpx_para_shape_condense_attr_bits() {
+        let xml = r##"<?xml version="1.0" encoding="UTF-8"?>
+<hh:head xmlns:hh="http://www.hancom.co.kr/hwpml/2011/head"
+  xmlns:hc="http://www.hancom.co.kr/hwpml/2011/core">
+  <hh:refList>
+    <hh:paraProperties itemCnt="1">
+      <hh:paraPr id="1" tabPrIDRef="0" condense="30" fontLineHeight="1">
+        <hh:align horizontal="JUSTIFY" vertical="BASELINE"/>
+        <hh:heading type="NUMBER" idRef="3" level="0"/>
+        <hh:margin>
+          <hc:intent value="-2260" unit="HWPUNIT"/>
+          <hc:left value="0" unit="HWPUNIT"/>
+          <hc:right value="0" unit="HWPUNIT"/>
+          <hc:prev value="0" unit="HWPUNIT"/>
+          <hc:next value="340" unit="HWPUNIT"/>
+        </hh:margin>
+        <hh:lineSpacing type="PERCENT" value="140" unit="HWPUNIT"/>
+      </hh:paraPr>
+    </hh:paraProperties>
+  </hh:refList>
+</hh:head>"##;
+
+        let (doc_info, _) = parse_hwpx_header(xml).unwrap();
+        let ps = &doc_info.para_shapes[0];
+
+        assert_eq!((ps.attr1 >> 9) & 0x7f, 30);
+        assert_eq!(ps.attr1 & (1 << 22), 1 << 22);
+        assert_eq!(ps.head_type, HeadType::Number);
+        assert_eq!(ps.numbering_id, 3);
+        assert_eq!(ps.para_level, 0);
+    }
+
+    #[test]
+    fn test_parse_hwpx_para_shape_break_non_latin_word_bit() {
+        let xml = r##"<?xml version="1.0" encoding="UTF-8"?>
+<hh:head xmlns:hh="http://www.hancom.co.kr/hwpml/2011/head">
+  <hh:refList>
+    <hh:paraProperties itemCnt="2">
+      <hh:paraPr id="1" tabPrIDRef="0" condense="0" fontLineHeight="0">
+        <hh:align horizontal="JUSTIFY" vertical="BASELINE"/>
+        <hh:breakSetting breakLatinWord="KEEP_WORD" breakNonLatinWord="KEEP_WORD" widowOrphan="0" keepWithNext="0" keepLines="0" pageBreakBefore="0" lineWrap="BREAK"/>
+      </hh:paraPr>
+      <hh:paraPr id="2" tabPrIDRef="0" condense="0" fontLineHeight="0">
+        <hh:align horizontal="JUSTIFY" vertical="BASELINE"/>
+        <hh:breakSetting breakLatinWord="KEEP_WORD" breakNonLatinWord="BREAK_WORD" widowOrphan="0" keepWithNext="0" keepLines="0" pageBreakBefore="0" lineWrap="BREAK"/>
+      </hh:paraPr>
+    </hh:paraProperties>
+  </hh:refList>
+</hh:head>"##;
+
+        let (doc_info, _) = parse_hwpx_header(xml).unwrap();
+
+        assert_eq!(doc_info.para_shapes[0].attr1 & (1 << 7), 1 << 7);
+        assert_eq!(doc_info.para_shapes[1].attr1 & (1 << 7), 0);
+    }
 
     #[test]
     fn test_parse_color_rgb() {
@@ -1521,6 +2140,73 @@ mod tests {
     }
 
     #[test]
+    fn test_parse_hwpx_memo_shape_solid_line_type_uses_hwp5_value() {
+        assert_eq!(parse_memo_line_type("SOLID"), 1);
+        assert_eq!(parse_memo_line_type("DASH"), 3);
+    }
+
+    #[test]
+    fn test_parse_hwpx_font_type_info_and_hwp5_default_name() {
+        let xml = r##"<?xml version="1.0" encoding="UTF-8"?>
+<hh:head xmlns:hh="http://www.hancom.co.kr/hwpml/2011/head">
+  <hh:refList>
+    <hh:fontfaces itemCnt="1">
+      <hh:fontface lang="HANGUL" fontCnt="2">
+        <hh:font id="0" face="한컴바탕" type="TTF" isEmbedded="0">
+          <hh:typeInfo familyType="FCAT_GOTHIC" weight="6" proportion="0" contrast="0" strokeVariation="1" armStyle="1" letterform="1" midline="1" xHeight="1"/>
+        </hh:font>
+        <hh:font id="1" face="신명 견명조" type="HFT" isEmbedded="0">
+          <hh:typeInfo familyType="FCAT_MYUNGJO" weight="0" proportion="0" contrast="0" strokeVariation="0" armStyle="0" letterform="0" midline="0" xHeight="0"/>
+        </hh:font>
+      </hh:fontface>
+    </hh:fontfaces>
+  </hh:refList>
+</hh:head>"##;
+
+        let (doc_info, _) = parse_hwpx_header(xml).unwrap();
+        let ttf = &doc_info.font_faces[0][0];
+        let hft = &doc_info.font_faces[0][1];
+
+        assert_eq!(ttf.alt_type, 1);
+        assert_eq!(ttf.type_info, Some([2, 3, 6, 0, 0, 1, 1, 1, 1, 1]));
+        assert_eq!(ttf.default_name, Some("Haansoft Batang".to_string()));
+        assert_eq!(hft.alt_type, 2);
+        assert_eq!(hft.type_info, Some([1, 0, 0, 0, 0, 0, 0, 0, 0, 0]));
+        assert_eq!(
+            hft.default_name,
+            Some("Sinmyeong Gyeonmyeongjo".to_string())
+        );
+    }
+
+    #[test]
+    fn test_parse_char_pr_preserves_shadow_offsets_even_when_shadow_is_none() {
+        let xml = r##"<?xml version="1.0" encoding="UTF-8"?>
+<hh:head xmlns:hh="http://www.hancom.co.kr/hwpml/2011/head">
+  <hh:refList>
+    <hh:fontfaces itemCnt="1">
+      <hh:fontface lang="HANGUL" fontCnt="1">
+        <hh:font id="0" face="함초롬바탕" type="TTF"/>
+      </hh:fontface>
+    </hh:fontfaces>
+    <hh:charProperties itemCnt="1">
+      <hh:charPr id="0" height="1200" textColor="#000000" shadeColor="none" useFontSpace="0" useKerning="0" symMark="NONE">
+        <hh:fontRef hangul="0" latin="0" hanja="0" japanese="0" other="0" symbol="0" user="0"/>
+        <hh:shadow type="NONE" color="#C0C0C0" offsetX="10" offsetY="10"/>
+      </hh:charPr>
+    </hh:charProperties>
+  </hh:refList>
+</hh:head>"##;
+
+        let (doc_info, _) = parse_hwpx_header(xml).unwrap();
+        let cs = &doc_info.char_shapes[0];
+
+        assert_eq!(cs.shadow_type, 0);
+        assert_eq!(cs.shadow_color, 0x00C0C0C0);
+        assert_eq!(cs.shadow_offset_x, 10);
+        assert_eq!(cs.shadow_offset_y, 10);
+    }
+
+    #[test]
     fn test_is_real_strike_shape_valid_shapes() {
         // OWPML LineSym2 전체 — 모두 true
         for shape in &[
@@ -1565,5 +2251,98 @@ mod tests {
         assert!(!is_real_strike_shape("Ghost"));
         assert!(!is_real_strike_shape(""));
         assert!(!is_real_strike_shape("solid")); // 대소문자 구분
+    }
+
+    /// `slash`/`backSlash` 의 type 속성으로 [`parse_slash_shape_code`] 를 호출한다.
+    fn slash_code(type_val: &str) -> u8 {
+        let xml = format!(r#"<e type="{type_val}"/>"#);
+        let mut reader = Reader::from_str(&xml);
+        let mut buf = Vec::new();
+        if let Ok(Event::Empty(ref e)) = reader.read_event_into(&mut buf) {
+            for attr in e.attributes().flatten() {
+                if attr.key.as_ref() == b"type" {
+                    return parse_slash_shape_code(&attr);
+                }
+            }
+        }
+        panic!("type 속성 파싱 실패");
+    }
+
+    #[test]
+    fn test_parse_slash_shape_code() {
+        // 형태 enum → HWP5 attr 3비트 방향 코드. (선 종류가 아님)
+        assert_eq!(slash_code("NONE"), 0);
+        assert_eq!(slash_code("CENTER"), 0b010);
+        assert_eq!(slash_code("CENTER_BELOW"), 0b011);
+        assert_eq!(slash_code("CENTER_ABOVE"), 0b110);
+        // 미지 형태는 3방향(0b111)으로 폴백.
+        assert_eq!(slash_code("ALL"), 0b111);
+    }
+
+    #[test]
+    fn test_set_diagonal_attr_bits() {
+        let mut bf = BorderFill::default();
+        // slash = shift 2 (bits 2~4)
+        set_diagonal_attr_bits(&mut bf, 2, 0b010);
+        assert_eq!((bf.attr >> 2) & 0x07, 0b010);
+        // backSlash = shift 5 (bits 5~7), slash 비트 보존
+        set_diagonal_attr_bits(&mut bf, 5, 0b011);
+        assert_eq!((bf.attr >> 5) & 0x07, 0b011);
+        assert_eq!((bf.attr >> 2) & 0x07, 0b010);
+        // code 0 → 비트 클리어
+        set_diagonal_attr_bits(&mut bf, 2, 0);
+        assert_eq!((bf.attr >> 2) & 0x07, 0);
+    }
+
+    /// 단일 borderFill 을 헤더 XML 로 감싸 파싱한 뒤 첫 borderFill 을 돌려준다.
+    fn parse_single_border_fill(border_fill_xml: &str) -> BorderFill {
+        let xml = format!(
+            r##"<?xml version="1.0" encoding="UTF-8"?>
+<hh:head xmlns:hh="http://www.hancom.co.kr/hwpml/2011/head"
+         xmlns:hc="http://www.hancom.co.kr/hwpml/2011/core">
+  <hh:refList>
+    <hh:borderFills itemCnt="1">{border_fill_xml}</hh:borderFills>
+  </hh:refList>
+</hh:head>"##
+        );
+        let (doc_info, _) = parse_hwpx_header(&xml).unwrap();
+        doc_info
+            .border_fills
+            .into_iter()
+            .next()
+            .expect("borderFill 파싱 실패")
+    }
+
+    #[test]
+    fn test_slash_center_without_diagonal_no_line() {
+        // #1038 회귀 가드: slash type="CENTER" 만 있고 <hh:diagonal> 가 없으면
+        // 방향 비트만 설정되고 diagonal_type 은 0 으로 남아야 한다(대각선 미표시).
+        let bf = parse_single_border_fill(
+            r#"<hh:borderFill id="341">
+                 <hh:slash type="CENTER" Crooked="0" isCounter="0"/>
+                 <hh:backSlash type="NONE" Crooked="0" isCounter="0"/>
+               </hh:borderFill>"#,
+        );
+        assert_eq!((bf.attr >> 2) & 0x07, 0b010, "slash 방향 비트 설정");
+        assert_eq!((bf.attr >> 5) & 0x07, 0, "backSlash 비트 없음");
+        assert_eq!(
+            bf.diagonal.diagonal_type, 0,
+            "diagonal 요소 없음 → diagonal_type 0 (대각선 미표시)"
+        );
+    }
+
+    #[test]
+    fn test_diagonal_element_sets_line_independent_of_slash() {
+        // slash type="NONE" 이라도 <hh:diagonal type="SOLID"> 가 있으면
+        // diagonal_type 은 선 종류에서 설정되고, slash 방향 비트는 0.
+        let bf = parse_single_border_fill(
+            r##"<hh:borderFill id="1">
+                 <hh:slash type="NONE" Crooked="0" isCounter="0"/>
+                 <hh:backSlash type="NONE" Crooked="0" isCounter="0"/>
+                 <hh:diagonal type="SOLID" width="0.1 mm" color="#000000"/>
+               </hh:borderFill>"##,
+        );
+        assert_eq!((bf.attr >> 2) & 0x07, 0, "slash 방향 비트 없음");
+        assert_eq!(bf.diagonal.diagonal_type, 1, "diagonal SOLID → 선 종류 1");
     }
 }

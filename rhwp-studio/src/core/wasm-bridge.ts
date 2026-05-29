@@ -1,5 +1,5 @@
 import init, { HwpDocument, version } from '@wasm/rhwp.js';
-import type { DocumentInfo, PageInfo, PageDef, SectionDef, CursorRect, HitTestResult, BodyFootnoteMarkerHit, FootnoteAtCursorResult, DeleteFootnoteResult, LineInfo, TableDimensions, CellInfo, CellBbox, CellProperties, TableProperties, DocumentPosition, MoveVerticalResult, SelectionRect, CharProperties, ParaProperties, CellPathEntry, NavContextEntry, FieldInfoResult, BookmarkInfo } from './types';
+import type { DocumentInfo, PageInfo, PageDef, SectionDef, CursorRect, HitTestResult, BodyFootnoteMarkerHit, FootnoteAtCursorResult, DeleteFootnoteResult, LineInfo, TableDimensions, CellInfo, CellBbox, CellProperties, TableProperties, DocumentPosition, MoveVerticalResult, SelectionRect, CharProperties, ParaProperties, CellPathEntry, NavContextEntry, FieldInfoResult, BookmarkInfo, LayerRenderProfile, PageLayerTree } from './types';
 
 /** HWPX 비표준 감지 경고 리포트 (#177). */
 export interface ValidationReport {
@@ -93,24 +93,41 @@ export class WasmBridge {
   }
 
   loadDocument(data: Uint8Array, fileName?: string): DocumentInfo {
-    if (this.doc) {
-      this.doc.free();
+    this.releaseDocument();
+    const nextFileName = fileName ?? 'document.hwp';
+    let nextDoc: HwpDocument | null = null;
+
+    try {
+      nextDoc = new HwpDocument(data);
+      this.doc = nextDoc;
+      this._fileName = nextFileName;
+      this.doc.convertToEditable();
+      this.ensureParagraphStableIds();
+      this.doc.setFileName(this._fileName);
+      const info: DocumentInfo = JSON.parse(this.doc.getDocumentInfo());
+      console.log(`[WasmBridge] 문서 로드: ${info.pageCount}페이지`);
+
+      // [Task #741 후속] 외부 file path 그림 영역 영역 dev 환경 영역 영역 fetch (basename 영역
+      // 영역 영역 same dir 영역 image 영역 영역 영역 — 본 환경 dev 영역 영역 samples/ 영역
+      // Vite asset). 영역 영역 영역 영역 영역 부재 영역 영역 placeholder 표시.
+      void this.populateExternalImagesFromDevServer();
+
+      return info;
+    } catch (error) {
+      if (this.doc === nextDoc) {
+        this.doc = null;
+      }
+      if (nextDoc) {
+        try {
+          nextDoc.free();
+        } catch {
+          /* noop */
+        }
+      }
+      this._fileName = 'document.hwp';
+      this._currentFileHandle = null;
+      throw error;
     }
-    this._fileName = fileName ?? 'document.hwp';
-    this._currentFileHandle = null;
-    this.doc = new HwpDocument(data);
-    this.doc.convertToEditable();
-    this.ensureParagraphStableIds();
-    this.doc.setFileName(this._fileName);
-    const info: DocumentInfo = JSON.parse(this.doc.getDocumentInfo());
-    console.log(`[WasmBridge] 문서 로드: ${info.pageCount}페이지`);
-
-    // [Task #741 후속] 외부 file path 그림 영역 영역 dev 환경 영역 영역 fetch (basename 영역
-    // 영역 영역 same dir 영역 image 영역 영역 영역 — 본 환경 dev 영역 영역 samples/ 영역
-    // Vite asset). 영역 영역 영역 영역 영역 부재 영역 영역 placeholder 표시.
-    void this.populateExternalImagesFromDevServer();
-
-    return info;
   }
 
   /** [Task #741 후속] 외부 file path 그림 영역 영역 dev 서버 영역 영역 fetch + inject. */
@@ -316,7 +333,56 @@ export class WasmBridge {
     if (typeof d.getPageLayerTree === 'function') {
       return d.getPageLayerTree(pageNum);
     }
-    return '{"layers":[]}';
+    return '{"pageWidth":0,"pageHeight":0,"profile":"screen","root":{"kind":"leaf","bounds":{"x":0,"y":0,"width":0,"height":0},"ops":[]}}';
+  }
+
+  getPageLayerTreeObject(pageNum: number, profile: LayerRenderProfile = 'screen'): PageLayerTree {
+    if (!this.doc) throw new Error('문서가 로드되지 않았습니다');
+    const d = this.doc as unknown as {
+      getPageLayerTreeWithProfile?: (p: number, profile: string) => string;
+      getPageLayerTree?: (p: number) => string;
+    };
+    const json = typeof d.getPageLayerTreeWithProfile === 'function'
+      ? d.getPageLayerTreeWithProfile(pageNum, profile)
+      : this.getPageLayerTree(pageNum);
+    let parsed: unknown;
+    try {
+      parsed = JSON.parse(json);
+    } catch (error) {
+      throw new Error(`[WasmBridge] PageLayerTree JSON parse 실패 (page=${pageNum}): ${error}`);
+    }
+    if (!parsed || typeof parsed !== 'object') {
+      throw new Error(`[WasmBridge] PageLayerTree JSON shape 오류 (page=${pageNum}): object가 아닙니다`);
+    }
+    const tree = parsed as Partial<PageLayerTree> & { layers?: unknown };
+    if (!tree.root || typeof tree.root !== 'object' || !('kind' in tree.root)) {
+      if (Array.isArray(tree.layers)) {
+        const pageInfo = this.getPageInfo(pageNum);
+        return {
+          pageWidth: pageInfo.width,
+          pageHeight: pageInfo.height,
+          profile,
+          root: {
+            kind: 'leaf',
+            bounds: { x: 0, y: 0, width: pageInfo.width, height: pageInfo.height },
+            ops: [],
+          },
+        };
+      }
+      throw new Error(`[WasmBridge] PageLayerTree JSON shape 오류 (page=${pageNum}): root.kind가 없습니다`);
+    }
+    const rootKind = (tree.root as { kind?: unknown }).kind;
+    if (rootKind !== 'group' && rootKind !== 'clipRect' && rootKind !== 'leaf') {
+      throw new Error(`[WasmBridge] PageLayerTree JSON shape 오류 (page=${pageNum}): 알 수 없는 root.kind=${String(rootKind)}`);
+    }
+    if (!tree.profile) {
+      tree.profile = profile;
+    }
+    return tree as PageLayerTree;
+  }
+
+  clearLayerResourceCache(): void {
+    /* Reserved for JS-value resource transport builds. JSON export is self-contained. */
   }
 
   getCanvasKitReplayPlan(pageNum: number, mode: 'default' | 'compat' = 'default'): string {
@@ -329,8 +395,8 @@ export class WasmBridge {
     }
     return JSON.stringify({
       mode,
-      hiddenCanvas2dOverlayAllowed: mode === 'compat',
-      directReplayRequired: mode === 'default',
+      hiddenCanvas2dOverlayAllowed: false,
+      directReplayRequired: true,
       summary: {
         totalItems: 0,
         directItems: 0,
@@ -400,7 +466,21 @@ export class WasmBridge {
     sourceBorderFills: string,
   ): string {
     if (!this.doc) throw new Error('문서가 로드되지 않았습니다');
-    return this.doc.pasteHwpxFragmentInDocument(
+    const pasteHwpxFragment = (
+      this.doc as HwpDocument & {
+        pasteHwpxFragmentInDocument(
+          sec: number,
+          afterParaIdx: number,
+          fragmentXml: string,
+          sourceCharPrs: string,
+          sourceParaPrs: string,
+          sourceStyles: string,
+          sourceBorderFills: string,
+        ): string;
+      }
+    ).pasteHwpxFragmentInDocument;
+    return pasteHwpxFragment.call(
+      this.doc,
       sec,
       afterParaIdx,
       fragmentXml,
@@ -658,6 +738,12 @@ export class WasmBridge {
   getTableBBox(sec: number, parentPara: number, controlIdx: number): { pageIndex: number; x: number; y: number; width: number; height: number } {
     if (!this.doc) throw new Error('문서가 로드되지 않았습니다');
     return JSON.parse(this.doc.getTableBBox(sec, parentPara, controlIdx));
+  }
+
+  /** [Task #919] 글상자/도형 컨트롤의 페이지 좌표 바운딩박스 */
+  getShapeBBox(sec: number, parentPara: number, controlIdx: number): { pageIndex: number; x: number; y: number; width: number; height: number } {
+    if (!this.doc) throw new Error('문서가 로드되지 않았습니다');
+    return JSON.parse(this.doc.getShapeBBox(sec, parentPara, controlIdx));
   }
 
   deleteTableControl(sec: number, parentPara: number, controlIdx: number): { ok: boolean } {

@@ -67,6 +67,7 @@ fn test_serialize_hwp_cfb_streams() {
         preview: None,
         bin_data_content: Vec::new(),
         extra_streams: Vec::new(),
+        is_hwp3_variant: false,
     };
 
     let bytes = serialize_hwp(&doc).unwrap();
@@ -108,6 +109,7 @@ fn test_serialize_hwp_compressed() {
         preview: None,
         bin_data_content: Vec::new(),
         extra_streams: Vec::new(),
+        is_hwp3_variant: false,
     };
 
     let bytes = serialize_hwp(&doc).unwrap();
@@ -129,6 +131,7 @@ fn test_full_roundtrip_uncompressed() {
         name: "함초롬바탕".to_string(),
         alt_type: 0,
         alt_name: None,
+        type_info: None,
         default_name: None,
     });
     doc_info.char_shapes.push(CharShape {
@@ -201,6 +204,7 @@ fn test_full_roundtrip_uncompressed() {
         preview: None,
         bin_data_content: Vec::new(),
         extra_streams: Vec::new(),
+        is_hwp3_variant: false,
     };
 
     // Document → HWP bytes
@@ -277,6 +281,7 @@ fn test_full_roundtrip_compressed() {
         preview: None,
         bin_data_content: Vec::new(),
         extra_streams: Vec::new(),
+        is_hwp3_variant: false,
     };
 
     // Document → HWP bytes (compressed)
@@ -1666,6 +1671,7 @@ fn test_ole_storage_size_prefix_restored() {
             extension: "OLE".to_string(),
         }],
         extra_streams: Vec::new(),
+        is_hwp3_variant: false,
     };
 
     let bytes = serialize_hwp(&doc).unwrap();

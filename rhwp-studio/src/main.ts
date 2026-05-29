@@ -27,6 +27,13 @@ import { CellSelectionRenderer } from '@/engine/cell-selection-renderer';
 import { TableObjectRenderer } from '@/engine/table-object-renderer';
 import { TableResizeRenderer } from '@/engine/table-resize-renderer';
 import { Ruler } from '@/view/ruler';
+import type { CanvasKitLayerRenderer } from '@/view/canvaskit-renderer';
+import {
+  resolveCanvasKitRenderMode,
+  resolveCanvasKitSurfaceRequest,
+  resolveRenderBackendRequest,
+  resolveRenderProfile,
+} from '@/view/render-backend';
 
 const wasm = new WasmBridge();
 const eventBus = new EventBus();
@@ -106,10 +113,39 @@ async function initialize(): Promise<void> {
     if (import.meta.env.DEV) {
       initRhwpDev(wasm);
     }
+    const renderBackendRequest = resolveRenderBackendRequest(window.location.search);
+    const canvaskitMode = resolveCanvasKitRenderMode(window.location.search);
+    const canvaskitSurfaceRequest = resolveCanvasKitSurfaceRequest(window.location.search);
+    const renderProfile = resolveRenderProfile(window.location.search);
+    if (renderBackendRequest.unsupportedReason) {
+      console.warn(
+        `[main] 지원하지 않는 renderer 값입니다: ${renderBackendRequest.requested}; Canvas2D를 사용합니다.`,
+      );
+    }
+    let renderBackend = renderBackendRequest.backend;
+    let canvaskitRenderer: CanvasKitLayerRenderer | null = null;
+
+    if (renderBackend === 'canvaskit') {
+      msg.textContent = 'CanvasKit 로딩 중...';
+      try {
+        const { CanvasKitLayerRenderer } = await import('@/view/canvaskit-renderer');
+        canvaskitRenderer = await CanvasKitLayerRenderer.create(canvaskitMode, canvaskitSurfaceRequest);
+      } catch (error) {
+        console.error('[main] CanvasKit 초기화 실패, Canvas2D로 폴백합니다:', error);
+        renderBackend = 'canvas2d';
+      }
+    }
     msg.textContent = 'HWP 파일을 선택해주세요.';
 
     const container = document.getElementById('scroll-container')!;
-    canvasView = new CanvasView(container, wasm, eventBus);
+    canvasView = new CanvasView(
+      container,
+      wasm,
+      eventBus,
+      renderBackend,
+      renderProfile,
+      canvaskitRenderer,
+    );
 
     // 눈금자 초기화
     ruler = new Ruler(
@@ -208,6 +244,10 @@ async function initialize(): Promise<void> {
     if (import.meta.env.DEV) {
       (window as any).__inputHandler = inputHandler;
       (window as any).__canvasView = canvasView;
+      (window as any).__renderBackend = renderBackend;
+      (window as any).__canvaskitRenderMode = canvaskitMode;
+      (window as any).__canvaskitSurfaceRequest = canvaskitSurfaceRequest;
+      (window as any).__renderProfile = renderProfile;
     }
   } catch (error) {
     msg.textContent = `WASM 초기화 실패: ${error}`;
@@ -725,8 +765,63 @@ async function loadFromUrlParam(): Promise<void> {
     assertRemoteDocumentBytes(data, contentType);
     await loadBytes(data, fileName, null);
   } catch (error) {
+    // 로컬 file:// 로드 실패 + "파일 URL 액세스 허용" 미허용 → 전용 안내 (#1131)
+    if (fileUrl.startsWith('file:') && typeof chrome !== 'undefined') {
+      const allowed = await isFileSchemeAccessAllowed();
+      if (allowed === false) {
+        showFileUrlAccessGuidance();
+        return;
+      }
+    }
     showLoadError(error);
   }
+}
+
+/**
+ * 확장 프로그램의 "파일 URL에 대한 액세스 허용" 권한 상태를 조회한다 (#1131).
+ *
+ * 확장 페이지에서만 의미가 있다. API 부재(비-확장 환경 등) 시 판정 불가로
+ * `null` 을 반환하여 호출부가 기존 동작(일반 에러)으로 폴백하도록 한다.
+ *
+ * @returns 허용=true, 미허용=false, 판정 불가=null
+ */
+async function isFileSchemeAccessAllowed(): Promise<boolean | null> {
+  const ext = (typeof chrome !== 'undefined' ? chrome.extension : undefined) as
+    | { isAllowedFileSchemeAccess?: () => Promise<boolean> }
+    | undefined;
+  if (!ext?.isAllowedFileSchemeAccess) return null;
+  try {
+    return await ext.isAllowedFileSchemeAccess();
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * 로컬 file:// 문서를 열 때 "파일 URL 액세스 허용" 권한이 꺼져 있어 로드가
+ * 실패한 경우, 일반 "Failed to fetch" 대신 원인과 해결 방법을 안내한다 (#1131).
+ *
+ * 설정 화면(chrome://extensions/?id=...)은 일반 링크로는 열리지 않으므로
+ * 확장 컨텍스트의 chrome.tabs.create 로 연다.
+ */
+function showFileUrlAccessGuidance(): void {
+  const errMsg = '로컬 파일을 열려면 확장 프로그램의 "파일 URL에 대한 액세스 허용"을 켜야 합니다.\n설정에서 권한을 허용한 뒤 파일을 다시 열어 주세요.';
+  const sb = sbMessage();
+  if (sb) sb.textContent = '파일 로드 실패: 파일 URL 액세스 권한이 필요합니다.';
+  console.error('[main] file:// 로드 실패 — 파일 URL 액세스 미허용 (#1131)');
+  showToast({
+    message: errMsg,
+    durationMs: 0, // 사용자가 읽고 직접 닫기
+    confirmLabel: '확인',
+    action: {
+      label: '설정 열기',
+      onClick: () => {
+        if (typeof chrome !== 'undefined' && chrome.tabs?.create && chrome.runtime?.id) {
+          chrome.tabs.create({ url: `chrome://extensions/?id=${chrome.runtime.id}` });
+        }
+      },
+    },
+  });
 }
 
 /**

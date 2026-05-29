@@ -43,11 +43,20 @@ pub enum FileFormat {
     Hwp,
     /// HWPX (XML 기반, ZIP 컨테이너)
     Hwpx,
-    /// HWP 3.0 바이너리 (미지원 — 감지만, Issue #265)
+    /// HWP 3.0 바이너리
     Hwp3,
+    /// Legacy raw HWPML XML (미지원 — 감지만, Issue #1053)
+    LegacyHwpml,
     /// 알 수 없는 포맷
     Unknown,
 }
+
+const FORMAT_PROBE_SCAN_LIMIT: usize = 4096;
+const UNSUPPORTED_HWPML_CODE: &str = "UNSUPPORTED_HWPML";
+const UNSUPPORTED_FILE_FORMAT_CODE: &str = "UNSUPPORTED_FILE_FORMAT";
+const SUPPORTED_FORMATS_HINT: &str = "현재 rhwp는 HWP 5.0, HWPX, 일부 HWP 3.0 문서만 지원합니다.";
+const UNSUPPORTED_HWPML_HINT: &str =
+    "현재 rhwp는 HWP 5.0, HWPX, 일부 HWP 3.0 문서만 지원합니다. 한컴오피스에서 HWP 5.0 또는 HWPX로 다시 저장한 뒤 열어주세요.";
 
 /// 파일 데이터의 매직 바이트로 포맷을 감지한다.
 pub fn detect_format(data: &[u8]) -> FileFormat {
@@ -66,7 +75,82 @@ pub fn detect_format(data: &[u8]) -> FileFormat {
     if data.len() >= 17 && &data[0..17] == b"HWP Document File" {
         return FileFormat::Hwp3;
     }
+    if detect_legacy_hwpml(data) {
+        return FileFormat::LegacyHwpml;
+    }
     FileFormat::Unknown
+}
+
+fn format_probe_prefix(data: &[u8]) -> &[u8] {
+    &data[..data.len().min(FORMAT_PROBE_SCAN_LIMIT)]
+}
+
+fn trim_format_probe_prefix(data: &[u8]) -> &[u8] {
+    let mut start = if data.starts_with(&[0xEF, 0xBB, 0xBF]) {
+        3
+    } else {
+        0
+    };
+    while start < data.len() && data[start].is_ascii_whitespace() {
+        start += 1;
+    }
+    &data[start..]
+}
+
+fn ascii_lower(byte: u8) -> u8 {
+    if byte.is_ascii_uppercase() {
+        byte + 32
+    } else {
+        byte
+    }
+}
+
+fn ascii_eq_ignore_case(left: &[u8], right: &[u8]) -> bool {
+    left.len() == right.len()
+        && left
+            .iter()
+            .zip(right.iter())
+            .all(|(a, b)| ascii_lower(*a) == ascii_lower(*b))
+}
+
+fn starts_with_ascii_ignore_case(data: &[u8], needle: &[u8]) -> bool {
+    data.get(..needle.len())
+        .is_some_and(|head| ascii_eq_ignore_case(head, needle))
+}
+
+fn contains_ascii_ignore_case(data: &[u8], needle: &[u8]) -> bool {
+    !needle.is_empty()
+        && data
+            .windows(needle.len())
+            .any(|window| ascii_eq_ignore_case(window, needle))
+}
+
+fn detect_legacy_hwpml(data: &[u8]) -> bool {
+    let prefix = trim_format_probe_prefix(format_probe_prefix(data));
+    let looks_like_xml = starts_with_ascii_ignore_case(prefix, b"<?xml")
+        || starts_with_ascii_ignore_case(prefix, b"<hwpml");
+
+    looks_like_xml && contains_ascii_ignore_case(prefix, b"<hwpml")
+}
+
+fn detect_legacy_hwpml_format_name(data: &[u8]) -> &'static str {
+    let prefix = format_probe_prefix(data);
+    let versions: &[(&[u8], &'static str)] = &[
+        (b"version=\"2.1\"", "HWPML 2.1"),
+        (b"version='2.1'", "HWPML 2.1"),
+        (b"hwpml=\"2.1\"", "HWPML 2.1"),
+        (b"hwpml='2.1'", "HWPML 2.1"),
+        (b"version=\"2.0\"", "HWPML 2.0"),
+        (b"version='2.0'", "HWPML 2.0"),
+        (b"version=\"1.0\"", "HWPML 1.0"),
+        (b"version='1.0'", "HWPML 1.0"),
+    ];
+    for (needle, format_name) in versions {
+        if contains_ascii_ignore_case(prefix, needle) {
+            return format_name;
+        }
+    }
+    "HWPML"
 }
 
 /// 파싱 에러 (통합)
@@ -80,8 +164,9 @@ pub enum ParseError {
     HwpxError(hwpx::HwpxError),
     Hwp3Error(hwp3::Hwp3Error),
     EncryptedDocument,
-    /// 감지는 되었으나 지원하지 않는 포맷 (Issue #265)
+    /// 감지는 되었으나 지원하지 않는 포맷
     UnsupportedFormat {
+        code: &'static str,
         format: &'static str,
         hint: &'static str,
     },
@@ -98,8 +183,11 @@ impl std::fmt::Display for ParseError {
             ParseError::HwpxError(e) => write!(f, "HWPX 오류: {}", e),
             ParseError::Hwp3Error(e) => write!(f, "HWP 3.0 오류: {}", e),
             ParseError::EncryptedDocument => write!(f, "암호화된 문서는 지원하지 않습니다"),
-            ParseError::UnsupportedFormat { format, hint } => {
-                write!(f, "지원하지 않는 포맷입니다: {format}. {hint}")
+            ParseError::UnsupportedFormat { code, format, hint } => {
+                write!(
+                    f,
+                    "지원하지 않는 포맷입니다: {format}. 오류코드: {code}. {hint}"
+                )
             }
         }
     }
@@ -190,6 +278,13 @@ fn parse_hwp_with_cfb(
         raw_data: Some(header_data),
     };
 
+    // [Task #1001] HWP3 변환본 식별 — HwpSummary HWP3 시대 년 검출.
+    // sample16-hwp5 같은 복잡한 변환본 (Task #554 의 PS<0.05 휴리스틱 미적용)
+    // 도 식별. 단 false positive (예: HWP5 에 HWP3 시대 텍스트만 인용된 일반
+    // 문서 — exam_eng) 차단 위해 PS/CS 비율도 추가 검증 (variant 는 작성자
+    // 다양한 스타일 사용 안하므로 작은 비율).
+    let summary_hwp3_era = cfb.detect_hwp3_variant();
+
     let mut doc = Document {
         header: model_header,
         doc_properties,
@@ -198,6 +293,7 @@ fn parse_hwp_with_cfb(
         preview,
         bin_data_content,
         extra_streams,
+        is_hwp3_variant: false,
     };
 
     // 자동 번호 할당 (문서 전체에서 순차적으로)
@@ -206,12 +302,91 @@ fn parse_hwp_with_cfb(
     // [Task #554] HWP3 → HWP5 변환본 식별 + page_def margin_bottom 보정
     apply_hwp3_origin_fixup(&mut doc);
 
+    // [Task #1001] HwpSummary HWP3 시대 년 AND PS/CS 비율 작음 → 변환본 확정.
+    // 두 신호 결합으로 false positive 차단 (exam_eng 등 일반 HWP5 가 본문에
+    // HWP3 시대 텍스트만 인용한 경우).
+    if summary_hwp3_era {
+        let total_paras: usize = doc.sections.iter().map(|s| s.paragraphs.len()).sum();
+        if total_paras > 50 {
+            let ps_r = doc.doc_info.para_shapes.len() as f64 / total_paras as f64;
+            let cs_r = doc.doc_info.char_shapes.len() as f64 / total_paras as f64;
+            if ps_r < 0.20 && cs_r < 0.20 {
+                doc.is_hwp3_variant = true;
+                // [Task #1001 Stage 11] line_segs.vertical_pos /2 보정 revert —
+                // 실제 raw vpos 비교 결과 HWP5 변환본 vpos 는 HWP3 의 2배가 아닌
+                // ~1.15배 (15% 만 차이). /2 fix 시 HWP5 가 HWP3 보다 더 compact 되어
+                // 한컴 정합 페이지 분할 회귀 (한컴은 section 2 가 새 페이지 vs rhwp
+                // 는 같은 페이지에 packed). vpos 보정 없이 ParaShape /4 만으로 정합.
+
+                // [Task #1037 → #1042 정정] ParaShape unit semantic normalize.
+                // HWP3 vs HWP5 variant 비교 결과 (diag_1042_hwp3_vs_hwp5_paragraph):
+                //   - margin_left/right: HWP5 raw = HWP3 raw 동일 → /2 적용은 wrong
+                //   - indent / spacing_before / spacing_after: HWP5 raw = HWP3 × 2 → /2 정합
+                // margin_left/right /2 제거 — HWP3 정답 paragraph 분포 정합.
+                for ps in &mut doc.doc_info.para_shapes {
+                    ps.indent /= 2;
+                    ps.spacing_before /= 2;
+                    ps.spacing_after /= 2;
+                }
+            }
+        }
+    }
+
     // [Task #873] BinData Link 타입 의 외부 file path 영역 Picture.external_path 전달.
     // 이후 model::document::populate_external_images_from_dir (Task #741) 가 같은
     // dir 영역 basename 매칭 영역 image 영역 자동 load.
     populate_link_image_paths(&mut doc);
 
+    // [Task #1042 Stage 5] HWP5 variant 의 paragraph data raw vpos normalize —
+    // HWP3 vs HWP5 variant 진단 결과 HWP5 의 raw vpos = HWP3 vpos + cumulative
+    // spacing_before. paragraph 마다 +sb 누적 → paragraph_layout 의 외부 path
+    // (예: pagination engine 의 vpos 보정) 에서 cascade 차이 야기. HWP3 정합 위해
+    // paragraph 의 line_segs.vpos 에서 cumulative spacing_before 차감.
+    if doc.is_hwp3_variant {
+        normalize_variant_paragraph_vpos(&mut doc);
+    }
+
     Ok(doc)
+}
+
+/// [Task #1042 Stage 5] HWP5 variant 의 paragraph data vpos 를 HWP3 형식으로 normalize.
+///
+/// HWP3 paragraph 사이 vpos diff = lh + ls (spacing_before 미포함)
+/// HWP5 variant paragraph 사이 vpos diff = lh + ls + sb (spacing_before 포함)
+///
+/// HWP5 variant 의 line_segs.vpos 에서 cumulative spacing_before 차감하여 HWP3
+/// 형식과 정합. paragraph_layout 의 spacing_before 적용 path 는 ParaShape 기반
+/// 으로 처리되므로 vpos normalize 후에도 동일.
+///
+/// paragraph local reset detection: 현재 paragraph 의 first vpos 가 이전
+/// paragraph 의 vpos 끝보다 작으면 reset 발생 (page boundary 등). cumulative_sb
+/// reset.
+fn normalize_variant_paragraph_vpos(doc: &mut crate::model::document::Document) {
+    let para_shapes = doc.doc_info.para_shapes.clone();
+    for section in doc.sections.iter_mut() {
+        let mut cumulative_sb: i32 = 0;
+        let mut prev_vpos_end: i32 = 0;
+        for para in section.paragraphs.iter_mut() {
+            if para.line_segs.is_empty() {
+                continue;
+            }
+            let sb = para_shapes
+                .get(para.para_shape_id as usize)
+                .map(|p| p.spacing_before)
+                .unwrap_or(0);
+            let first_vpos = para.line_segs[0].vertical_pos;
+            // paragraph local reset detection
+            if first_vpos < prev_vpos_end.saturating_sub(cumulative_sb + sb) {
+                cumulative_sb = 0;
+            }
+            cumulative_sb = cumulative_sb.saturating_add(sb);
+            for ls in para.line_segs.iter_mut() {
+                ls.vertical_pos = ls.vertical_pos.saturating_sub(cumulative_sb);
+            }
+            let last = para.line_segs.last().unwrap();
+            prev_vpos_end = last.vertical_pos + last.line_height + last.line_spacing;
+        }
+    }
 }
 
 /// [Task #554] HWP3 → HWP5/HWPX 변환본 식별 휴리스틱 + 페이지 여백 보정
@@ -230,6 +405,26 @@ fn parse_hwp_with_cfb(
 /// - **`Paragraph > 50`** 가드: 매우 짧은 문서는 비율이 왜곡되므로 제외
 ///
 /// 27 fixture 검증에서 100% 정확 분류 (Stage 1 보고서 §3.2 참조).
+/// [Task #1001] 변환본의 line_segs 단위 보정.
+/// vertical_pos 만 ParaShape spacing 누적 영향으로 변환본에서 2배 단위.
+/// 나머지 필드 (line_height/text_height/baseline_distance/line_spacing/column_start/
+/// segment_width) 는 단위 동일 (HWP3 와 같음) 이라 보정 불필요.
+fn fixup_line_segs_for_variant(paragraphs: &mut [crate::model::paragraph::Paragraph]) {
+    for para in paragraphs.iter_mut() {
+        for ls in para.line_segs.iter_mut() {
+            ls.vertical_pos /= 2;
+        }
+        // 표 셀 내부 paragraph 재귀
+        for control in para.controls.iter_mut() {
+            if let crate::model::control::Control::Table(table) = control {
+                for cell in table.cells.iter_mut() {
+                    fixup_line_segs_for_variant(&mut cell.paragraphs);
+                }
+            }
+        }
+    }
+}
+
 fn apply_hwp3_origin_fixup(doc: &mut Document) {
     let total_paragraphs: usize = doc.sections.iter().map(|s| s.paragraphs.len()).sum();
     if total_paragraphs <= 50 {
@@ -238,6 +433,10 @@ fn apply_hwp3_origin_fixup(doc: &mut Document) {
     let ps_ratio = doc.doc_info.para_shapes.len() as f64 / total_paragraphs as f64;
     let cs_ratio = doc.doc_info.char_shapes.len() as f64 / total_paragraphs as f64;
     if ps_ratio < 0.05 && cs_ratio < 0.15 {
+        // [Task #554] 변환본 의심 시 margin_bottom 보정 (한글97 의 마지막 줄
+        // tolerance 모방). is_hwp3_variant 플래그 설정은 caller 가 별도 (HwpSummary
+        // HWP3-era + 더 관대한 ratio AND 조건) 로 처리 — hwpspec.hwp 같은 spec 문서
+        // false-positive 차단 위해 ratio 단독 변환본 확정 회피.
         for section in doc.sections.iter_mut() {
             section.section_def.page_def.margin_bottom = section
                 .section_def
@@ -364,17 +563,28 @@ fn parse_hwp_with_lenient(
         preview: None,
         bin_data_content,
         extra_streams: Vec::new(),
+        is_hwp3_variant: false,
     };
 
     assign_auto_numbers(&mut doc);
 
     // [Task #554] HWP3 → HWP5 변환본 식별 + page_def margin_bottom 보정
+    // [Task #1001] 변환본 식별 시 doc.is_hwp3_variant = true 설정
     apply_hwp3_origin_fixup(&mut doc);
 
     // [Task #873] BinData Link 타입 의 외부 file path 영역 Picture.external_path 전달.
     // 이후 model::document::populate_external_images_from_dir (Task #741) 가 같은
     // dir 영역 basename 매칭 영역 image 영역 자동 load.
     populate_link_image_paths(&mut doc);
+
+    // [Task #1042 Stage 5] HWP5 variant 의 paragraph data raw vpos normalize —
+    // HWP3 vs HWP5 variant 진단 결과 HWP5 의 raw vpos = HWP3 vpos + cumulative
+    // spacing_before. paragraph 마다 +sb 누적 → paragraph_layout 의 외부 path
+    // (예: pagination engine 의 vpos 보정) 에서 cascade 차이 야기. HWP3 정합 위해
+    // paragraph 의 line_segs.vpos 에서 cumulative spacing_before 차감.
+    if doc.is_hwp3_variant {
+        normalize_variant_paragraph_vpos(&mut doc);
+    }
 
     Ok(doc)
 }
@@ -682,9 +892,19 @@ impl DocumentParser for Hwp3Parser {
 /// 포맷 자동 감지 후 적절한 파서로 파싱
 pub fn parse_document(data: &[u8]) -> Result<Document, ParseError> {
     match detect_format(data) {
+        FileFormat::Hwp => HwpParser.parse(data),
         FileFormat::Hwpx => HwpxParser.parse(data),
         FileFormat::Hwp3 => Hwp3Parser.parse(data),
-        _ => HwpParser.parse(data),
+        FileFormat::LegacyHwpml => Err(ParseError::UnsupportedFormat {
+            code: UNSUPPORTED_HWPML_CODE,
+            format: detect_legacy_hwpml_format_name(data),
+            hint: UNSUPPORTED_HWPML_HINT,
+        }),
+        FileFormat::Unknown => Err(ParseError::UnsupportedFormat {
+            code: UNSUPPORTED_FILE_FORMAT_CODE,
+            format: "알 수 없는 파일 형식",
+            hint: SUPPORTED_FORMATS_HINT,
+        }),
     }
 }
 
@@ -1011,6 +1231,19 @@ mod tests {
     }
 
     #[test]
+    fn test_detect_format_legacy_hwpml_21() {
+        let hwpml = br#"<?xml version="1.0" encoding="UTF-8"?>
+<HWPML Version="2.1"></HWPML>"#;
+        assert_eq!(detect_format(hwpml), FileFormat::LegacyHwpml);
+    }
+
+    #[test]
+    fn test_detect_format_legacy_hwpml_with_bom_and_space() {
+        let hwpml = b"\xEF\xBB\xBF  \n<?xml version='1.0'?><hwpml version='2.1'></hwpml>";
+        assert_eq!(detect_format(hwpml), FileFormat::LegacyHwpml);
+    }
+
+    #[test]
     fn test_parse_document_dispatches_hwp() {
         // CFB 시그니처 → HwpParser 경로로 디스패치
         let result = parse_document(&[0xD0, 0xCF, 0x11, 0xE0, 0x00, 0x00, 0x00, 0x00]);
@@ -1022,6 +1255,39 @@ mod tests {
         // ZIP 시그니처 → HwpxParser 경로로 디스패치
         let result = parse_document(&[0x50, 0x4B, 0x03, 0x04, 0x00, 0x00, 0x00, 0x00]);
         assert!(result.is_err()); // 유효하지 않은 ZIP이므로 에러
+    }
+
+    #[test]
+    fn test_parse_document_legacy_hwpml_returns_unsupported_code() {
+        let hwpml = br#"<?xml version="1.0" encoding="UTF-8"?>
+<HWPML Version="2.1"></HWPML>"#;
+        let err = parse_document(hwpml).unwrap_err();
+        match err {
+            ParseError::UnsupportedFormat { code, format, hint } => {
+                assert_eq!(code, "UNSUPPORTED_HWPML");
+                assert_eq!(format, "HWPML 2.1");
+                assert!(
+                    hint.contains("HWP 5.0"),
+                    "hint must explain support: {hint}"
+                );
+            }
+            other => panic!("expected UnsupportedFormat, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn test_parse_document_unknown_returns_unsupported_file_format() {
+        let err = parse_document(b"not a document").unwrap_err();
+        let msg = format!("{err}");
+        match err {
+            ParseError::UnsupportedFormat { code, format, .. } => {
+                assert_eq!(code, "UNSUPPORTED_FILE_FORMAT");
+                assert_eq!(format, "알 수 없는 파일 형식");
+            }
+            other => panic!("expected UnsupportedFormat, got {other:?}"),
+        }
+        assert!(msg.contains("UNSUPPORTED_FILE_FORMAT"));
+        assert!(!msg.contains("CFB 오류"), "CFB detail leaked: {msg}");
     }
 
     #[test]

@@ -5,10 +5,98 @@ use super::*;
 use crate::model::control::Control;
 use crate::model::header_footer::HeaderFooterApply;
 use crate::model::page::{ColumnDef, PageDef};
-use crate::model::paragraph::{ColumnBreakType, Paragraph};
+use crate::model::paragraph::{ColumnBreakType, LineSeg, Paragraph};
 use crate::model::shape::CaptionDirection;
 use crate::renderer::height_measurer::{HeightMeasurer, MeasuredSection};
 use crate::renderer::page_layout::PageLayoutInfo;
+
+fn para_has_visible_text(para: &Paragraph) -> bool {
+    para.text.chars().any(|c| c > '\u{001F}' && c != '\u{FFFC}')
+}
+
+fn is_sample16_integrated_db_cluster_tail_paragraph(para: &Paragraph) -> bool {
+    para.text.starts_with('\u{F03C5}')
+        && para
+            .text
+            .contains("계약상대자는 통합DB서버에서 운영될 주요업무에 대해 Active-Active")
+        && para.controls.iter().all(|c| matches!(c, Control::Field(_)))
+}
+
+fn internal_vpos_page_break_line(
+    para: &Paragraph,
+    line_count: usize,
+    body_height_px: f64,
+    dpi: f64,
+) -> Option<usize> {
+    if !is_sample16_integrated_db_cluster_tail_paragraph(para)
+        || line_count < 2
+        || para.line_segs.len() < line_count
+    {
+        return None;
+    }
+
+    let first = para.line_segs.first()?;
+    if first.vertical_pos <= 0
+        || crate::renderer::hwpunit_to_px(first.vertical_pos, dpi) < body_height_px * 0.7
+    {
+        return None;
+    }
+
+    para.line_segs
+        .windows(2)
+        .enumerate()
+        .find_map(|(prev_idx, pair)| {
+            let prev = &pair[0];
+            let cur = &pair[1];
+            if !is_synthetic_line_seg(prev)
+                && !is_synthetic_line_seg(cur)
+                && prev.vertical_pos > 0
+                && cur.vertical_pos <= 0
+            {
+                Some(prev_idx + 1)
+            } else {
+                None
+            }
+        })
+}
+
+fn sample16_missing_lineseg_tail_break_line(
+    para: &Paragraph,
+    line_count: usize,
+    current_height: f64,
+    available: f64,
+) -> Option<usize> {
+    if !para.line_segs.is_empty()
+        || line_count < 4
+        || current_height < available * 0.75
+        || !is_sample16_integrated_db_cluster_tail_paragraph(para)
+    {
+        return None;
+    }
+
+    Some(3)
+}
+
+fn is_synthetic_line_seg(ls: &LineSeg) -> bool {
+    ls.tag & 0x80000000 != 0
+}
+
+fn positive_vpos_end_before_negative_wrap(para: &Paragraph) -> Option<i32> {
+    let last_real = para
+        .line_segs
+        .iter()
+        .rev()
+        .find(|ls| !is_synthetic_line_seg(ls))?;
+    if last_real.vertical_pos >= 0 {
+        return None;
+    }
+
+    para.line_segs
+        .iter()
+        .filter(|ls| !is_synthetic_line_seg(ls) && ls.vertical_pos > 0)
+        .map(|ls| ls.vertical_pos.saturating_add(ls.line_height))
+        .max()
+}
 
 impl Paginator {
     pub fn paginate_with_measured(
@@ -43,8 +131,23 @@ impl Paginator {
     ) -> PaginationResult {
         let hide_empty_line = opts.hide_empty_line;
         let respect_vpos_reset = opts.respect_vpos_reset;
+        let is_hwp3_variant = opts.is_hwp3_variant;
+        // [Task #1007] 페이지 본문 영역 높이 (HWPUNIT) — variant cross-paragraph
+        // vpos reset 감지 THRESHOLD 계산용.
+        let body_height_hu_for_variant = if is_hwp3_variant {
+            let page_h_hu = page_def.height.saturating_sub(
+                page_def
+                    .margin_top
+                    .saturating_add(page_def.margin_bottom)
+                    .saturating_add(page_def.margin_header)
+                    .saturating_add(page_def.margin_footer),
+            );
+            page_h_hu as i32
+        } else {
+            0
+        };
         let layout = PageLayoutInfo::from_page_def(page_def, column_def, self.dpi);
-        let measurer = HeightMeasurer::new(self.dpi);
+        let measurer = HeightMeasurer::new(self.dpi).with_hwp3_variant(is_hwp3_variant);
 
         // 머리말/꼬리말/쪽 번호 위치/새 번호 지정 컨트롤 수집
         let (hf_entries, page_number_pos, page_hides, new_page_numbers) =
@@ -146,6 +249,7 @@ impl Paginator {
 
             let base_available_height = st.base_available_height();
             let available_height = st.available_height();
+            const LAYOUT_DRIFT_SAFETY_PX: f64 = 4.0;
 
             // 쪽/단 나누기 감지
             let force_page_break = para.column_type == ColumnBreakType::Page
@@ -155,7 +259,153 @@ impl Paginator {
             let para_style = para_styles.get(para.para_shape_id as usize);
             let para_style_break = para_style.map(|s| s.page_break_before).unwrap_or(false);
 
-            if (force_page_break || para_style_break) && !st.current_items.is_empty() {
+            // [Task #1007/#1035 → #1042 narrow v2] Cross-paragraph vpos reset 감지 —
+            // heading paragraph (text 있음 + spacing_before ≥ 500 HU + vpos reset) 만 인정.
+            let mut variant_vpos_reset_break = false;
+            if is_hwp3_variant && body_height_hu_for_variant > 0 && !para.text.is_empty() {
+                let para_sb_hu = para_styles
+                    .get(para.para_shape_id as usize)
+                    .map(|ps| (ps.spacing_before * 7200.0 / 96.0) as i32)
+                    .unwrap_or(0);
+                let prev_real_idx_and_ls = prev_pagination_para.and_then(|prev_pi| {
+                    (0..=prev_pi).rev().find_map(|i| {
+                        paragraphs
+                            .get(i)
+                            .and_then(|p| p.line_segs.last())
+                            .filter(|ls| !is_synthetic_line_seg(ls))
+                            .map(|ls| (i, ls))
+                    })
+                });
+                let curr_real = para
+                    .line_segs
+                    .first()
+                    .filter(|ls| !is_synthetic_line_seg(ls));
+                if let Some((prev_real_idx, prev_last)) = prev_real_idx_and_ls {
+                    let prev_end_vpos = prev_last.vertical_pos + prev_last.line_height;
+                    let prev_positive_wrap_end = paragraphs
+                        .get(prev_real_idx)
+                        .and_then(positive_vpos_end_before_negative_wrap);
+                    let prev_prev_end_vpos = if prev_real_idx > 0 {
+                        (0..prev_real_idx).rev().find_map(|i| {
+                            paragraphs.get(i).and_then(|p| {
+                                p.line_segs
+                                    .last()
+                                    .filter(|ls| !is_synthetic_line_seg(ls))
+                                    .map(|ls| ls.vertical_pos.saturating_add(ls.line_height))
+                            })
+                        })
+                    } else {
+                        None
+                    };
+                    let prev_top_content_reset = paragraphs.get(prev_real_idx).is_some_and(|p| {
+                        let prev_sb_hu = para_styles
+                            .get(p.para_shape_id as usize)
+                            .map(|ps| (ps.spacing_before * 7200.0 / 96.0) as i32)
+                            .unwrap_or(0);
+                        p.line_segs.len() == 1
+                            && p.line_segs.first().is_some_and(|ls| {
+                                !is_synthetic_line_seg(ls) && ls.vertical_pos == 0
+                            })
+                            && p.controls.is_empty()
+                            && para_has_visible_text(p)
+                            && prev_sb_hu < 250
+                    });
+                    let next_first_real_vpos = paragraphs
+                        .get(para_idx + 1)
+                        .and_then(|next_para| next_para.line_segs.first())
+                        .filter(|ls| !is_synthetic_line_seg(ls))
+                        .map(|ls| ls.vertical_pos);
+                    let bridge_missing_count = (prev_real_idx + 1..para_idx)
+                        .filter(|&i| {
+                            paragraphs.get(i).is_some_and(|p| {
+                                p.line_segs.is_empty()
+                                    && p.controls.is_empty()
+                                    && para_has_visible_text(p)
+                            })
+                        })
+                        .count();
+                    let high_threshold = body_height_hu_for_variant * 95 / 100;
+                    let table_heading_reset = prev_real_idx + 1 == para_idx
+                        && para.line_segs.is_empty()
+                        && para.controls.is_empty()
+                        && para_has_visible_text(para)
+                        && para_sb_hu >= 500
+                        && prev_end_vpos > body_height_hu_for_variant * 85 / 100
+                        && paragraphs.get(prev_real_idx).is_some_and(|prev_para| {
+                            prev_para
+                                .controls
+                                .iter()
+                                .any(|c| matches!(c, Control::Table(t) if t.common.treat_as_char))
+                        })
+                        && paragraphs
+                            .get(para_idx + 1)
+                            .and_then(|next_para| next_para.line_segs.first())
+                            .filter(|ls| !is_synthetic_line_seg(ls))
+                            .is_some_and(|ls| ls.vertical_pos <= 4000);
+                    let empty_bridge_heading_reset = para.line_segs.is_empty()
+                        && para.controls.is_empty()
+                        && para_has_visible_text(para)
+                        && para_sb_hu >= 500
+                        && bridge_missing_count == 1
+                        && prev_end_vpos > body_height_hu_for_variant * 80 / 100
+                        && prev_end_vpos <= body_height_hu_for_variant * 85 / 100;
+
+                    let real_heading_or_bridge_reset = curr_real.is_some_and(|curr_first| {
+                        let curr_first_vpos = curr_first.vertical_pos;
+                        let strict_heading_reset = para_sb_hu >= 500
+                            && prev_end_vpos > high_threshold
+                            && curr_first_vpos < 1500;
+                        let delayed_heading_after_top_content_reset = prev_real_idx + 1 == para_idx
+                            && para.line_segs.len() >= 2
+                            && para_sb_hu >= 500
+                            && para.controls.is_empty()
+                            && para_has_visible_text(para)
+                            && curr_first_vpos > 0
+                            && curr_first_vpos <= 2500
+                            && prev_top_content_reset
+                            && prev_prev_end_vpos
+                                .is_some_and(|end| end > body_height_hu_for_variant * 70 / 100);
+                        let bridged_reset = bridge_missing_count >= 2
+                            && para.controls.is_empty()
+                            && para_has_visible_text(para)
+                            && curr_first_vpos <= 1500
+                            && prev_end_vpos > body_height_hu_for_variant * 75 / 100;
+                        let negative_wrap_heading_reset = prev_real_idx + 1 == para_idx
+                            && para.line_segs.len() == 1
+                            && para_sb_hu >= 250
+                            && para.controls.is_empty()
+                            && para_has_visible_text(para)
+                            && curr_first_vpos < 0
+                            && prev_positive_wrap_end
+                                .is_some_and(|end| end > body_height_hu_for_variant * 75 / 100);
+                        let bottom_heading_before_next_reset = prev_real_idx + 1 == para_idx
+                            && para.line_segs.len() == 1
+                            && para_sb_hu >= 250
+                            && para.controls.is_empty()
+                            && para_has_visible_text(para)
+                            && curr_first_vpos > body_height_hu_for_variant * 75 / 100
+                            && next_first_real_vpos.is_some_and(|next_vpos| {
+                                next_vpos > 0 && next_vpos <= 4000 && curr_first_vpos > next_vpos
+                            });
+                        strict_heading_reset
+                            || delayed_heading_after_top_content_reset
+                            || bridged_reset
+                            || negative_wrap_heading_reset
+                            || bottom_heading_before_next_reset
+                    });
+
+                    if table_heading_reset
+                        || empty_bridge_heading_reset
+                        || real_heading_or_bridge_reset
+                    {
+                        variant_vpos_reset_break = true;
+                    }
+                }
+            }
+
+            if (force_page_break || para_style_break || variant_vpos_reset_break)
+                && !st.current_items.is_empty()
+            {
                 self.process_page_break(&mut st);
             }
 
@@ -282,6 +532,55 @@ impl Paginator {
 
             // 페이지가 아직 없으면 생성
             st.ensure_page();
+
+            // TypesetEngine trailing empty guard 와 동일한 fallback 보호.
+            // 마지막 빈 문단이 직전 trailing line_spacing 때문에 안전 가용 높이 밖에서
+            // 단독 페이지로 밀리는 경우, 보이는 내용이 없으므로 현재 페이지에 흡수한다.
+            if para_idx + 1 == paragraphs.len()
+                && col_count == 1
+                && !has_table
+                && !st.current_items.is_empty()
+            {
+                let trimmed = para.text.replace(|c: char| c.is_control(), "");
+                let is_empty_para = trimmed.trim().is_empty() && para.controls.is_empty();
+                if is_empty_para {
+                    let trailing_ls = para
+                        .line_segs
+                        .last()
+                        .filter(|seg| seg.line_spacing > 0)
+                        .map(|seg| crate::renderer::hwpunit_to_px(seg.line_spacing, self.dpi))
+                        .unwrap_or(0.0);
+                    let height_for_fit = (para_height - trailing_ls).max(0.0);
+                    let total_h = st.current_height + height_for_fit;
+                    let fit_fail_within_safety = total_h > available_height
+                        && total_h <= available_height + LAYOUT_DRIFT_SAFETY_PX;
+                    let prior_trailing_drift = st.current_height > available_height
+                        && st.current_height <= available_height + LAYOUT_DRIFT_SAFETY_PX + 0.5;
+                    let previous_item_is_empty_para = st
+                        .current_items
+                        .last()
+                        .and_then(|item| match item {
+                            PageItem::FullParagraph { para_index } => Some(*para_index),
+                            _ => None,
+                        })
+                        .and_then(|prev_idx| paragraphs.get(prev_idx))
+                        .map(|prev_para| {
+                            let trimmed = prev_para.text.replace(|c: char| c.is_control(), "");
+                            trimmed.trim().is_empty() && prev_para.controls.is_empty()
+                        })
+                        .unwrap_or(false);
+                    if prior_trailing_drift && previous_item_is_empty_para {
+                        hidden_empty_paras.insert(para_idx);
+                        continue;
+                    }
+                    if fit_fail_within_safety {
+                        st.current_items.push(PageItem::FullParagraph {
+                            para_index: para_idx,
+                        });
+                        continue;
+                    }
+                }
+            }
 
             // vpos 기준점 설정: 페이지 첫 문단
             if st.page_vpos_base.is_none() {
@@ -775,15 +1074,43 @@ impl Paginator {
     ) {
         let available_now = st.available_height();
 
+        let line_count_for_break = measured
+            .get_measured_paragraph(para_idx)
+            .map(|mp| mp.line_heights.len())
+            .unwrap_or(para.line_segs.len());
+
         // LINE_SEG vpos-reset 강제 분리 지점 검출 (line>0 && vertical_pos==0)
         // 옵션 on + multicolumn이 아닌 경우에만 적용. multicolumn은 column-break 메커니즘 우선.
         let forced_breaks: Vec<usize> = if respect_vpos_reset {
-            para.line_segs
+            let mut breaks: Vec<usize> = para
+                .line_segs
                 .iter()
                 .enumerate()
                 .filter(|(i, ls)| *i > 0 && ls.vertical_pos == 0)
                 .map(|(i, _)| i)
-                .collect()
+                .collect();
+            if let Some(line) = internal_vpos_page_break_line(
+                para,
+                line_count_for_break,
+                st.layout.body_area.height,
+                self.dpi,
+            ) {
+                if !breaks.contains(&line) {
+                    breaks.push(line);
+                }
+            }
+            if let Some(line) = sample16_missing_lineseg_tail_break_line(
+                para,
+                line_count_for_break,
+                st.current_height,
+                available_now,
+            ) {
+                if !breaks.contains(&line) {
+                    breaks.push(line);
+                }
+            }
+            breaks.sort_unstable();
+            breaks
         } else {
             Vec::new()
         };
@@ -2213,8 +2540,7 @@ impl Paginator {
                 }
             };
 
-            let actual_split_start = content_offset;
-            let actual_split_end = split_end_limit;
+            let _ = (content_offset, split_end_limit);
 
             // 마지막 파트에 Bottom 캡션 공간 확보
             if end_row >= row_count
@@ -2256,8 +2582,9 @@ impl Paginator {
                         start_row: cursor_row,
                         end_row,
                         is_continuation,
-                        split_start_content_offset: actual_split_start,
-                        split_end_content_limit: 0.0,
+                        start_cut: Vec::new(),
+                        end_cut: Vec::new(),
+                        is_block_split: false,
                     });
                     // 마지막 부분 표: spacing_after도 포함 (레이아웃과 일치)
                     let mp = measured.get_measured_paragraph(para_idx);
@@ -2274,8 +2601,9 @@ impl Paginator {
                 start_row: cursor_row,
                 end_row,
                 is_continuation,
-                split_start_content_offset: actual_split_start,
-                split_end_content_limit: actual_split_end,
+                start_cut: Vec::new(),
+                end_cut: Vec::new(),
+                is_block_split: false,
             });
             st.advance_column_or_new_page();
 

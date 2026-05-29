@@ -25,6 +25,19 @@ fn main() {
         Some("hwp5-ctrl-data-trace") => rhwp::diagnostics::hwp5_ctrl_data_trace::run(&args[2..]),
         Some("hwp5-contract-probe") => rhwp::diagnostics::hwp5_contract_probe::run(&args[2..]),
         Some("hwp5-table-probe") => rhwp::diagnostics::hwp5_table_probe::run(&args[2..]),
+        Some("hwp5-mel-personnel-probe") => {
+            rhwp::diagnostics::hwp5_mel_personnel_probe::run(&args[2..])
+        }
+        Some("hwp5-borderfill-diagonal-probe") => {
+            rhwp::diagnostics::hwp5_borderfill_diagonal_probe::run(&args[2..])
+        }
+        Some("hwp5-first-para-control-probe") => {
+            rhwp::diagnostics::hwp5_first_para_control_probe::run(&args[2..])
+        }
+        Some("hwp5-anchor-trace") => rhwp::diagnostics::hwp5_anchor_trace::run(&args[2..]),
+        Some("hwp5-cell-header-probe") => {
+            rhwp::diagnostics::hwp5_cell_header_probe::run(&args[2..])
+        }
         Some("dump-records") => dump_raw_records(&args[2..]),
         Some("test-shape") => test_shape_roundtrip(&args[2..]),
         Some("test-caption") => test_caption(&args[2..]),
@@ -56,7 +69,7 @@ fn print_help() {
     println!("      --show-control-codes    조판부호 보이기 (문단부호 + 개체 마커 등)");
     println!("      --debug-overlay         디버그 오버레이 (문단/표 경계 + 인덱스 라벨)");
     println!("      --respect-vpos-reset    LINE_SEG vpos=0 리셋을 단/페이지 강제 경계로 처리");
-    println!("      --show-grid             1mm 격자 오버레이 (레이아웃 디버깅용)");
+    println!("      --show-grid[=Nmm]       격자 오버레이 (기본: 1mm, 예: --show-grid=3mm)");
     println!("      --font-style            @font-face local() 참조 삽입 (폰트 데이터 미포함)");
     println!("      --embed-fonts           폰트 서브셋 임베딩 (사용 글자만 base64)");
     println!("      --embed-fonts=full      폰트 전체 임베딩 (base64)");
@@ -127,6 +140,21 @@ fn print_help() {
     println!("  hwp5-table-probe <oracle.hwp> <generated.hwp> --out-dir <폴더>");
     println!("      TABLE/CTRL_HEADER(Table) field 축별 판정용 HWP probe 생성");
     println!();
+    println!("  hwp5-mel-personnel-probe <oracle.hwp> <generated.hwp> --out-dir <폴더>");
+    println!("      mel-001 인원현황 표 TABLE/LIST_HEADER/PARA_HEADER 축별 판정용 HWP probe 생성");
+    println!();
+    println!("  hwp5-borderfill-diagonal-probe <oracle.hwp> <generated.hwp> --out-dir <폴더>");
+    println!("      DocInfo BORDER_FILL 대각선 attr/payload 축별 판정용 HWP probe 생성");
+    println!();
+    println!("  hwp5-first-para-control-probe <oracle.hwp> <generated.hwp> --out-dir <폴더>");
+    println!("      첫 문단 control/PARA_TEXT/PARA_CHAR_SHAPE 계약 축별 판정용 HWP probe 생성");
+    println!();
+    println!("  hwp5-anchor-trace <파일.hwp> --needle <텍스트> [--section N] [--window N] [--out <path>]");
+    println!("      특정 텍스트를 포함한 PARA_TEXT 주변의 raw HWP5 record를 추적");
+    println!();
+    println!("  hwp5-cell-header-probe <oracle.hwp> <generated.hwp> --out-dir <폴더>");
+    println!("      표 셀 LIST_HEADER/PARA_HEADER 계약 축별 판정용 HWP probe 생성");
+    println!();
     println!("  convert <입력.hwp|입력.hwpx> <출력.hwp>");
     println!("      배포용(읽기전용) HWP를 편집 가능한 HWP로 변환");
     println!();
@@ -162,7 +190,7 @@ fn export_svg(args: &[String]) {
     let mut show_para_marks = false;
     let mut show_control_codes = false;
     let mut debug_overlay = false;
-    let mut show_grid = false;
+    let mut grid_mm: Option<f64> = None;
     let mut respect_vpos_reset = false;
     let mut font_embed_mode = rhwp::renderer::svg::FontEmbedMode::None;
     let mut font_paths: Vec<std::path::PathBuf> = Vec::new();
@@ -210,8 +238,20 @@ fn export_svg(args: &[String]) {
                 respect_vpos_reset = true;
                 i += 1;
             }
-            "--show-grid" => {
-                show_grid = true;
+            arg if arg == "--show-grid" || arg.starts_with("--show-grid=") => {
+                grid_mm = if let Some(value) = arg.strip_prefix("--show-grid=") {
+                    match parse_grid_mm(value) {
+                        Some(v) => Some(v),
+                        None => {
+                            eprintln!(
+                                "오류: --show-grid 값이 올바르지 않습니다. 예: --show-grid=3mm"
+                            );
+                            return;
+                        }
+                    }
+                } else {
+                    Some(1.0)
+                };
                 i += 1;
             }
             "--font-style" => {
@@ -324,8 +364,8 @@ fn export_svg(args: &[String]) {
         match svg_result {
             Ok(mut svg) => {
                 // 격자 오버레이 삽입
-                if show_grid {
-                    svg = insert_grid_overlay(&svg);
+                if let Some(mm) = grid_mm {
+                    svg = insert_grid_overlay(&svg, mm);
                 }
                 let svg_filename = if page_count == 1 {
                     format!("{}.svg", file_stem)
@@ -352,15 +392,28 @@ fn export_svg(args: &[String]) {
     );
 }
 
-/// SVG에 1mm 격자 오버레이를 삽입한다.
+fn parse_grid_mm(value: &str) -> Option<f64> {
+    let trimmed = value.trim();
+    let number = trimmed
+        .strip_suffix("mm")
+        .or_else(|| trimmed.strip_suffix("MM"))
+        .unwrap_or(trimmed)
+        .trim();
+    let mm = number.parse::<f64>().ok()?;
+    if mm.is_finite() && mm > 0.0 {
+        Some(mm)
+    } else {
+        None
+    }
+}
+
+/// SVG에 mm 단위 격자 오버레이를 삽입한다.
 /// `<svg ...>` 태그 직후에 격자 패턴 정의와 배경 rect를 추가.
-fn insert_grid_overlay(svg: &str) -> String {
+fn insert_grid_overlay(svg: &str, grid_mm: f64) -> String {
     // SVG viewBox에서 크기 추출
     let (width, height) = extract_svg_dimensions(svg);
-    // 1mm = 96dpi 기준 3.7795px
-    let grid_px = 96.0 * 25.4 / 96.0; // 1mm in px at 96dpi... 실제로 SVG 좌표는 px
-                                      // 96dpi: 1inch = 25.4mm, 1px = 25.4/96 = 0.2646mm, 1mm = 96/25.4 = 3.7795px
-    let grid_size = 96.0 / 25.4; // 3.7795 px per mm
+    // 96dpi: 1inch = 25.4mm, 1px = 25.4/96 = 0.2646mm.
+    let grid_size = 96.0 / 25.4 * grid_mm;
 
     let g = format!("{:.4}", grid_size);
     let w = format!("{:.2}", width);
@@ -2081,12 +2134,21 @@ fn dump_controls(args: &[String]) {
                         let spacing = chs.spacings[0]; // 한국어 자간
                         let ratio = chs.ratios[0]; // 한국어 장평
                         println!(
-                            "  [CS] pos={} id={} bold={} spacing={}% ratio={}% char={:?}",
+                            "  [CS] pos={} id={} bold={} spacing={}% ratio={}% base={} attr=0x{:08X} text=#{:06X} shade=#{:06X} shadow=#{:06X} border_fill_id={} shadow_type={} shadow_off=({}, {}) char={:?}",
                             cs.start_pos,
                             cs.char_shape_id,
                             bold,
                             spacing,
                             ratio,
+                            chs.base_size,
+                            chs.attr,
+                            chs.text_color,
+                            chs.shade_color,
+                            chs.shadow_color,
+                            chs.border_fill_id,
+                            chs.shadow_type,
+                            chs.shadow_offset_x,
+                            chs.shadow_offset_y,
                             char_at.map(|c| c.to_string()).unwrap_or_default()
                         );
                     }
@@ -2318,10 +2380,11 @@ fn dump_controls(args: &[String]) {
                                     .map(|p| p.text.chars().take(30).collect::<String>())
                                     .collect::<Vec<_>>()
                                     .join("|");
-                                println!("{}셀[{}] r={},c={} rs={},cs={} h={} w={} pad=({},{},{},{}) aim={} bf={} paras={} text=\"{}\"",
+                                println!("{}셀[{}] r={},c={} rs={},cs={} h={} w={} pad=({},{},{},{}) valign={:?} aim={} bf={} paras={} text=\"{}\"",
                                     indent, ci, cell.row, cell.col, cell.row_span, cell.col_span,
                                     cell.height, cell.width,
                                     cell.padding.left, cell.padding.right, cell.padding.top, cell.padding.bottom,
+                                    cell.vertical_align,
                                     cell.apply_inner_margin,
                                     cell.border_fill_id, cell.paragraphs.len(), text_preview);
                                 if let Some(ref fname) = cell.field_name {

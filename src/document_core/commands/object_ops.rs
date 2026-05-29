@@ -6,7 +6,7 @@ use crate::error::HwpError;
 use crate::model::control::Control;
 use crate::model::event::DocumentEvent;
 use crate::model::paragraph::Paragraph;
-use crate::model::shape::ShapeObject;
+use crate::model::shape::{common_obj_offsets, ShapeObject};
 
 /// 도형 최소 크기 (HWPUNIT).
 /// 0으로 내려가면 Rectangle은 x_coords=[0,0,0,0]이 되고,
@@ -906,17 +906,17 @@ impl DocumentCore {
         let flags: u32 = (2 << 3) | (3 << 8) | (4 << 15) | (2 << 18) | (1 << 21);
         let outer_margin: i16 = 283; // ~1mm
         let mut raw_ctrl_data = vec![0u8; 38];
-        raw_ctrl_data[0..4].copy_from_slice(&flags.to_le_bytes()); // offset 0: flags
-                                                                   // offset 4-7: vertical_offset = 0
-                                                                   // offset 8-11: horizontal_offset = 0
-        raw_ctrl_data[12..16].copy_from_slice(&total_width.to_le_bytes()); // offset 12: width
-        raw_ctrl_data[16..20].copy_from_slice(&total_height.to_le_bytes()); // offset 16: height
-                                                                            // offset 20-23: z_order = 0
-        raw_ctrl_data[24..26].copy_from_slice(&outer_margin.to_le_bytes()); // offset 24: margin_left
-        raw_ctrl_data[26..28].copy_from_slice(&outer_margin.to_le_bytes()); // offset 26: margin_right
-        raw_ctrl_data[28..30].copy_from_slice(&outer_margin.to_le_bytes()); // offset 28: margin_top
-        raw_ctrl_data[30..32].copy_from_slice(&outer_margin.to_le_bytes()); // offset 30: margin_bottom
-                                                                            // offset 32-35: instance_id (해시 기반, 비-0 필수)
+        raw_ctrl_data[common_obj_offsets::FLAGS].copy_from_slice(&flags.to_le_bytes());
+        // vertical_offset/horizontal_offset/z_order = 0
+        raw_ctrl_data[common_obj_offsets::WIDTH].copy_from_slice(&total_width.to_le_bytes());
+        raw_ctrl_data[common_obj_offsets::HEIGHT].copy_from_slice(&total_height.to_le_bytes());
+        raw_ctrl_data[common_obj_offsets::MARGIN_LEFT].copy_from_slice(&outer_margin.to_le_bytes());
+        raw_ctrl_data[common_obj_offsets::MARGIN_RIGHT]
+            .copy_from_slice(&outer_margin.to_le_bytes());
+        raw_ctrl_data[common_obj_offsets::MARGIN_TOP].copy_from_slice(&outer_margin.to_le_bytes());
+        raw_ctrl_data[common_obj_offsets::MARGIN_BOTTOM]
+            .copy_from_slice(&outer_margin.to_le_bytes());
+        // instance_id (해시 기반, 비-0 필수)
         let instance_id: u32 = {
             let mut h: u32 = 0x7c150000;
             h = h.wrapping_add(row_count as u32 * 0x1000);
@@ -928,7 +928,7 @@ impl DocumentCore {
             }
             h
         };
-        raw_ctrl_data[32..36].copy_from_slice(&instance_id.to_le_bytes());
+        raw_ctrl_data[common_obj_offsets::INSTANCE_ID].copy_from_slice(&instance_id.to_le_bytes());
 
         let mut table = Table {
             attr: 0x082A2210, // 한컴 기본값 (blank_h_saved.hwp)
@@ -1263,13 +1263,15 @@ impl DocumentCore {
             | (2 << 18) /* height_criterion=Absolute */
             | (1 << 21) /* wrap=TopAndBottom */;
         let mut raw_ctrl_data = vec![0u8; 38];
-        raw_ctrl_data[0..4].copy_from_slice(&flags.to_le_bytes());
-        raw_ctrl_data[12..16].copy_from_slice(&total_width.to_le_bytes());
-        raw_ctrl_data[16..20].copy_from_slice(&total_height.to_le_bytes());
-        raw_ctrl_data[24..26].copy_from_slice(&outer_margin.to_le_bytes());
-        raw_ctrl_data[26..28].copy_from_slice(&outer_margin.to_le_bytes());
-        raw_ctrl_data[28..30].copy_from_slice(&outer_margin.to_le_bytes());
-        raw_ctrl_data[30..32].copy_from_slice(&outer_margin.to_le_bytes());
+        raw_ctrl_data[common_obj_offsets::FLAGS].copy_from_slice(&flags.to_le_bytes());
+        raw_ctrl_data[common_obj_offsets::WIDTH].copy_from_slice(&total_width.to_le_bytes());
+        raw_ctrl_data[common_obj_offsets::HEIGHT].copy_from_slice(&total_height.to_le_bytes());
+        raw_ctrl_data[common_obj_offsets::MARGIN_LEFT].copy_from_slice(&outer_margin.to_le_bytes());
+        raw_ctrl_data[common_obj_offsets::MARGIN_RIGHT]
+            .copy_from_slice(&outer_margin.to_le_bytes());
+        raw_ctrl_data[common_obj_offsets::MARGIN_TOP].copy_from_slice(&outer_margin.to_le_bytes());
+        raw_ctrl_data[common_obj_offsets::MARGIN_BOTTOM]
+            .copy_from_slice(&outer_margin.to_le_bytes());
         let instance_id: u32 = {
             let mut h: u32 = 0x7c160000;
             h = h.wrapping_add(row_count as u32 * 0x1000);
@@ -1280,7 +1282,7 @@ impl DocumentCore {
             }
             h
         };
-        raw_ctrl_data[32..36].copy_from_slice(&instance_id.to_le_bytes());
+        raw_ctrl_data[common_obj_offsets::INSTANCE_ID].copy_from_slice(&instance_id.to_le_bytes());
 
         let mut table = Table {
             attr: 0x04000006,
@@ -2784,6 +2786,7 @@ impl DocumentCore {
                     common,
                     drawing,
                     points,
+                    raw_trailing: Vec::new(),
                 })
             }
             "arc" => {
@@ -4544,17 +4547,40 @@ impl DocumentCore {
             })
         };
 
+        // [Task #1058 reopen Round 5] 신규 각주 inner paragraph 한컴 contract 정합:
+        //   - style_id = 11 (각주 style, 한컴 DocInfo 기본 각주 style ID)
+        //   - para_shape_id = 0 (각주 default ParaShape)
+        //   - controls = [AutoNumber] (각주 번호 inline 컨트롤, char index 0 위치)
+        //   - text = "  " (placeholder space ×2, AutoNumber 가 두 space 사이 8 cu 차지)
+        //   - char_offsets = [0, 8] (첫 space pos 0, AutoNumber anchor 점유 pos 0~7, 두 번째 space pos 8)
+        //   - char_count = 10 (2 placeholder + 8 AutoNumber inline ctrl)
+        //   - has_para_text = true
+        // 한컴 정답지 samples/footnote-01.hwp 의 각주 inner_para 와 동일한 contract.
+        // 사용자 입력은 두 placeholder 뒤 (char_offset=2) 부터 시작 — insert_text_at 의
+        // 일반 분기가 char_offsets[i] = base + sum(widths) 시프트 (jump 8 보존).
+        let auto_num = crate::model::control::AutoNumber {
+            number_type: crate::model::control::AutoNumberType::Footnote,
+            format: 0, // Digit
+            superscript: false,
+            number: footnote_number,
+            assigned_number: footnote_number,
+            user_symbol: '\0',
+            prefix_char: '\0',
+            suffix_char: ')',
+        };
         let inner_para = Paragraph {
-            text: String::new(),
-            char_count: 1,
+            text: "  ".to_string(), // placeholder space ×2 (정답지 정합)
+            char_count: 10,         // 2 placeholder + 8 (AutoNumber inline ctrl)
             char_count_msb: true,
-            control_mask: 0,
-            para_shape_id: default_para_shape_id,
-            style_id: 0,
+            control_mask: 1u32 << 0x12, // bit 18 (AutoNumber)
+            char_offsets: vec![0, 8],   // AutoNumber 가 두 space 사이 8 cu 차지
+            para_shape_id: 0,
+            style_id: 11, // 각주 style
             char_shapes: vec![CharShapeRef {
                 start_pos: 0,
                 char_shape_id: default_char_shape_id,
             }],
+            controls: vec![crate::model::control::Control::AutoNumber(auto_num)],
             line_segs: vec![LineSeg {
                 text_start: 0,
                 line_height: 1000,
@@ -4565,13 +4591,19 @@ impl DocumentCore {
                 tag: 0x00060000,
                 ..Default::default()
             }],
-            has_para_text: false,
+            has_para_text: true,
             ..Default::default()
         };
+        // default_para_shape_id 변수가 위에서 unused 가 되지 않도록 (caller paragraph 의 ps 정보는
+        // 본 본문 paragraph 의 contract 보존 — 각주 본문은 ps_id=0 사용)
+        let _ = default_para_shape_id;
 
         let footnote = Footnote {
             number: footnote_number,
             paragraphs: vec![inner_para],
+            // [Task #1050] HWP5 CTRL_FOOTNOTE 한컴 default
+            after_decoration_letter: 0x0029, // ')'
+            ..Default::default()
         };
 
         // 문단에 각주 컨트롤 삽입

@@ -60,7 +60,7 @@ pub enum Control {
     Unknown(UnknownControl),
 }
 
-/// 수식 ('eqed' 컨트롤, HWP 스펙 표 106-107)
+/// 수식 ('eqed' 컨트롤, HWP 스펙 표 105)
 #[derive(Debug, Clone, Default)]
 pub struct Equation {
     /// 개체 공통 속성 (위치, 크기, 배치)
@@ -73,10 +73,14 @@ pub struct Equation {
     pub color: u32,
     /// 기준선 오프셋
     pub baseline: i16,
-    /// 수식 글꼴명
-    pub font_name: String,
+    /// 미지의 UINT16 필드 (HWP5 spec errata) — hwplib `ForEQEdit.readUInt2()` 정합.
+    /// HWP5 spec 표 105 에 누락되어 있으나 한컴 실제 저장본에 baseline 과 version_info
+    /// 사이에 UINT16 zero 가 위치. Task #1061 발견.
+    pub unknown: u16,
     /// 버전 정보
     pub version_info: String,
+    /// 수식 글꼴명
+    pub font_name: String,
     /// 라운드트립용 원본 ctrl_data
     pub raw_ctrl_data: Vec<u8>,
 }
@@ -223,6 +227,8 @@ pub struct Field {
     pub ctrl_data_name: Option<String>,
     /// 메모 인덱스 (hwplib: memoIndex)
     pub memo_index: u32,
+    /// 메모 본문 문단 리스트 (`fieldBegin type="MEMO"` 내부 subList)
+    pub memo_paragraphs: Vec<Paragraph>,
 }
 
 impl Field {

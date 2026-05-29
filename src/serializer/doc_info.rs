@@ -236,15 +236,22 @@ pub fn serialize_face_name(font: &Font) -> Vec<u8> {
     if font.alt_name.is_some() {
         attr |= 0x80;
     }
-    if font.default_name.is_some() {
+    if font.type_info.is_some() {
         attr |= 0x40;
+    }
+    if font.default_name.is_some() {
+        attr |= 0x20;
     }
     w.write_u8(attr).unwrap();
 
     w.write_hwp_string(&font.name).unwrap();
 
     if let Some(ref alt_name) = font.alt_name {
+        w.write_u8(font.alt_type & 0x03).unwrap();
         w.write_hwp_string(alt_name).unwrap();
+    }
+    if let Some(type_info) = font.type_info {
+        w.write_bytes(&type_info).unwrap();
     }
     if let Some(ref default_name) = font.default_name {
         w.write_hwp_string(default_name).unwrap();
@@ -280,9 +287,20 @@ fn image_fill_mode_to_u8(mode: ImageFillMode) -> u8 {
     match mode {
         ImageFillMode::TileAll => 0,
         ImageFillMode::TileHorzTop => 1,
-        ImageFillMode::TileVertLeft => 2,
-        ImageFillMode::FitToSize => 3,
-        _ => 0,
+        ImageFillMode::TileHorzBottom => 2,
+        ImageFillMode::TileVertLeft => 3,
+        ImageFillMode::TileVertRight => 4,
+        ImageFillMode::FitToSize => 5,
+        ImageFillMode::Center => 6,
+        ImageFillMode::CenterTop => 7,
+        ImageFillMode::CenterBottom => 8,
+        ImageFillMode::LeftCenter => 9,
+        ImageFillMode::LeftTop => 10,
+        ImageFillMode::LeftBottom => 11,
+        ImageFillMode::RightCenter => 12,
+        ImageFillMode::RightTop => 13,
+        ImageFillMode::RightBottom => 14,
+        ImageFillMode::None => 15,
     }
 }
 
@@ -331,19 +349,25 @@ fn serialize_fill(w: &mut ByteWriter, fill: &crate::model::style::Fill) {
         }
         FillType::Gradient => {
             if let Some(ref grad) = fill.gradient {
-                w.write_i16(grad.gradient_type).unwrap();
-                w.write_i16(grad.angle).unwrap();
-                w.write_i16(grad.center_x).unwrap();
-                w.write_i16(grad.center_y).unwrap();
-                w.write_i16(grad.blur).unwrap();
+                w.write_u8(grad.gradient_type as u8).unwrap();
+                w.write_u32(grad.angle as u32).unwrap();
+                w.write_u32(grad.center_x as u32).unwrap();
+                w.write_u32(grad.center_y as u32).unwrap();
+                w.write_u32(grad.blur as u32).unwrap();
                 w.write_u32(grad.colors.len() as u32).unwrap();
+                if grad.colors.len() > 2 {
+                    for &pos in &grad.positions {
+                        w.write_i32(pos).unwrap();
+                    }
+                }
                 for &color in &grad.colors {
                     w.write_color_ref(color).unwrap();
                 }
-                for &pos in &grad.positions {
-                    w.write_i32(pos).unwrap();
-                }
             }
+            w.write_u32(1).unwrap();
+            w.write_u8(fill.gradient.as_ref().map(|g| g.step_center).unwrap_or(0))
+                .unwrap();
+            w.write_u8(fill.alpha).unwrap();
         }
         FillType::Image => {
             if let Some(ref img) = fill.image {
@@ -600,6 +624,13 @@ pub fn serialize_para_shape(ps: &ParaShape) -> Vec<u8> {
     w.write_u32(ps.attr3).unwrap();
     // 줄 간격 (5.0.2.5 이상)
     w.write_u32(ps.line_spacing_v2).unwrap();
+    // 한컴 편집기가 현재 HWP5 저장 시 붙이는 PARA_SHAPE 말미 4바이트.
+    //
+    // 공개 스펙 표 43은 전체 길이를 54바이트로 적지만, 한컴이 HWPX를 HWP로
+    // 내보낸 정답지들은 PARA_SHAPE를 58바이트로 저장한다. 이 tail이 없으면
+    // 한컴 편집기가 일부 masterpage/header 글상자 내부 줄나눔 폭을 다르게
+    // 해석해 페이지 번호가 다음 줄로 밀리는 사례가 있다.
+    w.write_u32(0).unwrap();
     w.into_bytes()
 }
 
@@ -609,8 +640,21 @@ pub fn serialize_style(style: &Style) -> Vec<u8> {
     w.write_hwp_string(&style.english_name).unwrap();
     w.write_u8(style.style_type).unwrap();
     w.write_u8(style.next_style_id).unwrap();
+    // [Task #1058 후속] HWP5 spec 표 47 정합 — lang_id (INT16) 추가.
+    // 누락 시 ps_id/cs_id 가 2 byte 앞당겨져 한컴이 잘못된 ParaShape 적용 →
+    // 신규 각주 추가 시 본문 paragraph 의 ParaShape (60.0 pt 여백 + 160% 줄간격) 부여.
+    let lang_id = if style.lang_id == 0 {
+        1042
+    } else {
+        style.lang_id
+    };
+    w.write_i16(lang_id).unwrap();
     w.write_u16(style.para_shape_id).unwrap();
     w.write_u16(style.char_shape_id).unwrap();
+    // [Task #1058 후속] 한컴 정답지 STYLE record 마지막 2 byte zero — 스펙 미문서화 영역.
+    // footnote-01.hwp 의 모든 STYLE record 가 끝에 0x0000 (UINT16) 보유.
+    // 누락 시 record size mismatch + DocInfo record 순서 shift.
+    w.write_u16(0).unwrap();
     w.into_bytes()
 }
 

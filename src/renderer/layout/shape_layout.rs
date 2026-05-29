@@ -244,6 +244,7 @@ impl LayoutEngine {
         alignment: Alignment,
         bin_data_content: &[BinDataContent],
         overflow_map: &std::collections::HashMap<(usize, usize), Vec<Paragraph>>,
+        clamp_negative_para_offset: bool,
     ) {
         use crate::model::shape::ShapeObject;
 
@@ -317,6 +318,25 @@ impl LayoutEngine {
         };
 
         let common = shape.common();
+        let adjusted_common;
+        let common_for_position = if clamp_negative_para_offset
+            && !common.treat_as_char
+            && matches!(common.vert_rel_to, crate::model::shape::VertRelTo::Para)
+            && matches!(
+                common.vert_align,
+                crate::model::shape::VertAlign::Top | crate::model::shape::VertAlign::Inside
+            )
+            && (common.vertical_offset as i32) < 0
+        {
+            adjusted_common = {
+                let mut common = common.clone();
+                common.vertical_offset = 0;
+                common
+            };
+            &adjusted_common
+        } else {
+            common
+        };
 
         let (mut shape_w, mut shape_h) =
             self.resolve_object_size(common, col_area, body_area, paper_area);
@@ -377,7 +397,7 @@ impl LayoutEngine {
             (ix, iy)
         } else {
             self.compute_object_position(
-                common,
+                common_for_position,
                 shape_w,
                 shape_h,
                 &shape_container,
@@ -1784,40 +1804,62 @@ impl LayoutEngine {
         let current_pn = self.current_page_number.get();
         if current_pn > 0 {
             for (pi, para) in text_box.paragraphs[..para_count].iter().enumerate() {
-                let has_page_auto = para.controls.iter().any(|c| {
+                if para.controls.iter().any(|c| {
                     matches!(c, crate::model::control::Control::AutoNumber(an)
                         if an.number_type == crate::model::control::AutoNumberType::Page)
-                });
-                if has_page_auto {
-                    let page_str = current_pn.to_string();
+                }) {
                     if let Some(comp) = composed_paras.get_mut(pi) {
-                        for line in &mut comp.lines {
-                            for run in &mut line.runs {
-                                if run.text.contains('\u{0015}') {
-                                    run.text = run.text.replace('\u{0015}', &page_str);
-                                } else if run.text.trim().is_empty() {
-                                    run.text = page_str.clone();
-                                }
-                            }
-                        }
+                        self.substitute_page_auto_numbers_in_composed(para, comp, current_pn);
                     }
                 }
             }
         }
 
-        // 세로 정렬: 전체 텍스트 높이를 계산하여 center/bottom 오프셋 적용
+        // 세로 정렬: 전체 콘텐츠 높이를 계산하여 center/bottom 오프셋 적용
         let vert_offset = {
             use crate::model::table::VerticalAlign;
             match text_box.vertical_align {
                 VerticalAlign::Center | VerticalAlign::Bottom => {
-                    // 전체 텍스트 높이 = 마지막 문단의 마지막 line_seg 끝 위치
-                    let total_text_height = text_box.paragraphs[..para_count]
+                    // 전체 콘텐츠 높이 = line_seg 끝 위치와 글상자 내부 non-TAC 개체 높이의 최대값.
+                    //
+                    // HWPX hy-002처럼 글상자 문단이 빈 line_seg + non-TAC 그림 하나로 구성되면
+                    // line_seg 높이만으로 CENTER 오프셋을 계산할 수 없다. 그렇게 하면 그림이 실제
+                    // 콘텐츠 높이에서 빠지고, 아래 picture container가 오프셋 이후 남은 높이로
+                    // 줄어들어 한컴보다 과도하게 축소된다.
+                    let mut total_content_height = text_box.paragraphs[..para_count]
                         .iter()
                         .flat_map(|p| p.line_segs.last())
                         .map(|ls| hwpunit_to_px(ls.vertical_pos + ls.line_height, self.dpi))
                         .last()
                         .unwrap_or(0.0);
-                    let free_space = (inner_area.height - total_text_height).max(0.0);
+
+                    for para in &text_box.paragraphs[..para_count] {
+                        let para_vpos = para
+                            .line_segs
+                            .first()
+                            .map(|ls| ls.vertical_pos)
+                            .unwrap_or(0);
+                        for ctrl in &para.controls {
+                            let common = match ctrl {
+                                Control::Picture(pic) if !pic.common.treat_as_char => {
+                                    Some(&pic.common)
+                                }
+                                Control::Shape(shape) if !shape.as_ref().common().treat_as_char => {
+                                    Some(shape.as_ref().common())
+                                }
+                                _ => None,
+                            };
+
+                            if let Some(common) = common {
+                                let top = para_vpos.saturating_add(common.vertical_offset as i32);
+                                let bottom = top.saturating_add(common.height as i32);
+                                total_content_height =
+                                    total_content_height.max(hwpunit_to_px(bottom, self.dpi));
+                            }
+                        }
+                    }
+
+                    let free_space = (inner_area.height - total_content_height).max(0.0);
                     match text_box.vertical_align {
                         VerticalAlign::Center => free_space / 2.0,
                         VerticalAlign::Bottom => free_space,

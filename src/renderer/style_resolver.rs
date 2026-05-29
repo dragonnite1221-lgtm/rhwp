@@ -282,8 +282,19 @@ pub struct ResolvedStyleSet {
 
 /// DocInfo 참조 테이블을 해소된 스타일 목록으로 변환한다.
 pub fn resolve_styles(doc_info: &DocInfo, dpi: f64) -> ResolvedStyleSet {
+    resolve_styles_with_variant(doc_info, dpi, false)
+}
+
+/// [Task #1001] HWP3 → HWP5 변환본 인지하여 ParaShape spacing/margin 추가 보정.
+/// 변환본의 ParaShape 단위는 일반 HWP5 의 2배 (HwpUnitChar / HWPUNIT 의 2배 스케일)
+/// 이므로 추가 1/2 보정 적용. 호출자가 Document::is_hwp3_variant 를 전달.
+pub fn resolve_styles_with_variant(
+    doc_info: &DocInfo,
+    dpi: f64,
+    is_hwp3_variant: bool,
+) -> ResolvedStyleSet {
     let char_styles = resolve_char_styles(doc_info, dpi);
-    let para_styles = resolve_para_styles(doc_info, dpi);
+    let para_styles = resolve_para_styles_with_variant(doc_info, dpi, is_hwp3_variant);
     let border_styles = resolve_border_styles(doc_info);
     let numberings = doc_info.numberings.clone();
     let bullets = doc_info.bullets.clone();
@@ -446,6 +457,13 @@ pub(crate) fn resolve_font_substitution(
     alt_type: u8,
     lang_index: usize,
 ) -> Option<&'static str> {
+    // HWP3 원본/일부 한컴 재저장본은 HCI 영문 폰트를 TTF(type=1) 또는
+    // unknown(type=0)으로 싣기도 한다. 한컴은 같은 face를 보여주므로
+    // alt_type 차이와 무관하게 legacy 영문 HFT 치환을 우선 적용한다.
+    if let Some(result) = resolve_legacy_latin_font(name, lang_index) {
+        return Some(result);
+    }
+
     // HFT(type=2) 폰트 치환
     if alt_type == 2 {
         if let Some(result) = resolve_hft_font(name, lang_index) {
@@ -455,6 +473,53 @@ pub(crate) fn resolve_font_substitution(
 
     // TTF(type=1) 또는 알수없음(type=0) 치환
     resolve_ttf_font(name)
+}
+
+fn resolve_legacy_latin_font(name: &str, lang_index: usize) -> Option<&'static str> {
+    if lang_index != 1 {
+        return None;
+    }
+
+    match name {
+        "HCI Poppy" => Some("Palatino Linotype"),
+        "HCI Tulip"
+        | "HCI Morning Glory"
+        | "HCI Centaurea"
+        | "HCI Bellflower"
+        | "AmeriGarmnd BT"
+        | "Bodoni Bd BT"
+        | "Bodoni Bk BT"
+        | "Baskerville BT"
+        | "GoudyOlSt BT"
+        | "Cooper Blk BT"
+        | "Stencil BT"
+        | "BrushScript BT"
+        | "CommercialScript BT"
+        | "Liberty BT"
+        | "MurrayHill Bd BT"
+        | "ParkAvenue BT"
+        | "CentSchbook BT"
+        | "펜흘림" => Some("HY견명조"),
+        "HCI Hollyhock"
+        | "HCI Hollyhock Narrow"
+        | "HCI Acacia"
+        | "Swis721 BT"
+        | "Hobo BT"
+        | "Orbit-B BT"
+        | "Blippo Blk BT"
+        | "BroadwayEngraved BT"
+        | "FuturaBlack BT"
+        | "Newtext Bk BT"
+        | "DomCasual BT"
+        | "가는안상수체영문"
+        | "중간안상수체영문"
+        | "굵은안상수체영문" => Some("HY중고딕"),
+        "HCI Columbine" | "Courier10 BT" | "OCR-A BT" | "OCR-B-10 BT" | "Orator10 BT" => {
+            Some("Calibri")
+        }
+        "BernhardFashion BT" | "Freehand591 BT" => Some("HY중고딕"),
+        _ => None,
+    }
 }
 
 /// HFT 폰트 → @font-face 등록 폰트 치환 (언어별)
@@ -674,15 +739,29 @@ pub(crate) fn is_medium_weight_face(font_family: &str) -> bool {
 
 /// ParaShape → ResolvedParaStyle 목록
 fn resolve_para_styles(doc_info: &DocInfo, dpi: f64) -> Vec<ResolvedParaStyle> {
+    resolve_para_styles_with_variant(doc_info, dpi, false)
+}
+
+/// [Task #1001] 변환본 인지 ParaShape 해소
+fn resolve_para_styles_with_variant(
+    doc_info: &DocInfo,
+    dpi: f64,
+    is_hwp3_variant: bool,
+) -> Vec<ResolvedParaStyle> {
     doc_info
         .para_shapes
         .iter()
-        .map(|ps| resolve_single_para_style(ps, &doc_info.tab_defs, dpi))
+        .map(|ps| resolve_single_para_style(ps, &doc_info.tab_defs, dpi, is_hwp3_variant))
         .collect()
 }
 
 /// 개별 ParaShape 해소
-fn resolve_single_para_style(ps: &ParaShape, tab_defs: &[TabDef], dpi: f64) -> ResolvedParaStyle {
+fn resolve_single_para_style(
+    ps: &ParaShape,
+    tab_defs: &[TabDef],
+    dpi: f64,
+    is_hwp3_variant: bool,
+) -> ResolvedParaStyle {
     let line_spacing = match ps.line_spacing_type {
         LineSpacingType::Percent => ps.line_spacing as f64,
         _ => hwpunit_to_px(ps.line_spacing, dpi),
@@ -713,15 +792,21 @@ fn resolve_single_para_style(ps: &ParaShape, tab_defs: &[TabDef], dpi: f64) -> R
     // margin_left/right/indent: LineSeg.column_start와 비교하면 column_start = margin_left / 2
     // spacing_before/after: pyhwpx 확인 결과 동일하게 2배 스케일 저장
     // 실제 렌더링 시 2로 나누어야 올바른 값이 된다.
+    //
+    // [Task #1037] HWP5 변환본 의 추가 2배 스케일 (총 4배) 은 parser 단계 (parser/mod.rs)
+    // 에서 normalize (halve) 되어 본 단계에서는 normal HWP5 동등 (2배 스케일) — uniform
+    // variant_div=2 적용. 종전 variant_div=4 는 raw 값 normalize 전 보정 패턴이었음.
+    let _ = is_hwp3_variant;
+    let variant_div = 2.0;
     ResolvedParaStyle {
         alignment: ps.alignment,
         line_spacing,
         line_spacing_type: ps.line_spacing_type,
-        margin_left: hwpunit_to_px(ps.margin_left, dpi) / 2.0,
-        margin_right: hwpunit_to_px(ps.margin_right, dpi) / 2.0,
-        indent: hwpunit_to_px(ps.indent, dpi) / 2.0,
-        spacing_before: hwpunit_to_px(ps.spacing_before, dpi) / 2.0,
-        spacing_after: hwpunit_to_px(ps.spacing_after, dpi) / 2.0,
+        margin_left: hwpunit_to_px(ps.margin_left, dpi) / variant_div,
+        margin_right: hwpunit_to_px(ps.margin_right, dpi) / variant_div,
+        indent: hwpunit_to_px(ps.indent, dpi) / variant_div,
+        spacing_before: hwpunit_to_px(ps.spacing_before, dpi) / variant_div,
+        spacing_after: hwpunit_to_px(ps.spacing_after, dpi) / variant_div,
         head_type: ps.head_type,
         para_level: ps.para_level,
         numbering_id: ps.numbering_id,

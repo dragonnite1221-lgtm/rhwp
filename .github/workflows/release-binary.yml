@@ -69,6 +69,9 @@ jobs:
         with:
           targets: ${{ matrix.target }}
 
+      - name: Ensure Rust target is installed
+        run: rustup target add ${{ matrix.target }}
+
       - name: Cache cargo dependencies
         uses: actions/cache@v4
         with:
@@ -134,9 +137,19 @@ jobs:
     name: Attach to GitHub Release
     needs: build
     runs-on: ubuntu-latest
-    if: startsWith(github.ref, 'refs/tags/v')
+    if: startsWith(github.ref, 'refs/tags/v') || (github.event_name == 'workflow_dispatch' && startsWith(github.event.inputs.tag, 'v'))
 
     steps:
+      - name: Determine release tag
+        id: version
+        shell: bash
+        run: |
+          if [[ "${{ github.event_name }}" == "workflow_dispatch" ]]; then
+            echo "tag=${{ github.event.inputs.tag }}" >> $GITHUB_OUTPUT
+          else
+            echo "tag=${{ github.ref_name }}" >> $GITHUB_OUTPUT
+          fi
+
       - name: Download all artifacts
         uses: actions/download-artifact@v4
         with:
@@ -153,6 +166,7 @@ jobs:
       - name: Attach to release
         uses: softprops/action-gh-release@v2
         with:
+          tag_name: ${{ steps.version.outputs.tag }}
           files: |
             dist/*.tar.gz
             dist/*.zip

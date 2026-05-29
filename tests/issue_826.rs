@@ -49,6 +49,14 @@ fn issue_826_non_pua_passthrough() {
 #[test]
 fn issue_826_other_pua_existing_unchanged() {
     // 회귀 가드: 기존 매핑된 PUA 는 정합 유지.
-    assert_eq!(map_pua_bullet_char('\u{F02B1}'), '\u{2460}', "①");
+    // [Task #727 / PR #1020] U+F02B1~F02C4 (사각 안 1~9 등) 매핑 entry 제거
+    // → raw passthrough 로 변경. fallback chain 의 함초롬바탕 family 가
+    // PUA 글리프 매칭 (사각 안 ①, 한컴 권위 정합). 단언 기대값을 raw
+    // passthrough 로 정정.
+    assert_eq!(
+        map_pua_bullet_char('\u{F02B1}'),
+        '\u{F02B1}',
+        "사각 안 ① (raw passthrough)"
+    );
     assert_eq!(map_pua_bullet_char('\u{F0854}'), '\u{300A}', "《");
 }

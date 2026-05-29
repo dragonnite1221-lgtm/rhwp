@@ -265,6 +265,7 @@ impl Paragraph {
                                 | Control::Equation(_)
                                 | Control::Footnote(_)
                                 | Control::Endnote(_)
+                                | Control::AutoNumber(_)
                         )
                 });
 
@@ -822,6 +823,7 @@ impl Paragraph {
                         | Control::Equation(_)
                         | Control::Footnote(_)
                         | Control::Endnote(_)
+                        | Control::AutoNumber(_)
                 ) {
                     pos += 1;
                 }

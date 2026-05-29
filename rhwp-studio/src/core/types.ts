@@ -674,3 +674,499 @@ export interface BookmarkInfo {
   ctrlIdx: number;
   charPos: number;
 }
+
+export type LayerRenderProfile = 'fastPreview' | 'screen' | 'print' | 'highQuality';
+
+export interface LayerBounds {
+  x: number;
+  y: number;
+  width: number;
+  height: number;
+}
+
+export interface LayerAffineTransform {
+  a: number;
+  b: number;
+  c: number;
+  d: number;
+  e: number;
+  f: number;
+}
+
+export interface PageLayerTree {
+  schemaVersion?: number;
+  schemaMinorVersion?: number;
+  schema?: {
+    major: number;
+    minor: number;
+  };
+  unit?: 'px';
+  coordinateSystem?: string;
+  profile?: LayerRenderProfile;
+  pageWidth: number;
+  pageHeight: number;
+  outputOptions?: {
+    showParagraphMarks?: boolean;
+    showControlCodes?: boolean;
+    showTransparentBorders?: boolean;
+    clipEnabled?: boolean;
+    debugOverlay?: boolean;
+  };
+  resources?: LayerResources;
+  root: LayerNode;
+}
+
+export interface LayerResources {
+  tableId?: number;
+  images?: Array<Uint8Array | number[] | string | undefined>;
+  imageHashes?: string[];
+  imageKeys?: string[];
+  svgFragments?: Array<string | undefined>;
+  svgHashes?: string[];
+  svgKeys?: string[];
+}
+
+export type LayerNode = LayerGroupNode | LayerClipNode | LayerLeafNode;
+
+export interface LayerGroupNode {
+  kind: 'group';
+  bounds: LayerBounds;
+  groupKind?: { kind: string; [key: string]: unknown };
+  cacheHint?: LayerCacheHint;
+  children: LayerNode[];
+}
+
+export interface LayerClipNode {
+  kind: 'clipRect';
+  bounds: LayerBounds;
+  clip: LayerBounds;
+  clipKind: 'body' | 'tableCell' | 'generic';
+  child: LayerNode;
+}
+
+export interface LayerLeafNode {
+  kind: 'leaf';
+  bounds: LayerBounds;
+  ops: LayerPaintOp[];
+}
+
+export type LayerCacheHint =
+  | 'none'
+  | 'staticSubtree'
+  | 'preferRaster'
+  | 'preferVectorRecording';
+
+export type LayerPaintOp =
+  | LayerPageBackgroundOp
+  | LayerTextRunOp
+  | LayerFootnoteMarkerOp
+  | LayerLineOp
+  | LayerRectangleOp
+  | LayerEllipseOp
+  | LayerPathOp
+  | LayerImageOp
+  | LayerEquationOp
+  | LayerFormObjectOp
+  | LayerPlaceholderOp
+  | LayerRawSvgOp
+  | LayerTextDecorationOp
+  | LayerTextControlMarkOp
+  | LayerTabLeaderOp
+  | LayerCharOverlapOp
+  | LayerGlyphRunOp
+  | LayerGlyphOutlineOp;
+
+export interface LayerPageBackgroundOp {
+  type: 'pageBackground';
+  bbox: LayerBounds;
+  backgroundColor?: string;
+  borderColor?: string;
+  borderWidth?: number;
+}
+
+export interface LayerTextStyle {
+  fontFamily?: string;
+  fontSize?: number;
+  color?: string;
+  bold?: boolean;
+  italic?: boolean;
+  ratio?: number;
+  underline?: string;
+  strikethrough?: boolean;
+  shadeColor?: string;
+}
+
+export interface LayerTextRunOp {
+  type: 'textRun';
+  bbox: LayerBounds;
+  text: string;
+  baseline?: number;
+  rotation?: number;
+  isVertical?: boolean;
+  style?: LayerTextStyle;
+  positions?: number[];
+}
+
+export interface LayerFootnoteMarkerOp {
+  type: 'footnoteMarker';
+  bbox: LayerBounds;
+  text: string;
+  fontFamily?: string;
+  fontSize?: number;
+  color?: string;
+}
+
+export interface LayerLineStyle {
+  color?: string;
+  width?: number;
+  dash?: string;
+  lineType?: string;
+  startArrow?: string;
+  endArrow?: string;
+}
+
+export interface LayerShapeStyle {
+  fillColor?: string | null;
+  strokeColor?: string | null;
+  strokeWidth?: number;
+  strokeDash?: string;
+  opacity?: number;
+}
+
+export interface LayerLineOp {
+  type: 'line';
+  bbox: LayerBounds;
+  x1: number;
+  y1: number;
+  x2: number;
+  y2: number;
+  style?: LayerLineStyle;
+}
+
+export interface LayerRectangleOp {
+  type: 'rectangle';
+  bbox: LayerBounds;
+  cornerRadius?: number;
+  style?: LayerShapeStyle;
+}
+
+export interface LayerEllipseOp {
+  type: 'ellipse';
+  bbox: LayerBounds;
+  style?: LayerShapeStyle;
+}
+
+export type LayerPathCommand =
+  | { type: 'moveTo'; x: number; y: number }
+  | { type: 'lineTo'; x: number; y: number }
+  | { type: 'curveTo'; x1: number; y1: number; x2: number; y2: number; x3: number; y3: number }
+  | { type: 'arcTo'; rx: number; ry: number; rotation: number; largeArc: boolean; sweep: boolean; x: number; y: number }
+  | { type: 'closePath' };
+
+/**
+ * [Task #1067] 도형(polygon, rectangle 등) path 의 회전/반전 변환.
+ *
+ * Rust paint pipeline (`src/paint/json.rs:write_transform`) 이 JSON 으로 다음 형식 emit:
+ * `{"rotation": <degrees>, "horzFlip": <bool>, "vertFlip": <bool>}`
+ *
+ * 누락 시 HWPX/HWP 도형의 회전/flip 정보가 캔버스 렌더링에 반영되지 않아
+ * 도형이 회전 없이 출력 (e.g. 두 도형이 거울 대칭이어야 하는데 같은 모양으로 보임).
+ */
+export interface LayerPathTransform {
+  rotation?: number;
+  horzFlip?: boolean;
+  vertFlip?: boolean;
+}
+
+export interface LayerPathOp {
+  type: 'path';
+  bbox: LayerBounds;
+  commands?: LayerPathCommand[];
+  style?: LayerShapeStyle;
+  lineStyle?: LayerLineStyle;
+  transform?: LayerPathTransform;
+}
+
+export interface LayerImageOp {
+  type: 'image';
+  bbox: LayerBounds;
+  mime?: string;
+  base64?: string;
+  imageRef?: number | string;
+  fillMode?: string;
+  originalSize?: { width: number; height: number };
+  crop?: { left: number; top: number; right: number; bottom: number };
+  effect?: string;
+  brightness?: number;
+  contrast?: number;
+  bakedWatermark?: boolean;
+  wrap?: 'behindText' | 'inFrontOfText' | string;
+  transform?: LayerPathTransform;
+}
+
+export interface LayerEquationOp {
+  type: 'equation';
+  bbox: LayerBounds;
+  svgContent?: string;
+  color?: string;
+  fontSize?: number;
+}
+
+export interface LayerFormObjectOp {
+  type: 'formObject';
+  bbox: LayerBounds;
+  formType?: string;
+  caption?: string;
+  text?: string;
+  foreColor?: string;
+  backColor?: string;
+  value?: boolean;
+  enabled?: boolean;
+}
+
+export interface LayerPlaceholderOp {
+  type: 'placeholder';
+  bbox: LayerBounds;
+  fillColor?: string;
+  strokeColor?: string;
+  label?: string;
+}
+
+export interface LayerRawSvgOp {
+  type: 'rawSvg';
+  bbox: LayerBounds;
+  svg?: string;
+}
+
+export interface LayerTextDecorationOp {
+  type: 'textDecoration';
+  bbox: LayerBounds;
+  decoration?: unknown;
+}
+
+export interface LayerTextControlMarkOp {
+  type: 'textControlMark';
+  bbox: LayerBounds;
+  fieldMarker?: string | { kind?: string };
+}
+
+export interface LayerTabLeaderOp {
+  type: 'tabLeader';
+  bbox: LayerBounds;
+  leaders?: Array<{ startX: number; endX: number; fillType: number }>;
+  color?: string;
+  fontSize?: number;
+  baseline?: number;
+}
+
+export interface LayerCharOverlapOp {
+  type: 'charOverlap';
+  bbox: LayerBounds;
+  text?: string;
+  baseline?: number;
+  style?: LayerTextStyle;
+}
+
+export interface LayerGlyphRunOp {
+  type: 'glyphRun';
+  bbox: LayerBounds;
+  variant?: LayerTextVariantMeta;
+}
+
+export interface LayerGlyphOutlineOp {
+  type: 'glyphOutline';
+  bbox: LayerBounds;
+  variant?: LayerTextVariantMeta;
+  payloadKind?: LayerGlyphOutlinePayloadKind;
+  placement?: { runToPage?: LayerAffineTransform; baselineY?: number };
+  paths?: LayerGlyphOutlinePath[];
+  stroke?: LayerGlyphOutlineStroke;
+  colorLayers?: LayerColorLayersPayload;
+  bitmapGlyph?: LayerBitmapGlyphPayload;
+  svgGlyph?: LayerSvgGlyphPayload;
+}
+
+export interface LayerTextVariantMeta {
+  equivalenceGroup?: string;
+  variantId?: string;
+  variantKind?: 'textRun' | 'glyphRun' | 'glyphOutline' | string;
+  partIndex?: number;
+  partCount?: number;
+  isDefaultFallback?: boolean;
+  requires?: string[];
+  quality?: string;
+  anchorOpId?: string;
+  localPaintOrder?: number;
+}
+
+export type LayerGlyphOutlinePayloadKind =
+  | 'monochromeFill'
+  | 'monochromeFillStroke'
+  | 'colorLayers'
+  | 'bitmapGlyph'
+  | 'svgGlyph'
+  | string;
+
+export interface LayerGlyphOutlinePath {
+  glyphId?: number;
+  sourceRangeUtf8?: LayerTextRange;
+  glyphRange?: LayerTextRange;
+  fillRule?: 'nonzero' | 'evenodd' | string;
+  commands?: LayerPathCommand[];
+}
+
+export interface LayerGlyphOutlineStroke {
+  color?: string;
+  width?: number;
+  join?: 'miter' | 'round' | 'bevel' | string;
+  cap?: 'butt' | 'round' | 'square' | string;
+  miterLimit?: number;
+  paintOrder?: 'fillOnly' | 'strokeOnly' | 'fillThenStroke' | 'strokeThenFill' | string;
+  strictSubset?: boolean;
+}
+
+export interface LayerTextRange {
+  start?: number;
+  end?: number;
+}
+
+export interface LayerResolvedColor {
+  colorSpace?: string;
+  rgba?: number[];
+}
+
+export interface LayerColorGradientStop {
+  offset?: number;
+  color?: LayerResolvedColor;
+}
+
+export interface LayerColorSolidPathNode {
+  commands?: LayerPathCommand[];
+  fill?: LayerResolvedColor;
+  fillRule?: 'nonzero' | 'evenodd' | string;
+  sourceGlyphId?: number;
+  paletteIndex?: number;
+}
+
+export interface LayerColorLinearGradient {
+  x0?: number;
+  y0?: number;
+  x1?: number;
+  y1?: number;
+  stops?: LayerColorGradientStop[];
+}
+
+export interface LayerColorRadialGradient {
+  cx?: number;
+  cy?: number;
+  radius?: number;
+  stops?: LayerColorGradientStop[];
+}
+
+export interface LayerColorSweepGradient {
+  cx?: number;
+  cy?: number;
+  startAngleDegrees?: number;
+  endAngleDegrees?: number;
+  stops?: LayerColorGradientStop[];
+}
+
+export interface LayerColorLinearGradientPathNode {
+  commands?: LayerPathCommand[];
+  gradient?: LayerColorLinearGradient;
+  fillRule?: 'nonzero' | 'evenodd' | string;
+  sourceGlyphId?: number;
+  paletteIndex?: number;
+}
+
+export interface LayerColorRadialGradientPathNode {
+  commands?: LayerPathCommand[];
+  gradient?: LayerColorRadialGradient;
+  fillRule?: 'nonzero' | 'evenodd' | string;
+  sourceGlyphId?: number;
+  paletteIndex?: number;
+}
+
+export interface LayerColorSweepGradientPathNode {
+  commands?: LayerPathCommand[];
+  gradient?: LayerColorSweepGradient;
+  fillRule?: 'nonzero' | 'evenodd' | string;
+  sourceGlyphId?: number;
+  paletteIndex?: number;
+}
+
+export interface LayerColorTransformNode {
+  childNodeId?: number;
+  transform?: LayerAffineTransform;
+}
+
+export interface LayerFontColorGlyphRef {
+  faceKey?: string;
+  glyphId?: number;
+  paletteIndex?: number;
+  colorFormat?: 'colrV0' | 'colrV1' | 'other' | string;
+}
+
+export interface LayerColorPaintGraphNode {
+  nodeId?: number;
+  kind?: string;
+  solidPath?: LayerColorSolidPathNode;
+  linearGradientPath?: LayerColorLinearGradientPathNode;
+  radialGradientPath?: LayerColorRadialGradientPathNode;
+  sweepGradientPath?: LayerColorSweepGradientPathNode;
+  transform?: LayerColorTransformNode;
+  sourceRangeUtf8?: LayerTextRange;
+  glyphRange?: LayerTextRange;
+  sourceFontRef?: LayerFontColorGlyphRef;
+}
+
+export interface LayerColorPaintGraphPayload {
+  rootNodeId?: number;
+  nodes?: LayerColorPaintGraphNode[];
+}
+
+export interface LayerColorLayersPayload {
+  colorFormat?: 'colrV0' | 'colrV1' | 'other' | string;
+  sourceFontRef?: LayerFontColorGlyphRef;
+  layers?: Array<{
+    layerIndex?: number | null;
+    glyphId?: number;
+    glyphRange?: LayerTextRange;
+    sourceRangeUtf8?: LayerTextRange;
+    commands?: LayerPathCommand[];
+    fill?: LayerResolvedColor;
+    fillRule?: 'nonzero' | 'evenodd' | string;
+    paletteIndex?: number;
+    color?: string;
+    opacity?: number;
+    transformToRun?: LayerAffineTransform;
+  }>;
+  paintGraph?: LayerColorPaintGraphPayload;
+  sourceRangeUtf8?: LayerTextRange;
+  glyphRange?: LayerTextRange;
+}
+
+export interface LayerBitmapGlyphPayload {
+  imageRef?: number;
+  sourceRangeUtf8?: LayerTextRange;
+  glyphRange?: LayerTextRange;
+  placement?: LayerBounds;
+  alphaPremultiplied?: boolean;
+  scalingPolicy?: 'sourceExact' | 'pixelAligned' | 'backendDefault' | string;
+  filtering?: 'nearest' | 'linear' | string;
+  transformToRun?: LayerAffineTransform;
+}
+
+export interface LayerSvgGlyphPayload {
+  svgRef?: number;
+  sourceRangeUtf8?: LayerTextRange;
+  glyphRange?: LayerTextRange;
+  viewBox?: LayerBounds;
+  intrinsicSize?: { width?: number; height?: number };
+  staticSanitized?: boolean;
+  scriptAllowed?: boolean;
+  animationAllowed?: boolean;
+  externalResourcesAllowed?: boolean;
+  interactivityAllowed?: boolean;
+  transformToRun?: LayerAffineTransform;
+}

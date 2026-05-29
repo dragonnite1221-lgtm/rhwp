@@ -217,10 +217,16 @@ pub enum PageItem {
         end_row: usize,
         /// 연속 페이지 여부 (true면 제목행 반복)
         is_continuation: bool,
-        /// 시작행 콘텐츠 시작 오프셋 (px, 패딩 제외). 0.0=처음부터.
-        split_start_content_offset: f64,
-        /// (end_row-1)행 최대 콘텐츠 높이 제한 (px, 패딩 제외). 0.0=전부.
-        split_end_content_limit: f64,
+        /// [Task #993] `start_row`의 시작 컷 — 셀별(col 오름차순 `row_span==1`
+        /// 셀) 이전 페이지까지 소비한 콘텐츠 유닛 수. 빈 Vec = 처음부터.
+        start_cut: Vec<usize>,
+        /// [Task #993] `end_row-1`행의 끝 컷 — 이 페이지에서 보일 마지막 유닛
+        /// 까지의 셀별 소비 유닛 수. 빈 Vec = 끝까지.
+        end_cut: Vec<usize>,
+        /// [Task #1025] true 이면 컷이 rowspan 블록-셀 `(row,col)` 인덱스
+        /// (`advance_row_block_cut`). false 이면 단일 행 `row_span==1` col 인덱스
+        /// (`advance_row_cut`, 기존). page-larger 셀 내부 분할에서만 true.
+        is_block_split: bool,
     },
     /// 그리기 개체
     Shape {
@@ -333,16 +339,18 @@ impl PageItem {
                 start_row,
                 end_row,
                 is_continuation,
-                split_start_content_offset,
-                split_end_content_limit,
+                start_cut,
+                end_cut,
+                is_block_split,
             } => PageItem::PartialTable {
                 para_index: adjust(*para_index),
                 control_index: *control_index,
                 start_row: *start_row,
                 end_row: *end_row,
                 is_continuation: *is_continuation,
-                split_start_content_offset: *split_start_content_offset,
-                split_end_content_limit: *split_end_content_limit,
+                start_cut: start_cut.clone(),
+                end_cut: end_cut.clone(),
+                is_block_split: *is_block_split,
             },
             PageItem::Shape {
                 para_index,
@@ -587,6 +595,11 @@ pub struct PaginationOpts {
     pub hide_empty_line: bool,
     /// LINE_SEG vpos-reset (vertical_pos==0, line>0) 위치를 강제 단/페이지 경계로 처리
     pub respect_vpos_reset: bool,
+    /// [Task #1007] HWP3 → HWP5 변환본 (한컴 변환 산출물).
+    /// 변환본의 cross-paragraph vpos reset (이전 paragraph 의 last_line vpos 가
+    /// 페이지 절반 이상 + 현재 paragraph 의 first_line vpos 가 페이지 1/4 이내)
+    /// 시 강제 page break — 한컴 변환 시 인코딩한 page break 시그널 인식.
+    pub is_hwp3_variant: bool,
 }
 
 /// 페이지 분할 엔진
@@ -644,7 +657,15 @@ impl Paginator {
     ) -> (PaginationResult, MeasuredSection) {
         // === 1-패스: 높이 사전 측정 ===
         let measurer = HeightMeasurer::new(self.dpi);
-        let measured = measurer.measure_section(paragraphs, composed, styles);
+        let layout = crate::renderer::page_layout::PageLayoutInfo::from_page_def(
+            page_def, column_def, self.dpi,
+        );
+        let col_w = layout
+            .column_areas
+            .first()
+            .map(|a| a.width)
+            .unwrap_or(layout.body_area.width);
+        let measured = measurer.measure_section(paragraphs, composed, styles, Some(col_w));
 
         // === 2-패스: 측정된 높이로 페이지 분할 ===
         let result = self.paginate_with_measured(

@@ -1472,6 +1472,24 @@ impl HwpDocument {
         .map_err(|e| e.into())
     }
 
+    /// 글상자/도형 컨트롤의 페이지 좌표 바운딩박스를 반환한다.
+    ///
+    /// 반환: JSON `{"pageIndex":<N>,"x":<f>,"y":<f>,"width":<f>,"height":<f>}`
+    #[wasm_bindgen(js_name = getShapeBBox)]
+    pub fn get_shape_bbox(
+        &self,
+        section_idx: u32,
+        parent_para_idx: u32,
+        control_idx: u32,
+    ) -> Result<String, JsValue> {
+        self.get_shape_bbox_native(
+            section_idx as usize,
+            parent_para_idx as usize,
+            control_idx as usize,
+        )
+        .map_err(|e| e.into())
+    }
+
     /// 표 컨트롤을 문단에서 삭제한다.
     ///
     /// 반환: JSON `{"ok":true}`
@@ -3767,9 +3785,9 @@ impl HwpDocument {
 
         // 기본 "바탕글" 스타일(ID 0)의 CharShape/ParaShape를 복사
         let base_style = self.core.document.doc_info.styles.first();
-        let (char_shape_id, para_shape_id) = match base_style {
-            Some(s) => (s.char_shape_id, s.para_shape_id),
-            None => (0, 0),
+        let (char_shape_id, para_shape_id, lang_id) = match base_style {
+            Some(s) => (s.char_shape_id, s.para_shape_id, s.lang_id),
+            None => (0, 0, 1042),
         };
 
         let new_style = Style {
@@ -3778,6 +3796,7 @@ impl HwpDocument {
             english_name,
             style_type,
             next_style_id,
+            lang_id,
             para_shape_id,
             char_shape_id,
         };

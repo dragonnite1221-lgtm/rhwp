@@ -265,6 +265,7 @@ mod tests {
             font_size: 1000,
             color: 0x000000FF,
             baseline: 120,
+            unknown: 0,
             font_name: "HYhwpEQ".to_string(),
             version_info: "Equation Version 60".to_string(),
             raw_ctrl_data: Vec::new(),
@@ -740,6 +741,8 @@ mod tests {
         para.controls.push(Control::Footnote(Box::new(Footnote {
             number: 1,
             paragraphs: vec![fn_para],
+            after_decoration_letter: 0x0029,
+            ..Default::default()
         })));
 
         let mut en_para = Paragraph::default();
@@ -747,6 +750,8 @@ mod tests {
         para.controls.push(Control::Endnote(Box::new(Endnote {
             number: 1,
             paragraphs: vec![en_para],
+            after_decoration_letter: 0x0029,
+            ..Default::default()
         })));
 
         section.paragraphs.push(para);

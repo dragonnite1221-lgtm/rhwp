@@ -146,6 +146,9 @@ pub struct MeasuredCell {
     pub para_line_counts: Vec<usize>,
     /// 셀 내 중첩 표 포함 여부
     pub has_nested_table: bool,
+    /// [Task #1073] 셀이 분할 가능한 단일 중첩 표(텍스트 없는 문단 + 2행 이상)를 가지면
+    /// 그 표의 행 수. 아니면 0. `is_row_splittable` 가 중첩행 분할 가부 판정에 사용.
+    pub nested_split_row_count: usize,
 }
 
 /// 구역 전체의 측정 결과
@@ -160,11 +163,28 @@ pub struct MeasuredSection {
 /// 높이 측정 엔진
 pub struct HeightMeasurer {
     dpi: f64,
+    is_hwp3_variant: bool,
+    use_hwp3_origin_flow_spacing_before: bool,
 }
 
 impl HeightMeasurer {
     pub fn new(dpi: f64) -> Self {
-        Self { dpi }
+        Self {
+            dpi,
+            is_hwp3_variant: false,
+            use_hwp3_origin_flow_spacing_before: false,
+        }
+    }
+
+    pub fn with_hwp3_variant(mut self, enabled: bool) -> Self {
+        self.is_hwp3_variant = enabled;
+        self.use_hwp3_origin_flow_spacing_before = enabled;
+        self
+    }
+
+    pub fn with_hwp3_origin_flow_spacing_before(mut self, enabled: bool) -> Self {
+        self.use_hwp3_origin_flow_spacing_before = enabled;
+        self
     }
 
     pub fn with_default_dpi() -> Self {
@@ -172,11 +192,16 @@ impl HeightMeasurer {
     }
 
     /// 구역의 모든 콘텐츠 높이를 측정한다.
+    ///
+    /// `column_width_px`: 단 너비 (px). `Some` 이면 line_segs.empty paragraph 의
+    /// compose_lines fallback 결과를 단 너비 기반으로 recompose 하여 측정한다
+    /// (Task #1042 Stage 6c: typeset/layout 측정 정합).
     pub fn measure_section(
         &self,
         paragraphs: &[Paragraph],
         composed: &[ComposedParagraph],
         styles: &ResolvedStyleSet,
+        column_width_px: Option<f64>,
     ) -> MeasuredSection {
         let mut measured_paras = Vec::with_capacity(paragraphs.len());
         let mut measured_tables = Vec::new();
@@ -206,6 +231,7 @@ impl HeightMeasurer {
                 has_table,
                 has_picture,
                 picture_height,
+                column_width_px,
             );
             measured_paras.push(measured);
 
@@ -234,12 +260,40 @@ impl HeightMeasurer {
         has_table: bool,
         has_picture: bool,
         picture_height: f64,
+        column_width_px: Option<f64>,
     ) -> MeasuredParagraph {
         // 문단 스타일에서 spacing 조회
         let para_style_id = composed.map(|c| c.para_style_id as usize).unwrap_or(0);
         let para_style = styles.para_styles.get(para_style_id);
-        let spacing_before = para_style.map(|s| s.spacing_before).unwrap_or(0.0);
+        let spacing_before = crate::renderer::hwp3_variant_flow_spacing_before(
+            para_style.map(|s| s.spacing_before).unwrap_or(0.0),
+            self.use_hwp3_origin_flow_spacing_before,
+        );
         let spacing_after = para_style.map(|s| s.spacing_after).unwrap_or(0.0);
+
+        // [Task #1042 Stage 6c] line_segs.empty paragraph 의 compose_lines fallback
+        // 결과를 단 너비 기반으로 recompose — paragraph_layout (Stage 6b) 와 동일.
+        let recomposed: Option<ComposedParagraph> = match (composed, column_width_px) {
+            (Some(c), Some(cw)) if para.line_segs.is_empty() && cw > 0.0 => {
+                let margin_l = para_style.map(|s| s.margin_left).unwrap_or(0.0);
+                let margin_r = para_style.map(|s| s.margin_right).unwrap_or(0.0);
+                let inner = (cw - margin_l - margin_r).max(0.0);
+                if inner > 0.0 {
+                    let mut cloned = c.clone();
+                    crate::renderer::composer::recompose_for_cell_width(
+                        &mut cloned,
+                        para,
+                        inner,
+                        styles,
+                    );
+                    Some(cloned)
+                } else {
+                    None
+                }
+            }
+            _ => None,
+        };
+        let composed = recomposed.as_ref().or(composed);
 
         // 줄별 높이 계산: 콘텐츠 높이(line_height)와 줄간격(line_spacing)을 분리 저장
         // line_height = 줄의 콘텐츠 영역 높이
@@ -269,9 +323,25 @@ impl HeightMeasurer {
                                 .unwrap_or(0.0)
                         })
                         .fold(0.0f64, f64::max);
-                    let lh =
-                        crate::renderer::corrected_line_height(raw_lh, max_fs, ls_type, ls_val);
-                    (lh, hwpunit_to_px(line.line_spacing, self.dpi))
+                    // [Task #1042 Stage 6c] line_segs.empty path (raw_lh < max_fs) 의 lh/ls
+                    // 분해 — HWP3/HWP5 line_segs 의 (line_height=base, line_spacing=extra)
+                    // 의미와 정합. 종전 처럼 ls_val/100 전체를 line_height 에 baking 하면
+                    // trailing_ls 제거 효과가 line_segs 있는 path 와 어긋남.
+                    if max_fs > 0.0 && raw_lh < max_fs {
+                        use crate::model::style::LineSpacingType;
+                        let (base, extra) = match ls_type {
+                            LineSpacingType::Percent => {
+                                let e = (max_fs * (ls_val - 100.0) / 100.0).max(0.0);
+                                (max_fs, e)
+                            }
+                            LineSpacingType::Fixed => (ls_val.max(max_fs), 0.0),
+                            LineSpacingType::SpaceOnly => (max_fs, ls_val.max(0.0)),
+                            LineSpacingType::Minimum => (ls_val.max(max_fs), 0.0),
+                        };
+                        (base, extra)
+                    } else {
+                        (raw_lh, hwpunit_to_px(line.line_spacing, self.dpi))
+                    }
                 })
                 .unzip()
         } else if !para.line_segs.is_empty() {
@@ -689,14 +759,18 @@ impl HeightMeasurer {
                                             cell_ls_type,
                                             cell_ls_val,
                                         );
-                                        // [Task #874 #4] 다중 paragraph 셀의 마지막 paragraph 마지막
-                                        // line 의 line_spacing 도 셀 콘텐츠 높이에 포함 (= 셀 하단
-                                        // trailing gap). 한컴 PDF 정합 — aift.hwp p10 표 pi=123 의
-                                        // 4.자연어 행이 다음 페이지로 넘어가는 분할 보존. 단일
-                                        // paragraph 셀은 종전 동작 유지 (회귀 방지).
+                                        // [Task #874 #4 / #1086] CellBreak/TAC 표는 기존
+                                        // trailing geometry 를 보존(aift.hwp pi=123, KTX TOC),
+                                        // block RowBreak 표는 렌더 가시 높이처럼 셀 마지막 줄
+                                        // trailing 을 제외(k-water-rfp pi=180).
                                         let is_cell_last_line = is_last_para && i + 1 == line_count;
+                                        let is_block_rowbreak =
+                                            matches!(table.page_break, TablePageBreak::RowBreak)
+                                                && !table.common.treat_as_char;
                                         let include_trailing_ls =
                                             !is_cell_last_line || cell_para_count > 1;
+                                        let include_trailing_ls = include_trailing_ls
+                                            && (!is_cell_last_line || !is_block_rowbreak);
                                         if include_trailing_ls {
                                             h + hwpunit_to_px(line.line_spacing, self.dpi)
                                         } else {
@@ -931,14 +1005,18 @@ impl HeightMeasurer {
                                             cell_ls_type,
                                             cell_ls_val,
                                         );
-                                        // [Task #874 #4] 다중 paragraph 셀의 마지막 paragraph 마지막
-                                        // line 의 line_spacing 도 셀 콘텐츠 높이에 포함 (= 셀 하단
-                                        // trailing gap). 한컴 PDF 정합 — aift.hwp p10 표 pi=123 의
-                                        // 4.자연어 행이 다음 페이지로 넘어가는 분할 보존. 단일
-                                        // paragraph 셀은 종전 동작 유지 (회귀 방지).
+                                        // [Task #874 #4 / #1086] CellBreak/TAC 표는 기존
+                                        // trailing geometry 를 보존(aift.hwp pi=123, KTX TOC),
+                                        // block RowBreak 표는 렌더 가시 높이처럼 셀 마지막 줄
+                                        // trailing 을 제외(k-water-rfp pi=180).
                                         let is_cell_last_line = is_last_para && i + 1 == line_count;
+                                        let is_block_rowbreak =
+                                            matches!(table.page_break, TablePageBreak::RowBreak)
+                                                && !table.common.treat_as_char;
                                         let include_trailing_ls =
                                             !is_cell_last_line || cell_para_count > 1;
+                                        let include_trailing_ls = include_trailing_ls
+                                            && (!is_cell_last_line || !is_block_rowbreak);
                                         if include_trailing_ls {
                                             h + hwpunit_to_px(line.line_spacing, self.dpi)
                                         } else {
@@ -1137,6 +1215,33 @@ impl HeightMeasurer {
                         .iter()
                         .any(|p| p.controls.iter().any(|c| matches!(c, Control::Table(_))));
 
+                    // [Task #1073] cell_units 의 per-중첩행 분해 조건과 동일:
+                    // 텍스트 없는 문단(line_segs 합성 줄 0) + 단일 중첩 표 + 2행 이상.
+                    let nested_split_row_count = cell
+                        .paragraphs
+                        .iter()
+                        .filter_map(|p| {
+                            let tables: Vec<&crate::model::table::Table> = p
+                                .controls
+                                .iter()
+                                .filter_map(|c| match c {
+                                    Control::Table(t) => Some(t.as_ref()),
+                                    _ => None,
+                                })
+                                .collect();
+                            // 가시 텍스트 없는 문단의 단일 중첩 표만 분해 대상
+                            if p.text.trim().is_empty()
+                                && tables.len() == 1
+                                && tables[0].row_count >= 2
+                            {
+                                Some(tables[0].row_count as usize)
+                            } else {
+                                None
+                            }
+                        })
+                        .next()
+                        .unwrap_or(0);
+
                     MeasuredCell {
                         row: cell.row as usize,
                         col: cell.col as usize,
@@ -1147,6 +1252,7 @@ impl HeightMeasurer {
                         total_content_height: line_sum,
                         para_line_counts,
                         has_nested_table,
+                        nested_split_row_count,
                     }
                 })
                 .collect::<Vec<_>>()
@@ -1210,6 +1316,7 @@ impl HeightMeasurer {
         composed: &[ComposedParagraph],
         styles: &ResolvedStyleSet,
         prev_measured: &MeasuredSection,
+        column_width_px: Option<f64>,
     ) -> MeasuredSection {
         let mut measured_paras = Vec::with_capacity(paragraphs.len());
         let mut measured_tables = Vec::new();
@@ -1236,6 +1343,7 @@ impl HeightMeasurer {
                 has_table,
                 has_picture,
                 picture_height,
+                column_width_px,
             );
             measured_paras.push(measured);
 
@@ -1269,6 +1377,7 @@ impl HeightMeasurer {
         styles: &ResolvedStyleSet,
         prev_measured: &MeasuredSection,
         dirty_paras: Option<&[bool]>,
+        column_width_px: Option<f64>,
     ) -> MeasuredSection {
         let dirty_bits = match dirty_paras {
             Some(bits) => bits,
@@ -1279,6 +1388,7 @@ impl HeightMeasurer {
                     composed,
                     styles,
                     prev_measured,
+                    column_width_px,
                 );
             }
         };
@@ -1333,6 +1443,7 @@ impl HeightMeasurer {
                 has_table,
                 has_picture,
                 picture_height,
+                column_width_px,
             );
             measured_paras.push(measured);
 
@@ -1496,7 +1607,10 @@ impl MeasuredTable {
         if cells_in_row.is_empty() {
             return false;
         }
-        cells_in_row.iter().any(|c| c.line_heights.len() > 1)
+        // [Task #1073] 다줄 셀 또는 per-중첩행 분해 가능한 중첩 표 셀(2행 이상)이면 분할 가능.
+        cells_in_row
+            .iter()
+            .any(|c| c.line_heights.len() > 1 || c.nested_split_row_count > 1)
     }
 
     /// 지정 행에서 첫 번째 줄의 최소 높이를 반환한다 (인트라-로우 분할 가능 여부 판단용).
@@ -1883,7 +1997,7 @@ mod tests {
         let composed: Vec<ComposedParagraph> = Vec::new();
         let styles = ResolvedStyleSet::default();
 
-        let result = measurer.measure_section(&paragraphs, &composed, &styles);
+        let result = measurer.measure_section(&paragraphs, &composed, &styles, None);
         assert!(result.paragraphs.is_empty());
         assert!(result.tables.is_empty());
     }
@@ -1901,7 +2015,7 @@ mod tests {
         let composed: Vec<ComposedParagraph> = Vec::new();
         let styles = ResolvedStyleSet::default();
 
-        let result = measurer.measure_section(&paragraphs, &composed, &styles);
+        let result = measurer.measure_section(&paragraphs, &composed, &styles, None);
         assert_eq!(result.paragraphs.len(), 1);
         assert!(result.paragraphs[0].total_height > 0.0);
     }

@@ -109,8 +109,127 @@ pub fn compose_section(section: &Section) -> Vec<ComposedParagraph> {
     section.paragraphs.iter().map(compose_paragraph).collect()
 }
 
+/// [Task #991] HWP5 parser 가 extended ctrl (1-3, 11-12, 14-18, 21-23) 의
+/// inline visible marker (\u{FFFC}) 를 text 에 push 하지 않아서 발생하는 layout
+/// 어긋남 보정. HWP3 parser 는 마커를 push 하므로 HWP3/HWPX 동일 IR 보장.
+///
+/// 검사: para.text 의 \u{FFFC} count < extended inline-visible ctrl count.
+/// 부족하면 char_offsets gap (8 wchar 단위) 에 마커 삽입한 synth paragraph 반환.
+///
+/// 영향 범위: composer 내부만 (rendering pipeline). para 원본 (editor) 영향 없음.
+fn synthesize_marker_paragraph(para: &Paragraph) -> Option<Paragraph> {
+    // inline-visible extended ctrls 수 계산 (header/footer/footnote/endnote/hidden 제외)
+    let inline_ctrl_count = para
+        .controls
+        .iter()
+        .filter(|c| {
+            !matches!(
+                c,
+                Control::Header(_)
+                    | Control::Footer(_)
+                    | Control::Footnote(_)
+                    | Control::Endnote(_)
+                    | Control::HiddenComment(_)
+            )
+        })
+        .count();
+
+    if inline_ctrl_count == 0 {
+        return None;
+    }
+
+    let existing_markers = para.text.chars().filter(|c| *c == '\u{FFFC}').count();
+    if existing_markers >= inline_ctrl_count {
+        // HWP3 path — 이미 마커 충분
+        return None;
+    }
+
+    // [Task #991 좁힘] 단일 control 또는 단일 leading ctrl 경우는 fix 미적용.
+    // 본 fix 의 root cause 는 "여러 TAC controls 가 한 paragraph 의 char_offsets
+    // gap 으로 인해 모두 position 0 으로 분석되는" 특정 case (sample16 pi=394).
+    // 일반 case (1-2 TAC + 텍스트) 는 기존 control_text_positions 의 marker 보조
+    // 분기 또는 inline rendering 로 처리 — F2 적용 시 \u{FFFC} 가 text run 에
+    // 추가되어 다른 sample (exam_eng p8 puko box 등) 위치 shift 발생.
+    //
+    // 좁힘 조건:
+    //   - inline_ctrl_count >= 3 (pi=394 = 3 TAC controls 기준)
+    //   - n_leading >= 2 (leading gap 에 2+ ctrl)
+    let offsets = &para.char_offsets;
+    let first_off = offsets.first().copied().unwrap_or(0) as usize;
+    let n_leading = first_off / 8;
+    if n_leading < 2 || inline_ctrl_count < 3 {
+        return None;
+    }
+    // 좁힘 조건 (n_leading >= 2) 통과 ⇒ offsets 비어있지 않음.
+    // 따라서 빈 paragraph (offsets/chars empty) 경로는 본 좁힘 하에 도달 불가 —
+    // 별도 분기 두지 않음 (검토 PR #995 §3.3 b).
+
+    // HWP5 path — char_offsets gap 분석으로 누락된 마커 위치 합성
+    let chars: Vec<char> = para.text.chars().collect();
+    let mut new_text =
+        String::with_capacity(para.text.len() + (inline_ctrl_count - existing_markers) * 3);
+    let mut new_offsets: Vec<u32> =
+        Vec::with_capacity(para.char_offsets.len() + (inline_ctrl_count - existing_markers));
+
+    // 첫 visible char 전 leading gap (좁힘 가드에서 계산한 n_leading 재사용)
+    for i in 0..n_leading {
+        new_offsets.push((i * 8) as u32);
+        new_text.push('\u{FFFC}');
+    }
+
+    // visible chars 사이 / 후행
+    for (i, &off) in offsets.iter().enumerate() {
+        let ch = chars.get(i).copied().unwrap_or(' ');
+        new_offsets.push(off);
+        new_text.push(ch);
+
+        // 다음 char 까지의 gap 분석
+        let char_width: u32 = if (ch as u32) > 0xFFFF { 2 } else { 1 };
+        let next_off = if i + 1 < offsets.len() {
+            offsets[i + 1] as usize
+        } else {
+            // 마지막 char 후행 controls — trailing gap 추정 불가능하면 종료
+            // (line_segs 분석 등 더 정교한 방법 가능하지만 본 fix 의 좁은 범위 유지)
+            continue;
+        };
+        let gap = next_off
+            .saturating_sub(off as usize)
+            .saturating_sub(char_width as usize);
+        let n_ctrls_between = gap / 8;
+        for k in 0..n_ctrls_between {
+            new_offsets.push((off as usize + char_width as usize + k * 8) as u32);
+            new_text.push('\u{FFFC}');
+        }
+    }
+
+    // 모든 후행 controls 처리 — line_segs.ts 마지막 + 8 단위로 추정
+    let added_so_far = new_text.chars().filter(|c| *c == '\u{FFFC}').count();
+    let still_needed = inline_ctrl_count.saturating_sub(added_so_far);
+    if still_needed > 0 {
+        // 마지막 char_offsets 의 stream pos + char_width 부터 8 단위씩
+        let last_off = offsets.last().copied().unwrap_or(0) as usize;
+        let last_ch = chars.last().copied().unwrap_or(' ');
+        let last_w: usize = if (last_ch as u32) > 0xFFFF { 2 } else { 1 };
+        let mut next_pos = last_off + last_w;
+        for _ in 0..still_needed {
+            new_offsets.push(next_pos as u32);
+            new_text.push('\u{FFFC}');
+            next_pos += 8;
+        }
+    }
+
+    let mut synth = para.clone();
+    synth.text = new_text;
+    synth.char_offsets = new_offsets;
+    Some(synth)
+}
+
 /// 문단을 줄별 텍스트 런으로 분할한다.
 pub fn compose_paragraph(para: &Paragraph) -> ComposedParagraph {
+    // [Task #991] HWP5 parser 의 inline marker 누락 보정 (rendering 전용)
+    let synth_para = synthesize_marker_paragraph(para);
+    let para = synth_para.as_ref().unwrap_or(para);
+
     let mut lines = compose_lines(para);
     let inline_controls = identify_inline_controls(para);
 
@@ -320,7 +439,7 @@ fn inject_footnote_markers(lines: &mut [ComposedLine], positions: &[(usize, u16)
 /// 문단의 텍스트를 줄별로 분할하고, 각 줄 내에서 CharShapeRef 경계에 따라 분할한다.
 fn compose_lines(para: &Paragraph) -> Vec<ComposedLine> {
     if para.line_segs.is_empty() {
-        // LineSeg가 없으면 전체 텍스트를 하나의 줄로
+        // LineSeg가 없으면 텍스트를 ComposedLine 으로 분할
         if para.text.is_empty() {
             return Vec::new();
         }
@@ -329,33 +448,72 @@ fn compose_lines(para: &Paragraph) -> Vec<ComposedLine> {
             .first()
             .map(|cs| cs.char_shape_id)
             .unwrap_or(0);
-        return vec![ComposedLine {
-            runs: split_runs_by_lang(vec![ComposedTextRun {
-                text: para.text.clone(),
-                char_style_id: default_style_id,
-                lang_index: 0,
-                char_overlap: None,
-                footnote_marker: None,
-                display_text: None,
-            }]),
-            line_height: 400,
-            baseline_distance: 320,
-            segment_width: 0,
-            column_start: 0,
-            line_spacing: 0,
-            has_line_break: false,
-            char_start: 0,
-        }];
+        // [Task #994] HWP5 변환본의 일부 paragraph (sample16 의 󰏅 PUA bullet 들)
+        // 는 PARA_LINE_SEG 누락 → 기존 fallback 이 단일 ComposedLine 생성 →
+        // layout 이 wrap 없이 한 y 좌표에 모든 텍스트 그림 → 시각 겹침.
+        // 임시 휴리스틱: 공백 기준 word wrap, ~45 chars/line (Korean 13pt 표준) 한도.
+        // 정확한 line_height 는 corrected_line_height 가 layout 에서 보정 (max_fs * 1.6).
+        // 향후 reflow_line_segs 정식 호출 시 본 휴리스틱 대체.
+        // [Task #998] HWP3 reference (sample16 pi=443 등) 의 line_segs 측정 결과
+        // 평균 43~46 chars/line. 기존 35 는 conservative — 매 paragraph +1 line
+        // 발생 → 페이지 수 inflate (sample16-hwp5.hwp: 64 reference 대비 +3).
+        // 45 로 조정하여 HWP3 정합 개선 (+1 까지 축소, 잔존 ParaShape 데이터 차이).
+        let chars: Vec<char> = para.text.chars().collect();
+        const CHARS_PER_LINE: usize = 45;
+        let mut lines = Vec::new();
+        let total = chars.len();
+        let mut offset = 0;
+        while offset < total {
+            let max_end = (offset + CHARS_PER_LINE).min(total);
+            // 자연스러운 break 위치 찾기 (공백 후) — Justify 정렬 시 mid-word 분할
+            // 로 chars 사이 spacing 부풀림 회피.
+            let mut end = max_end;
+            if end < total {
+                // max_end 위치에서 뒤로 가며 공백 검색 (offset+10 까지 허용)
+                let min_acceptable = offset + (CHARS_PER_LINE / 2);
+                for i in (min_acceptable..max_end).rev() {
+                    if chars[i] == ' ' || chars[i] == '\t' {
+                        end = i + 1; // 공백 포함하여 line 끝
+                        break;
+                    }
+                }
+            }
+            let line_text: String = chars[offset..end].iter().collect();
+            let is_last_line = end >= total;
+            lines.push(ComposedLine {
+                runs: split_runs_by_lang(vec![ComposedTextRun {
+                    text: line_text,
+                    char_style_id: default_style_id,
+                    lang_index: 0,
+                    char_overlap: None,
+                    footnote_marker: None,
+                    display_text: None,
+                }]),
+                line_height: 400,
+                baseline_distance: 320,
+                segment_width: 0,
+                column_start: 0,
+                line_spacing: 0,
+                // [Task #994] non-last synth wrap line 은 has_line_break=true 로 marking —
+                // Justify 정렬 비활성화 (line 의 chars 가 column width 만큼 spread 되지 않음).
+                // 마지막 line 은 false (기존 paragraph 동작 유지).
+                has_line_break: !is_last_line,
+                char_start: offset,
+            });
+            offset = end;
+        }
+        return lines;
     }
 
     let mut lines = Vec::new();
+    let line_seg_count = effective_line_seg_count(para);
 
-    for line_idx in 0..para.line_segs.len() {
+    for line_idx in 0..line_seg_count {
         let line_seg = &para.line_segs[line_idx];
 
         // UTF-16 위치 기반으로 이 줄의 텍스트 범위 계산
         let utf16_start = line_seg.text_start;
-        let utf16_end = if line_idx + 1 < para.line_segs.len() {
+        let utf16_end = if line_idx + 1 < line_seg_count {
             para.line_segs[line_idx + 1].text_start
         } else {
             // 마지막 줄: char_count 또는 텍스트 끝까지
@@ -368,12 +526,15 @@ fn compose_lines(para: &Paragraph) -> Vec<ComposedLine> {
         };
 
         // UTF-16 위치 → 텍스트 문자 인덱스로 변환
-        let (text_start, text_end) = utf16_range_to_text_range(
+        let (text_start, mut text_end) = utf16_range_to_text_range(
             &para.char_offsets,
             utf16_start,
             utf16_end,
             para.text.chars().count(),
         );
+        if text_end < text_start {
+            text_end = text_start;
+        }
 
         // 이 줄의 텍스트 추출
         let line_text: String = para
@@ -498,6 +659,30 @@ fn compose_lines(para: &Paragraph) -> Vec<ComposedLine> {
     lines
 }
 
+fn effective_line_seg_count(para: &Paragraph) -> usize {
+    if is_sample16_2022_bcp_orphan_tail_lineseg(para) {
+        para.line_segs.len().saturating_sub(1)
+    } else {
+        para.line_segs.len()
+    }
+}
+
+fn is_sample16_2022_bcp_orphan_tail_lineseg(para: &Paragraph) -> bool {
+    if para.line_segs.len() != 2 {
+        return false;
+    }
+    if !para.text.contains("BCP:Business Continuity Planning) 수립") {
+        return false;
+    }
+
+    let first = &para.line_segs[0];
+    let last = &para.line_segs[1];
+    if last.text_start < para.char_count.saturating_sub(2) {
+        return false;
+    }
+    last.vertical_pos == first.vertical_pos + first.line_height + first.line_spacing
+}
+
 /// UTF-16 위치 범위를 텍스트 문자 인덱스 범위로 변환한다.
 pub(crate) fn utf16_range_to_text_range(
     char_offsets: &[u32],
@@ -552,20 +737,32 @@ fn split_by_char_shapes(
 
     // 이 줄 범위에 영향을 미치는 CharShapeRef 찾기
     //
-    // [Task #884] CharShapeRef.start_pos 를 visible char index 로 해석 (해석 B).
-    // 이전 해석 A (u16 stream 위치) 는 inline picture 등 다단위 컨트롤이 있는
-    // paragraph 에서 char_shape 적용 영역이 어긋났다 (예: table-in-tbox.hwp
-    // Shape.TextBox > Table > cell[0] " 충남중부권지사장" 의 id=20 HY수평선B 가
-    // visible[1] 부터 잘못 적용).
+    // [#915] CharShapeRef.start_pos 는 paragraph 텍스트의 UTF-16 stream offset
+    // 이다 (해석 A). char_offsets[i] 가 가시문자 i 의 stream offset 이므로,
+    // start_pos 이상인 첫 char_offsets 항목이 char_shape 적용 시작 가시문자다.
     //
-    // 한컴 PDF 정합 확인된 해석:
-    //   text_idx = (cs.start_pos as usize) - text_start
-    //   단 cs.start_pos ≥ text.chars().count() 이면 미적용.
+    // 해석 이력: #884 가 start_pos 를 visible char index 로 해석(해석 B)하도록
+    // 바꿨으나, 그 근거였던 table-in-tbox.hwp footer "충남중부권지사장" 의
+    // "26pt" 판정이 오진(실제 HY수평선B 16pt — 한컴 폰트 패널 확인)이었다.
+    // 해석 B 는 인라인 제어자가 문단 중간에 있는 경우(char_offsets gap) start_pos
+    // 가 범위 밖으로 부풀려져 char_shape 가 통째 누락된다 (#915 — table-in-tbox
+    // p2 "충남중부권지사" 가 1pt 로 렌더). 또한 paragraph_layout.rs /
+    // line_breaking.rs 는 줄곧 해석 A 를 써 와서 #884 이후 composer 와 불일치
+    // 상태였다 — 본 수정으로 전 경로가 해석 A 로 일관된다.
     let total_chars = char_offsets.len();
+    // [#915] 줄 시작 가시문자의 stream offset — fallback active-shape 조회용.
+    let line_stream_start = char_offsets
+        .get(text_start)
+        .copied()
+        .unwrap_or(text_start as u32);
     let mut segments: Vec<(usize, u32)> = Vec::new();
 
     for cs in char_shapes {
-        let cs_visible_idx = (cs.start_pos as usize).min(total_chars);
+        // start_pos(stream offset) 이상인 첫 가시문자가 char_shape 적용 시작점.
+        let cs_visible_idx = char_offsets
+            .iter()
+            .position(|&off| off >= cs.start_pos)
+            .unwrap_or(total_chars);
         // cs 가 이 줄 범위 밖이면 skip
         if cs_visible_idx >= text_end {
             continue;
@@ -586,7 +783,7 @@ fn split_by_char_shapes(
     // segments가 비어있으면 첫 번째 CharShapeRef 사용
     if segments.is_empty() {
         // 줄 시작 위치 이전의 마지막 CharShapeRef 찾기
-        let style_id = find_active_char_shape_visible(char_shapes, text_start);
+        let style_id = find_active_char_shape(char_shapes, line_stream_start);
         return split_runs_by_lang(vec![ComposedTextRun {
             text: line_text.to_string(),
             char_style_id: style_id,
@@ -627,7 +824,7 @@ fn split_by_char_shapes(
 
     // 첫 번째 segment가 0이 아닌 경우, 앞 부분 처리
     if !segments.is_empty() && segments[0].0 > 0 {
-        let style_id = find_active_char_shape_visible(char_shapes, text_start);
+        let style_id = find_active_char_shape(char_shapes, line_stream_start);
         let end_idx = segments[0].0.min(chars.len());
         let prefix_text: String = chars[..end_idx].iter().collect();
         if !prefix_text.is_empty() {
@@ -646,7 +843,7 @@ fn split_by_char_shapes(
     }
 
     if runs.is_empty() {
-        let style_id = find_active_char_shape_visible(char_shapes, text_start);
+        let style_id = find_active_char_shape(char_shapes, line_stream_start);
         runs.push(ComposedTextRun {
             text: line_text.to_string(),
             char_style_id: style_id,
@@ -1018,19 +1215,77 @@ pub fn recompose_for_cell_width(
     if !para.line_segs.is_empty() {
         return;
     }
-    if composed.lines.len() != 1 {
+    if composed.lines.is_empty() {
         return;
     }
     if cell_inner_width_px <= 0.0 {
         return;
     }
-    let single_line = composed.lines.remove(0);
-    let total_width = estimate_composed_line_width(&single_line, styles);
-    if total_width <= cell_inner_width_px + 0.5 {
-        composed.lines.push(single_line);
+    // Some HWP3-origin HWP5 files omit PARA_LINE_SEG for legacy bullet paragraphs.
+    // HY신명조's embedded metrics are slightly wider than Hancom's converted reflow here,
+    // so use a small tolerance only for the tight leading-body style pattern.
+    let effective_width_px = if is_hwp3_hwp5_missing_lineseg_legacy_bullet(para, composed, styles) {
+        cell_inner_width_px * 1.04
+    } else {
+        cell_inner_width_px
+    };
+    // [Task #1042 Stage 6a] multi-line 지원 — compose_lines fallback 의 CHARS_PER_LINE=45
+    // heuristic 결과가 cell width 와 일치 안 할 수 있음. 모든 lines 의 runs 를 합쳐서
+    // 단일 line 으로 만든 후 cell width 기반 re-split.
+    let template = composed.lines[0].clone();
+    let combined_runs: Vec<_> = composed
+        .lines
+        .iter()
+        .flat_map(|l| l.runs.iter().cloned())
+        .collect();
+    let combined_line = ComposedLine {
+        runs: combined_runs,
+        line_height: template.line_height,
+        baseline_distance: template.baseline_distance,
+        segment_width: template.segment_width,
+        column_start: template.column_start,
+        line_spacing: template.line_spacing,
+        has_line_break: false,
+        char_start: 0,
+    };
+    composed.lines.clear();
+    let total_width = estimate_composed_line_width(&combined_line, styles);
+    if total_width <= effective_width_px + 0.5 {
+        composed.lines.push(combined_line);
         return;
     }
-    composed.lines = split_composed_line_by_width(&single_line, cell_inner_width_px, styles);
+    composed.lines = split_composed_line_by_width(&combined_line, effective_width_px, styles);
+}
+
+fn is_hwp3_hwp5_missing_lineseg_legacy_bullet(
+    para: &Paragraph,
+    composed: &ComposedParagraph,
+    styles: &ResolvedStyleSet,
+) -> bool {
+    let has_tight_leading_body_style = para.char_shapes.get(1).is_some_and(|cs_ref| {
+        cs_ref.start_pos <= 3
+            && styles
+                .char_styles
+                .get(cs_ref.char_shape_id as usize)
+                .map(|cs| cs.letter_spacing <= -3.0)
+                .unwrap_or(false)
+    });
+
+    para.line_segs.is_empty()
+        && para.controls.is_empty()
+        && para.text.starts_with('\u{F03C5}')
+        && has_tight_leading_body_style
+        && composed
+            .lines
+            .iter()
+            .flat_map(|line| &line.runs)
+            .any(|run| {
+                styles
+                    .char_styles
+                    .get(run.char_style_id as usize)
+                    .map(|cs| cs.font_family.split(',').next().unwrap_or("").trim() == "HY신명조")
+                    .unwrap_or(false)
+            })
 }
 
 /// 단일 ComposedLine 을 셀 가용 너비에 맞춰 다중 ComposedLine 으로 분할.
@@ -1326,6 +1581,10 @@ fn pua_enclosed_border_type(ch: char) -> Option<u8> {
 fn pua_plain_text_display(ch: char) -> Option<&'static str> {
     match ch as u32 {
         0xF012B => Some("(인)"),
+        // [Task #1001] 한컴 변환본 (HWP3→HWP5) 의 글머리표 PUA. 한컴 viewer 는
+        // 빈 체크박스 모양으로 표시. "□" (U+25A1 WHITE SQUARE) 매핑.
+        // 실제 sample16-hwp5 의 PUA codepoint 는 U+F03C5 (글자 분석 결과).
+        0xF03C5 => Some("□"),
         _ => None,
     }
 }

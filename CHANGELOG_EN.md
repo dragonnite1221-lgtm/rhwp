@@ -4,6 +4,35 @@ This document records the major changes of the rhwp project.
 
 > 한국어 버전은 [CHANGELOG.md](CHANGELOG.md) 를 참조하세요.
 
+## [0.7.13] — 2026-05-26
+
+> Patch cycle following v0.7.12 (May 18–26) — focused on HWPX rendering/save compatibility, exam/public-agency document regressions, and multiple external contributor PR cherry-picks.
+
+### Key Changes
+
+- **HWPX → HWP save compatibility**
+  - Added/adjusted table and cell contracts: table-axis behavior, cell LIST_HEADER materialization, gradient `BORDER_FILL`, cell inner margins, and cell background image fill mode.
+  - Added memo control serialization, TOC field marker/page text output, page-number hide/restart controls, and related paragraph-control save paths.
+  - Resolved multiple Hancom corruption/interrupted-render cases across `hwpx-h-01/02/03`, `mel-001`, `aift`, `exam_kor`, and `exam_social` fixtures.
+- **HWPX rendering parity**
+  - Implemented/improved master pages (even/odd/last), headers/footers, paragraph numbering, textbox positioning/gradient/corner radius, paragraph borders, and exam passage boxes.
+  - Improved SVG and web-canvas visual parity for Hancom-converted fixtures such as `exam_kor.hwpx`, `exam_social.hwpx`, and `hwp3-sample16-hwp5.hwpx`.
+- **Pagination and layout fixes**
+  - Fixed HWPX `treat_as_char` table LINE_SEG lh over-inflation, nested table page splitting, picture pushdown/vpos double counting, multi-column endnote vpos, and bottom-overflow measurement consistency.
+  - Added analysis infrastructure for HWP3/HWP5-converted sample16 page breaks and paragraph spacing.
+- **rhwp-studio / extension UX**
+  - Improved TAC shape cursor movement and repeated-space navigation behavior.
+  - Chrome extension now guides users when local `file://` access is disabled and suppresses duplicate local downloads for HWP/HWPX files (#1131/#1132).
+- **Infrastructure and PR intake**
+  - Added CI runner disk-space mitigation (#1109).
+  - Reviewed/cherry-picked external PRs including #1077/#1078/#1080/#1081/#1117/#1120/#1125/#1132.
+  - Advanced CanvasKit glyph payload gating and COLRv1 glyph gradient replay.
+
+### Remaining
+
+- GitHub Actions outage may delay remote CI runs at v0.7.13 preparation time; local build/test/WASM validation is used as a fallback.
+- The `exam_social` HWPX → HWP page-3 odd-header textbox height issue remains split into a follow-up issue.
+
 ## [0.7.12] — 2026-05-18
 
 > Patch cycle following v0.7.11 (May 12–18) — 19 external contributor PRs merged + @jangster77 PR series of 7 (#956–#968). 416 files / +64383 / -3323.

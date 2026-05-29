@@ -272,12 +272,29 @@ fn parse_face_name(data: &[u8]) -> Result<Font, DocInfoError> {
         .map_err(|e| DocInfoError::IoError(e.to_string()))?;
 
     let alt_name = if attr & 0x80 != 0 {
+        let _alt_type = r.read_u8().unwrap_or(0);
         r.read_hwp_string().ok()
     } else {
         None
     };
 
-    let default_name = if attr & 0x40 != 0 {
+    let type_info = if attr & 0x40 != 0 {
+        let mut bytes = [0u8; 10];
+        let mut ok = true;
+        for b in &mut bytes {
+            if let Ok(value) = r.read_u8() {
+                *b = value;
+            } else {
+                ok = false;
+                break;
+            }
+        }
+        ok.then_some(bytes)
+    } else {
+        None
+    };
+
+    let default_name = if attr & 0x20 != 0 {
         r.read_hwp_string().ok()
     } else {
         None
@@ -288,6 +305,7 @@ fn parse_face_name(data: &[u8]) -> Result<Font, DocInfoError> {
         name,
         alt_type: attr & 0x03,
         alt_name,
+        type_info,
         default_name,
     })
 }
@@ -407,6 +425,7 @@ pub(crate) fn parse_fill(r: &mut ByteReader) -> Fill {
             center_x: cx,
             center_y: cy,
             blur,
+            step_center: 0,
             colors,
             positions,
         });
@@ -449,7 +468,11 @@ pub(crate) fn parse_fill(r: &mut ByteReader) -> Fill {
     if additional_size > 0 {
         if fill_type_val & 0x04 != 0 {
             // 그라데이션 번짐 정도 중심 (blurring center)
-            let _blurring_center = r.read_u8().unwrap_or(0);
+            if let Some(ref mut grad) = fill.gradient {
+                grad.step_center = r.read_u8().unwrap_or(0);
+            } else {
+                let _ = r.read_u8();
+            }
         } else {
             let _ = r.skip(additional_size);
         }
@@ -827,8 +850,12 @@ fn parse_style(data: &[u8]) -> Result<Style, DocInfoError> {
 
     let style_type = r.read_u8().unwrap_or(0);
     let next_style_id = r.read_u8().unwrap_or(0);
+    // [Task #1058 후속] HWP5 spec 표 47 정합 — lang_id (INT16, default 1042=한국어)
+    let lang_id = r.read_i16().unwrap_or(1042);
     let para_shape_id = r.read_u16().unwrap_or(0);
     let char_shape_id = r.read_u16().unwrap_or(0);
+    // [Task #1058 후속] 끝 UINT16 (스펙 미문서화) — 한컴 정답지 STYLE 의 마지막 2 byte zero 흡수.
+    let _trailing = r.read_u16().unwrap_or(0);
 
     Ok(Style {
         raw_data: None,
@@ -836,6 +863,7 @@ fn parse_style(data: &[u8]) -> Result<Style, DocInfoError> {
         english_name,
         style_type,
         next_style_id,
+        lang_id,
         para_shape_id,
         char_shape_id,
     })
@@ -896,11 +924,27 @@ mod tests {
         let mut data = Vec::new();
         data.push(0x80); // attr: alt_name 있음
         data.extend(make_hwp_string("맑은 고딕"));
+        data.push(1); // alternate font type
         data.extend(make_hwp_string("Malgun Gothic"));
 
         let font = parse_face_name(&data).unwrap();
         assert_eq!(font.name, "맑은 고딕");
         assert_eq!(font.alt_name, Some("Malgun Gothic".to_string()));
+    }
+
+    #[test]
+    fn test_parse_face_name_with_type_info_and_default_name() {
+        let mut data = Vec::new();
+        data.push(0x61); // TTF + type_info + default font
+        data.extend(make_hwp_string("굴림"));
+        data.extend([2, 11, 6, 0, 0, 1, 1, 1, 1, 1]);
+        data.extend(make_hwp_string("Gulim"));
+
+        let font = parse_face_name(&data).unwrap();
+        assert_eq!(font.name, "굴림");
+        assert_eq!(font.alt_type, 1);
+        assert_eq!(font.type_info, Some([2, 11, 6, 0, 0, 1, 1, 1, 1, 1]));
+        assert_eq!(font.default_name, Some("Gulim".to_string()));
     }
 
     #[test]

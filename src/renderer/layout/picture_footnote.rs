@@ -11,7 +11,7 @@ use super::super::{
 };
 use super::border_rendering::border_width_to_px;
 use super::text_measurement::{estimate_text_width, resolved_to_text_style};
-use super::utils::{extract_shape_transform, find_bin_data};
+use super::utils::{extract_shape_transform, find_bin_data, picture_display_size_hu};
 use super::LayoutEngine;
 use crate::model::bin_data::BinDataContent;
 use crate::model::control::Control;
@@ -69,8 +69,9 @@ impl LayoutEngine {
     ) {
         // 그림 크기 (HWPUNIT → 픽셀)
         // CommonObjAttr의 width/height가 개체의 실제 표시 크기
-        let mut pic_width = hwpunit_to_px(picture.common.width as i32, self.dpi);
-        let mut pic_height = hwpunit_to_px(picture.common.height as i32, self.dpi);
+        let (pic_width_hu, pic_height_hu) = picture_display_size_hu(picture);
+        let mut pic_width = hwpunit_to_px(pic_width_hu, self.dpi);
+        let mut pic_height = hwpunit_to_px(pic_height_hu, self.dpi);
 
         // 컨테이너 초과 시 비율 유지하며 축소 (표 셀 등)
         if container.width > 0.0 && pic_width > container.width {
@@ -288,10 +289,15 @@ impl LayoutEngine {
         section_index: usize,
         para_index: usize,
         control_index: usize,
+        // [Task #1079] 파일 vpos 가 이미 그림 공간을 반영(그림 para 줄 앞 gap ≥ 그림 높이)하면
+        // 그림을 그 gap 안(바닥이 그림 para 줄에 정렬)에 그리고 flow 를 그림 높이만큼 추가
+        // 진행하지 않는다. 이중 계상(gap + draw-advance) 방지.
+        vpos_accounts_for_height: bool,
     ) -> f64 {
         // 그림 크기 (HWPUNIT → 픽셀)
-        let pic_width = hwpunit_to_px(picture.common.width as i32, self.dpi);
-        let pic_height = hwpunit_to_px(picture.common.height as i32, self.dpi);
+        let (pic_width_hu, pic_height_hu) = picture_display_size_hu(picture);
+        let pic_width = hwpunit_to_px(pic_width_hu, self.dpi);
+        let pic_height = hwpunit_to_px(pic_height_hu, self.dpi);
 
         // 캡션 높이 및 간격 계산
         let caption_height = self.calculate_caption_height(&picture.caption, styles);
@@ -344,7 +350,14 @@ impl LayoutEngine {
         };
 
         let adjusted_pic_x = pic_x + caption_left_offset;
-        let pic_y = base_y + caption_top_offset;
+        // [Task #1079] already_accounted: 그림을 gap 안에 그림(바닥이 base_y=그림 para 줄에
+        // 정렬되도록 total_height 만큼 위로). flow 진행은 아래 return 에서 생략.
+        let vpos_shift = if vpos_accounts_for_height {
+            total_height
+        } else {
+            0.0
+        };
+        let pic_y = base_y + caption_top_offset - vpos_shift;
 
         // BinData에서 이미지 데이터 찾기 (bin_data_id는 1-indexed 순번)
         let bin_data_id = picture.image_attr.bin_data_id;
@@ -470,6 +483,9 @@ impl LayoutEngine {
             };
         match (picture.common.vert_rel_to, picture.common.text_wrap) {
             (VertRelTo::Para, TextWrap::BehindText | TextWrap::InFrontOfText) => y_offset,
+            // [Task #1079] 파일 vpos 가 그림 공간을 이미 반영하면 그림은 gap 안에 그려졌고
+            // 후속 문단은 파일 vpos(그림 para 줄)로 흐르므로 추가 진행 없이 base_y 반환.
+            (VertRelTo::Para, _) if vpos_accounts_for_height => base_y,
             (VertRelTo::Para, _) => base_y + total_height,
             (VertRelTo::Page | VertRelTo::Paper, _) => y_offset,
         }

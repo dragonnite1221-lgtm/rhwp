@@ -2,6 +2,7 @@ use crate::model::style::UnderlineType;
 use crate::model::ColorRef;
 use crate::paint::font::{GlyphRunReplayEligibility, ShapeKey, TextDirection, WritingMode};
 use crate::paint::layer_tree::{TextSourceRange, TextSourceSpan};
+use crate::paint::resources::{ImageResourceId, SvgResourceId};
 use crate::renderer::render_tree::{
     BoundingBox, EllipseNode, EquationNode, FootnoteMarkerNode, FormObjectNode, ImageNode,
     LineNode, PageBackgroundNode, PathNode, PlaceholderNode, RawSvgNode, RectangleNode,
@@ -24,6 +25,20 @@ impl TextDecorationKind {
             Self::EmphasisDot => "emphasisDot",
         }
     }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ResolvedImageKind {
+    FormatConverted,
+    BakedWatermark,
+}
+
+#[derive(Debug, Clone)]
+pub struct ResolvedImagePayload {
+    pub data: Vec<u8>,
+    pub mime: &'static str,
+    pub kind: ResolvedImageKind,
+    pub suppress_effects: bool,
 }
 
 /// backend가 재생하는 leaf paint operation.
@@ -95,6 +110,7 @@ pub enum PaintOp {
     Image {
         bbox: BoundingBox,
         image: ImageNode,
+        resolved: Option<Box<ResolvedImagePayload>>,
     },
     Equation {
         bbox: BoundingBox,
@@ -168,6 +184,9 @@ pub struct LayerGlyphOutlinePaint {
     pub source: TextSourceSpan,
     pub variant: PaintVariantMeta,
     pub payload_kind: GlyphOutlinePayloadKind,
+    pub color_layers: Option<ColorLayersPayload>,
+    pub bitmap_glyph: Option<BitmapGlyphPayload>,
+    pub svg_glyph: Option<SvgGlyphPayload>,
     pub paint_style: PaintTextStyle,
     pub placement: TextRunPlacement,
     pub paths: Vec<LayerGlyphOutlinePath>,
@@ -179,6 +198,9 @@ pub struct LayerGlyphOutlinePaint {
 pub enum GlyphOutlinePayloadKind {
     MonochromeFill,
     MonochromeFillStroke,
+    ColorLayers,
+    BitmapGlyph,
+    SvgGlyph,
 }
 
 impl GlyphOutlinePayloadKind {
@@ -186,8 +208,608 @@ impl GlyphOutlinePayloadKind {
         match self {
             Self::MonochromeFill => "monochromeFill",
             Self::MonochromeFillStroke => "monochromeFillStroke",
+            Self::ColorLayers => "colorLayers",
+            Self::BitmapGlyph => "bitmapGlyph",
+            Self::SvgGlyph => "svgGlyph",
         }
     }
+}
+
+impl LayerGlyphOutlinePaint {
+    pub fn has_exclusive_payload_family(&self) -> bool {
+        let has_stroke = self.stroke.is_some();
+        let has_color_layers = self.color_layers.is_some();
+        let has_bitmap_glyph = self.bitmap_glyph.is_some();
+        let has_svg_glyph = self.svg_glyph.is_some();
+        match self.payload_kind {
+            GlyphOutlinePayloadKind::MonochromeFill => {
+                !has_stroke && !has_color_layers && !has_bitmap_glyph && !has_svg_glyph
+            }
+            GlyphOutlinePayloadKind::MonochromeFillStroke => {
+                has_stroke && !has_color_layers && !has_bitmap_glyph && !has_svg_glyph
+            }
+            GlyphOutlinePayloadKind::ColorLayers => {
+                !has_stroke && has_color_layers && !has_bitmap_glyph && !has_svg_glyph
+            }
+            GlyphOutlinePayloadKind::BitmapGlyph => {
+                !has_stroke && !has_color_layers && has_bitmap_glyph && !has_svg_glyph
+            }
+            GlyphOutlinePayloadKind::SvgGlyph => {
+                !has_stroke && !has_color_layers && !has_bitmap_glyph && has_svg_glyph
+            }
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ColorGlyphFormat {
+    ColrV0,
+    ColrV1,
+    Other,
+}
+
+impl ColorGlyphFormat {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::ColrV0 => "colrV0",
+            Self::ColrV1 => "colrV1",
+            Self::Other => "other",
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct FontColorGlyphRef {
+    pub face_key: Option<String>,
+    pub glyph_id: Option<u32>,
+    pub palette_index: Option<u16>,
+    pub color_format: Option<ColorGlyphFormat>,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct PaletteRef {
+    pub id: Option<String>,
+    pub index: Option<u16>,
+    pub cpal_digest: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct ResolvedColor {
+    pub color_space: Option<String>,
+    pub rgba: [f32; 4],
+}
+
+#[derive(Debug, Clone)]
+pub struct ColorLayerNode {
+    pub layer_index: Option<u32>,
+    pub glyph_id: Option<u32>,
+    pub glyph_range: Option<GlyphRange>,
+    pub source_range_utf8: Option<TextSourceRange>,
+    pub source_font_ref: Option<FontColorGlyphRef>,
+    pub commands: Option<Vec<PathCommand>>,
+    pub fill: Option<ResolvedColor>,
+    pub fill_rule: Option<GlyphOutlineFillRule>,
+    pub palette_index: Option<u16>,
+    pub color: Option<ColorRef>,
+    pub opacity: Option<f64>,
+    pub transform_to_run: Option<LayerAffineTransform>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ColorPaintGraphNodeKind {
+    SolidPath,
+    LinearGradientPath,
+    RadialGradientPath,
+    SweepGradientPath,
+    Transform,
+    Composite,
+}
+
+impl ColorPaintGraphNodeKind {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::SolidPath => "solidPath",
+            Self::LinearGradientPath => "linearGradientPath",
+            Self::RadialGradientPath => "radialGradientPath",
+            Self::SweepGradientPath => "sweepGradientPath",
+            Self::Transform => "transform",
+            Self::Composite => "composite",
+        }
+    }
+
+    pub fn is_colrv1_stage1_supported(self) -> bool {
+        matches!(
+            self,
+            Self::SolidPath
+                | Self::LinearGradientPath
+                | Self::RadialGradientPath
+                | Self::SweepGradientPath
+                | Self::Transform
+        )
+    }
+}
+
+#[derive(Debug, Clone)]
+pub struct ColorPaintSolidPathNode {
+    pub commands: Vec<PathCommand>,
+    pub fill: ResolvedColor,
+    pub fill_rule: GlyphOutlineFillRule,
+    pub source_glyph_id: Option<u32>,
+    pub palette_index: Option<u16>,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct ColorGradientStop {
+    pub offset: f64,
+    pub color: ResolvedColor,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct ColorLinearGradient {
+    pub x0: f64,
+    pub y0: f64,
+    pub x1: f64,
+    pub y1: f64,
+    pub stops: Vec<ColorGradientStop>,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct ColorRadialGradient {
+    pub cx: f64,
+    pub cy: f64,
+    pub radius: f64,
+    pub stops: Vec<ColorGradientStop>,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct ColorSweepGradient {
+    pub cx: f64,
+    pub cy: f64,
+    pub start_angle_degrees: f64,
+    pub end_angle_degrees: f64,
+    pub stops: Vec<ColorGradientStop>,
+}
+
+#[derive(Debug, Clone)]
+pub struct ColorPaintLinearGradientPathNode {
+    pub commands: Vec<PathCommand>,
+    pub gradient: ColorLinearGradient,
+    pub fill_rule: GlyphOutlineFillRule,
+    pub source_glyph_id: Option<u32>,
+    pub palette_index: Option<u16>,
+}
+
+#[derive(Debug, Clone)]
+pub struct ColorPaintRadialGradientPathNode {
+    pub commands: Vec<PathCommand>,
+    pub gradient: ColorRadialGradient,
+    pub fill_rule: GlyphOutlineFillRule,
+    pub source_glyph_id: Option<u32>,
+    pub palette_index: Option<u16>,
+}
+
+#[derive(Debug, Clone)]
+pub struct ColorPaintSweepGradientPathNode {
+    pub commands: Vec<PathCommand>,
+    pub gradient: ColorSweepGradient,
+    pub fill_rule: GlyphOutlineFillRule,
+    pub source_glyph_id: Option<u32>,
+    pub palette_index: Option<u16>,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct ColorPaintTransformNode {
+    pub child_node_id: u32,
+    pub transform: LayerAffineTransform,
+}
+
+#[derive(Debug, Clone)]
+pub struct ColorPaintGraphNode {
+    pub node_id: u32,
+    pub kind: ColorPaintGraphNodeKind,
+    pub solid_path: Option<ColorPaintSolidPathNode>,
+    pub linear_gradient_path: Option<ColorPaintLinearGradientPathNode>,
+    pub radial_gradient_path: Option<ColorPaintRadialGradientPathNode>,
+    pub sweep_gradient_path: Option<ColorPaintSweepGradientPathNode>,
+    pub transform: Option<ColorPaintTransformNode>,
+    pub source_range_utf8: Option<TextSourceRange>,
+    pub glyph_range: Option<GlyphRange>,
+    pub source_font_ref: Option<FontColorGlyphRef>,
+}
+
+#[derive(Debug, Clone)]
+pub struct ColorPaintGraphPayload {
+    pub root_node_id: u32,
+    pub nodes: Vec<ColorPaintGraphNode>,
+}
+
+const MAX_COLRV1_GRAPH_NODES: usize = 64;
+const MAX_COLRV1_GRAPH_DEPTH: usize = 64;
+
+fn text_source_range_is_valid(range: TextSourceRange) -> bool {
+    range.end >= range.start
+}
+
+fn glyph_range_is_valid(range: GlyphRange) -> bool {
+    range.end >= range.start
+}
+
+fn path_commands_are_finite(commands: &[PathCommand]) -> bool {
+    !commands.is_empty()
+        && commands.iter().all(|command| match *command {
+            PathCommand::MoveTo(x, y) | PathCommand::LineTo(x, y) => x.is_finite() && y.is_finite(),
+            PathCommand::CurveTo(x1, y1, x2, y2, x, y) => {
+                [x1, y1, x2, y2, x, y].into_iter().all(f64::is_finite)
+            }
+            PathCommand::ArcTo(rx, ry, rotation, _, _, x, y) => {
+                [rx, ry, rotation, x, y].into_iter().all(f64::is_finite)
+            }
+            PathCommand::ClosePath => true,
+        })
+}
+
+fn resolved_color_is_valid(color: &ResolvedColor) -> bool {
+    color
+        .color_space
+        .as_ref()
+        .map(|color_space| !color_space.is_empty())
+        .unwrap_or(true)
+        && color
+            .rgba
+            .iter()
+            .all(|component| component.is_finite() && (0.0..=1.0).contains(component))
+}
+
+fn color_gradient_stops_are_valid(stops: &[ColorGradientStop]) -> bool {
+    if stops.len() < 2 {
+        return false;
+    }
+    let mut previous_offset = f64::NEG_INFINITY;
+    stops.iter().all(|stop| {
+        let valid = stop.offset.is_finite()
+            && (0.0..=1.0).contains(&stop.offset)
+            && stop.offset >= previous_offset
+            && resolved_color_is_valid(&stop.color);
+        previous_offset = stop.offset;
+        valid
+    })
+}
+
+fn color_sweep_is_supported_full_circle(start_angle_degrees: f64, end_angle_degrees: f64) -> bool {
+    start_angle_degrees.is_finite()
+        && end_angle_degrees.is_finite()
+        && start_angle_degrees < end_angle_degrees
+        && (end_angle_degrees - start_angle_degrees - 360.0).abs() <= 1e-9
+}
+
+fn graph_leaf_metadata_is_valid(node: &ColorPaintGraphNode) -> bool {
+    node.source_range_utf8
+        .is_some_and(text_source_range_is_valid)
+        && node.glyph_range.is_some_and(GlyphRange::is_non_empty)
+        && node.source_font_ref.is_some()
+}
+
+impl ColorPaintGraphPayload {
+    /// Compatibility alias for the P19 first supported COLRv1 graph contract.
+    /// New code should use `has_colrv1_supported_graph_contract`.
+    #[deprecated(note = "use has_colrv1_supported_graph_contract")]
+    pub fn has_colrv1_stage1_contract(&self) -> bool {
+        self.has_colrv1_supported_graph_contract()
+    }
+
+    pub fn has_colrv1_supported_graph_contract(&self) -> bool {
+        use std::collections::{HashMap, HashSet};
+
+        if self.nodes.is_empty() || self.nodes.len() > MAX_COLRV1_GRAPH_NODES {
+            return false;
+        }
+
+        let mut nodes_by_id = HashMap::with_capacity(self.nodes.len());
+        for node in &self.nodes {
+            if nodes_by_id.insert(node.node_id, node).is_some() {
+                return false;
+            }
+        }
+
+        let mut visited = HashSet::new();
+        let mut node_id = self.root_node_id;
+        let mut depth = 1usize;
+        loop {
+            if depth > MAX_COLRV1_GRAPH_DEPTH || !visited.insert(node_id) {
+                return false;
+            }
+            let Some(node) = nodes_by_id.get(&node_id) else {
+                return false;
+            };
+            match node.kind {
+                ColorPaintGraphNodeKind::SolidPath => {
+                    if visited.len() != self.nodes.len()
+                        || node.transform.is_some()
+                        || node.linear_gradient_path.is_some()
+                        || node.radial_gradient_path.is_some()
+                        || node.sweep_gradient_path.is_some()
+                        || !graph_leaf_metadata_is_valid(node)
+                    {
+                        return false;
+                    }
+                    let Some(solid) = node.solid_path.as_ref() else {
+                        return false;
+                    };
+                    return path_commands_are_finite(&solid.commands)
+                        && resolved_color_is_valid(&solid.fill);
+                }
+                ColorPaintGraphNodeKind::LinearGradientPath => {
+                    if visited.len() != self.nodes.len()
+                        || node.solid_path.is_some()
+                        || node.transform.is_some()
+                        || node.radial_gradient_path.is_some()
+                        || node.sweep_gradient_path.is_some()
+                        || !graph_leaf_metadata_is_valid(node)
+                    {
+                        return false;
+                    }
+                    let Some(gradient_path) = node.linear_gradient_path.as_ref() else {
+                        return false;
+                    };
+                    return path_commands_are_finite(&gradient_path.commands)
+                        && gradient_path.gradient.x0.is_finite()
+                        && gradient_path.gradient.y0.is_finite()
+                        && gradient_path.gradient.x1.is_finite()
+                        && gradient_path.gradient.y1.is_finite()
+                        && color_gradient_stops_are_valid(&gradient_path.gradient.stops);
+                }
+                ColorPaintGraphNodeKind::RadialGradientPath => {
+                    if visited.len() != self.nodes.len()
+                        || node.solid_path.is_some()
+                        || node.transform.is_some()
+                        || node.linear_gradient_path.is_some()
+                        || node.sweep_gradient_path.is_some()
+                        || !graph_leaf_metadata_is_valid(node)
+                    {
+                        return false;
+                    }
+                    let Some(gradient_path) = node.radial_gradient_path.as_ref() else {
+                        return false;
+                    };
+                    return path_commands_are_finite(&gradient_path.commands)
+                        && gradient_path.gradient.cx.is_finite()
+                        && gradient_path.gradient.cy.is_finite()
+                        && gradient_path.gradient.radius.is_finite()
+                        && gradient_path.gradient.radius > 0.0
+                        && color_gradient_stops_are_valid(&gradient_path.gradient.stops);
+                }
+                ColorPaintGraphNodeKind::SweepGradientPath => {
+                    if visited.len() != self.nodes.len()
+                        || node.solid_path.is_some()
+                        || node.transform.is_some()
+                        || node.linear_gradient_path.is_some()
+                        || node.radial_gradient_path.is_some()
+                        || !graph_leaf_metadata_is_valid(node)
+                    {
+                        return false;
+                    }
+                    let Some(gradient_path) = node.sweep_gradient_path.as_ref() else {
+                        return false;
+                    };
+                    return path_commands_are_finite(&gradient_path.commands)
+                        && gradient_path.gradient.cx.is_finite()
+                        && gradient_path.gradient.cy.is_finite()
+                        && color_sweep_is_supported_full_circle(
+                            gradient_path.gradient.start_angle_degrees,
+                            gradient_path.gradient.end_angle_degrees,
+                        )
+                        && color_gradient_stops_are_valid(&gradient_path.gradient.stops);
+                }
+                ColorPaintGraphNodeKind::Transform => {
+                    if node.solid_path.is_some()
+                        || node.linear_gradient_path.is_some()
+                        || node.radial_gradient_path.is_some()
+                        || node.sweep_gradient_path.is_some()
+                    {
+                        return false;
+                    }
+                    if node
+                        .source_range_utf8
+                        .is_some_and(|range| !text_source_range_is_valid(range))
+                        || node
+                            .glyph_range
+                            .is_some_and(|range| !glyph_range_is_valid(range))
+                    {
+                        return false;
+                    }
+                    let Some(transform) = node.transform.as_ref() else {
+                        return false;
+                    };
+                    if !layer_affine_is_finite(transform.transform) {
+                        return false;
+                    }
+                    node_id = transform.child_node_id;
+                    depth += 1;
+                }
+                ColorPaintGraphNodeKind::Composite => return false,
+            }
+        }
+    }
+}
+
+#[derive(Debug, Clone)]
+pub struct ColorLayersPayload {
+    pub color_format: ColorGlyphFormat,
+    pub source_font_ref: Option<FontColorGlyphRef>,
+    pub palette_ref: Option<PaletteRef>,
+    pub layers: Vec<ColorLayerNode>,
+    pub paint_graph: Option<ColorPaintGraphPayload>,
+    pub source_range_utf8: Option<TextSourceRange>,
+    pub glyph_range: Option<GlyphRange>,
+}
+
+impl ColorLayersPayload {
+    pub fn has_colrv0_resolved_layer_contract(&self) -> bool {
+        self.color_format == ColorGlyphFormat::ColrV0
+            && self.paint_graph.is_none()
+            && !self.layers.is_empty()
+            && self.layers.iter().all(|layer| {
+                layer
+                    .commands
+                    .as_ref()
+                    .is_some_and(|commands| !commands.is_empty())
+                    && layer.fill.is_some()
+                    && layer.fill_rule.is_some()
+                    && layer
+                        .source_range_utf8
+                        .is_some_and(text_source_range_is_non_empty)
+                    && layer.glyph_range.is_some_and(GlyphRange::is_non_empty)
+                    && layer
+                        .transform_to_run
+                        .map(layer_affine_is_finite)
+                        .unwrap_or(true)
+                    && layer
+                        .opacity
+                        .map(|opacity| opacity.is_finite())
+                        .unwrap_or(true)
+            })
+    }
+
+    /// Compatibility alias for the P19 first supported COLRv1 graph contract.
+    /// New code should use `has_colrv1_supported_graph_contract`.
+    #[deprecated(note = "use has_colrv1_supported_graph_contract")]
+    pub fn has_colrv1_stage1_graph_contract(&self) -> bool {
+        self.has_colrv1_supported_graph_contract()
+    }
+
+    pub fn has_colrv1_supported_graph_contract(&self) -> bool {
+        self.color_format == ColorGlyphFormat::ColrV1
+            && self.layers.is_empty()
+            && self
+                .source_range_utf8
+                .is_some_and(text_source_range_is_valid)
+            && self.glyph_range.is_some_and(GlyphRange::is_non_empty)
+            && self.source_font_ref.is_some()
+            && self
+                .paint_graph
+                .as_ref()
+                .is_some_and(ColorPaintGraphPayload::has_colrv1_supported_graph_contract)
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum BitmapGlyphScalingPolicy {
+    SourceExact,
+    PixelAligned,
+    BackendDefault,
+}
+
+impl BitmapGlyphScalingPolicy {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::SourceExact => "sourceExact",
+            Self::PixelAligned => "pixelAligned",
+            Self::BackendDefault => "backendDefault",
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum BitmapGlyphFiltering {
+    Nearest,
+    Linear,
+}
+
+impl BitmapGlyphFiltering {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Nearest => "nearest",
+            Self::Linear => "linear",
+        }
+    }
+}
+
+#[derive(Debug, Clone)]
+pub struct BitmapGlyphPayload {
+    pub image_ref: ImageResourceId,
+    pub source_range_utf8: TextSourceRange,
+    pub glyph_range: GlyphRange,
+    pub placement: BoundingBox,
+    pub alpha_premultiplied: bool,
+    pub scaling_policy: BitmapGlyphScalingPolicy,
+    pub filtering: BitmapGlyphFiltering,
+    pub transform_to_run: Option<LayerAffineTransform>,
+}
+
+impl BitmapGlyphPayload {
+    pub fn has_strict_visual_contract(&self) -> bool {
+        text_source_range_is_non_empty(self.source_range_utf8)
+            && self.glyph_range.is_non_empty()
+            && bbox_is_finite_positive(self.placement)
+            && !matches!(
+                self.scaling_policy,
+                BitmapGlyphScalingPolicy::BackendDefault
+            )
+            && self
+                .transform_to_run
+                .map(layer_affine_is_finite)
+                .unwrap_or(true)
+    }
+}
+
+#[derive(Debug, Clone)]
+pub struct SvgGlyphPayload {
+    pub svg_ref: SvgResourceId,
+    pub source_range_utf8: TextSourceRange,
+    pub glyph_range: GlyphRange,
+    pub view_box: BoundingBox,
+    pub intrinsic_size: Option<LayerVector>,
+    pub static_sanitized: bool,
+    pub script_allowed: bool,
+    pub animation_allowed: bool,
+    pub external_resources_allowed: bool,
+    pub interactivity_allowed: bool,
+    pub transform_to_run: Option<LayerAffineTransform>,
+}
+
+impl SvgGlyphPayload {
+    pub fn has_static_sanitized_contract(&self) -> bool {
+        text_source_range_is_non_empty(self.source_range_utf8)
+            && self.glyph_range.is_non_empty()
+            && bbox_is_finite_positive(self.view_box)
+            && self
+                .intrinsic_size
+                .map(|size| {
+                    size.dx.is_finite() && size.dy.is_finite() && size.dx > 0.0 && size.dy > 0.0
+                })
+                .unwrap_or(true)
+            && self.static_sanitized
+            && !self.script_allowed
+            && !self.animation_allowed
+            && !self.external_resources_allowed
+            && !self.interactivity_allowed
+            && self
+                .transform_to_run
+                .map(layer_affine_is_finite)
+                .unwrap_or(true)
+    }
+}
+
+fn text_source_range_is_non_empty(range: TextSourceRange) -> bool {
+    range.end > range.start
+}
+
+fn layer_affine_is_finite(transform: LayerAffineTransform) -> bool {
+    transform.a.is_finite()
+        && transform.b.is_finite()
+        && transform.c.is_finite()
+        && transform.d.is_finite()
+        && transform.e.is_finite()
+        && transform.f.is_finite()
+}
+
+fn bbox_is_finite_positive(bbox: BoundingBox) -> bool {
+    bbox.x.is_finite()
+        && bbox.y.is_finite()
+        && bbox.width.is_finite()
+        && bbox.height.is_finite()
+        && bbox.width > 0.0
+        && bbox.height > 0.0
 }
 
 #[derive(Debug, Clone)]
@@ -441,6 +1063,10 @@ pub struct GlyphRange {
 impl GlyphRange {
     pub fn new(start: u32, end: u32) -> Self {
         Self { start, end }
+    }
+
+    pub fn is_non_empty(self) -> bool {
+        self.end > self.start
     }
 }
 

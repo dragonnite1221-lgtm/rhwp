@@ -11,6 +11,7 @@
 //! 5. BinData → 이미지 로딩
 
 pub mod content;
+mod contract_streams;
 pub mod header;
 pub mod reader;
 pub mod section;
@@ -109,11 +110,34 @@ pub fn parse_hwpx_with_raw_xmls(data: &[u8]) -> Result<(Document, Vec<String>, S
     // 4. section*.xml → Section 변환 (+raw 보존)
     let mut sections = Vec::new();
     let mut raw_section_xmls: Vec<String> = Vec::new();
-    for section_href in &package_info.section_files {
+    for (section_idx, section_href) in package_info.section_files.iter().enumerate() {
         let section_xml = reader.read_file(section_href)?;
         raw_section_xmls.push(section_xml.clone());
         match section::parse_hwpx_section(&section_xml) {
-            Ok(section) => sections.push(section),
+            Ok(mut section) => {
+                if let Some(master_page_files) =
+                    package_info.section_master_page_files.get(section_idx)
+                {
+                    for master_page_href in master_page_files {
+                        match reader.read_file(master_page_href) {
+                            Ok(master_page_xml) => {
+                                match section::parse_hwpx_master_page(&master_page_xml) {
+                                    Ok(master_page) => {
+                                        section.section_def.master_pages.push(master_page);
+                                    }
+                                    Err(e) => {
+                                        eprintln!("경고: {} 파싱 실패: {}", master_page_href, e);
+                                    }
+                                }
+                            }
+                            Err(e) => {
+                                eprintln!("경고: {} 읽기 실패: {}", master_page_href, e);
+                            }
+                        }
+                    }
+                }
+                sections.push(section);
+            }
             Err(e) => {
                 eprintln!("경고: {} 파싱 실패: {}", section_href, e);
                 sections.push(Section::default());
@@ -121,15 +145,13 @@ pub fn parse_hwpx_with_raw_xmls(data: &[u8]) -> Result<(Document, Vec<String>, S
         }
     }
 
-    // [Task #554] HWP3 변환본 보정: 한글97의 마지막 줄 tolerance 모방
-    // 모든 SectionDef.page_def 의 margin_bottom 을 1600 HU 줄여 한글97 페이지네이션과 정합.
+    // [Task #554] HWP3 변환본 보정: 한글97의 마지막 줄 tolerance 모방.
+    // HWPX→HWP 저장 contract 에서는 PAGE_DEF margin_bottom 원본값을 보존해야 하므로
+    // margin 자체를 줄이지 않고 pagination 전용 tolerance 로만 전달한다.
     if is_hwp3_origin {
         for section in sections.iter_mut() {
-            section.section_def.page_def.margin_bottom = section
-                .section_def
-                .page_def
-                .margin_bottom
-                .saturating_sub(1600);
+            section.section_def.page_def.pagination_bottom_tolerance =
+                section.section_def.page_def.margin_bottom.min(1600);
         }
     }
 
@@ -187,6 +209,16 @@ pub fn parse_hwpx_with_raw_xmls(data: &[u8]) -> Result<(Document, Vec<String>, S
         raw_data: None,
     };
 
+    // [Task #852 Stage 2.1] HWPX ZIP 컨테이너 → HWP OLE contract 스트림 변환.
+    // 한컴 HWP 정답지 contract (Preview/PrvText, Preview/PrvImage, Scripts/
+    // DefaultJScript) 를 HWPX 컨테이너 동등 파일 (Preview/PrvText.txt,
+    // Preview/PrvImage.png, Scripts/sourceScripts) 로부터 변환. HWPX 에
+    // 동등 데이터가 없는 contract 스트림 (HwpSummaryInformation, DocOptions/
+    // _LinkDoc, Scripts/JScriptVersion) 은 Stage 2.2 의 blank2010.hwp
+    // fallback 으로 보강. cfb_writer (`src/serializer/cfb_writer.rs:155`)
+    // 가 Document::extra_streams 를 그대로 OLE 스트림으로 작성.
+    let contract = contract_streams::extract_contract_streams(&mut reader);
+
     let mut doc = Document {
         header: model_header,
         doc_properties,
@@ -194,7 +226,8 @@ pub fn parse_hwpx_with_raw_xmls(data: &[u8]) -> Result<(Document, Vec<String>, S
         sections,
         preview: None,
         bin_data_content,
-        extra_streams: Vec::new(),
+        extra_streams: contract.streams,
+        is_hwp3_variant: false,
     };
 
     // [Task #873] BinData Link 타입 의 외부 file path 영역 영역 Picture.external_path 영역

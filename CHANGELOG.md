@@ -2,6 +2,35 @@
 
 이 프로젝트의 주요 변경 사항을 기록합니다.
 
+## [0.7.13] — 2026-05-26
+
+> v0.7.12 후속 patch 사이클 (5/18~26) — HWPX 렌더링/저장 호환성 집중 정정, 시험지·공공기관 문서군 회귀 해소, 외부 기여자 PR 다수 cherry-pick.
+
+### 핵심 변경
+
+- **HWPX → HWP 저장 호환성 대폭 보강**
+  - 표/셀 axis contract, cell LIST_HEADER materialization, gradient `BORDER_FILL`, 셀 안쪽 여백, 셀 배경 이미지 채우기 유형 저장 정합.
+  - 메모 컨트롤 직렬화, 목차 필드 마커/페이지 표기 출력, 페이지 번호 감추기/새 페이지 번호 시작 등 문단 컨트롤 저장 보강.
+  - `hwpx-h-01/02/03`, `mel-001`, `aift`, `exam_kor`, `exam_social` 계열 파일손상/중단 케이스 다수 해소.
+- **HWPX 렌더링 정합**
+  - 바탕쪽(짝수/홀수/마지막), 머리말/꼬리말, 문단번호, 글상자 위치·그라데이션·곡률, 문단 테두리/지문 박스 렌더링 보강.
+  - `exam_kor.hwpx`, `exam_social.hwpx`, `hwp3-sample16-hwp5.hwpx` 등 한컴 변환본과의 SVG/웹 캔버스 시각 정합 개선.
+- **페이지네이션·조판 정정**
+  - HWPX `treat_as_char` 표 LINE_SEG lh over-inflation, 중첩 표 페이지 분할, 그림 pushdown/vpos 이중 계상, 다단 미주 vpos absolute, 본문 하단 overflow 측정 통일 보강.
+  - HWP3/HWP5 변환본 sample16 계열 page break 및 문단 간격 분석 인프라 보강.
+- **rhwp-studio / 확장 UX**
+  - TAC 도형 커서 이동 및 연속 공백 이동 경험 개선.
+  - Chrome 확장에서 로컬 `file://` HWP/HWPX 열기 시 파일 URL 접근 권한 안내 및 중복 다운로드 억제 (#1131/#1132).
+- **인프라와 PR 처리**
+  - CI runner 디스크 부족 완화 step 추가 (#1109).
+  - 외부 PR #1077/#1078/#1080/#1081/#1117/#1120/#1125/#1132 등 검토·cherry-pick 반영.
+  - CanvasKit glyph payload gate 및 COLRv1 glyph gradient replay 단계 보강.
+
+### 잔존
+
+- GitHub Actions 장애로 v0.7.13 준비 시점의 원격 CI 자동 실행이 지연될 수 있음. 로컬 build/test/wasm 검증으로 보완한다.
+- `exam_social` HWPX → HWP 저장의 3페이지 홀수 머리말 글상자 높이 문제는 후속 이슈로 분리.
+
 ## [0.7.12] — 2026-05-18
 
 > v0.7.11 후속 patch 사이클 (5/12~18) — 외부 기여자 다수 PR 19건 머지 + 본 사이클 @jangster77 PR 시리즈 7건 (#956~#968). 416 files / +64383 / -3323.

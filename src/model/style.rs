@@ -9,10 +9,12 @@ pub struct Font {
     pub raw_data: Option<Vec<u8>>,
     /// 글꼴 이름
     pub name: String,
-    /// 대체 글꼴 유형 (0: 알 수 없음, 1: TTF, 2: HFT)
+    /// 글꼴 유형 (0: 알 수 없음, 1: TTF, 2: HFT)
     pub alt_type: u8,
     /// 대체 글꼴 이름
     pub alt_name: Option<String>,
+    /// 글꼴 유형 정보 (HWP5 FACE_NAME type info 10바이트)
+    pub type_info: Option<[u8; 10]>,
     /// 기본 글꼴 이름
     pub default_name: Option<String>,
 }
@@ -336,10 +338,15 @@ pub struct Style {
     pub local_name: String,
     /// 영문 스타일 이름
     pub english_name: String,
-    /// 스타일 종류 (0: 문단, 1: 글자)
+    /// 스타일 종류 (0: 문단, 1: 글자) — 표 47/48
     pub style_type: u8,
     /// 다음 스타일 ID
     pub next_style_id: u8,
+    /// [Task #1058 후속] 언어 아이디 (INT16, default 1042=한국어).
+    /// 한컴 spec 표 47 의 next_style_id 다음 필드. 누락 시 ps_id/cs_id 가
+    /// 2 byte 앞당겨져 한컴이 잘못된 ParaShape 적용. footnote-01 의 정답지
+    /// 비교로 입증 — rhwp 의 style record size=28 vs 정답지 size=32 (4 byte 누락).
+    pub lang_id: i16,
     /// 문단 모양 ID 참조
     pub para_shape_id: u16,
     /// 글자 모양 ID 참조
@@ -475,6 +482,8 @@ pub struct GradientFill {
     pub center_y: i16,
     /// 번짐 정도 (0~100)
     pub blur: i16,
+    /// 번짐 중심 (0~100)
+    pub step_center: u8,
     /// 색상 목록
     pub colors: Vec<ColorRef>,
     /// 색상 위치 목록

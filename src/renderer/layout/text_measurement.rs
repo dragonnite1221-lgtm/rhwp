@@ -136,6 +136,55 @@ fn measure_segment_from(
     w
 }
 
+fn tab_suffix_is_ascii_page_number(chars: &[char], start: usize) -> bool {
+    let mut seen_digit = false;
+    for ch in chars.iter().skip(start) {
+        if *ch == '\t' {
+            return false;
+        }
+        if ch.is_whitespace() {
+            continue;
+        }
+        if ch.is_ascii_digit() {
+            seen_digit = true;
+            continue;
+        }
+        return false;
+    }
+    seen_digit
+}
+
+fn right_leader_tab_target_rel(style: &TextStyle, font_size: f64) -> Option<f64> {
+    style
+        .tab_stops
+        .iter()
+        .rev()
+        .find(|tab| tab.tab_type == 1 && tab.fill_type != 0)
+        .map(|tab| tab.position - font_size * 0.25 - style.line_x_offset)
+        .filter(|target| target.is_finite())
+}
+
+fn right_leader_tab_fill(style: &TextStyle) -> Option<u8> {
+    style
+        .tab_stops
+        .iter()
+        .rev()
+        .find(|tab| tab.tab_type == 1 && tab.fill_type != 0)
+        .map(|tab| tab.fill_type)
+}
+
+fn right_leader_body_target_rel(style: &TextStyle) -> Option<f64> {
+    if style.available_width <= 0.0 || right_leader_tab_fill(style).is_none() {
+        return None;
+    }
+    let target = style.text_start_offset + style.available_width - style.line_x_offset;
+    if target.is_finite() {
+        Some(target)
+    } else {
+        None
+    }
+}
+
 /// 탭 문자의 위치로부터 탭 리더 정보를 추출한다.
 pub fn extract_tab_leaders(text: &str, positions: &[f64], style: &TextStyle) -> Vec<TabLeaderInfo> {
     extract_tab_leaders_with_extended(text, positions, style, &[])
@@ -149,6 +198,7 @@ pub fn extract_tab_leaders_with_extended(
     style: &TextStyle,
     tab_extended: &[[u16; 7]],
 ) -> Vec<TabLeaderInfo> {
+    let chars: Vec<char> = text.chars().collect();
     let tab_w = if style.default_tab_width > 0.0 {
         style.default_tab_width
     } else {
@@ -160,6 +210,15 @@ pub fn extract_tab_leaders_with_extended(
         if c == '\t' && i + 1 < positions.len() {
             let before_x = positions[i];
             let after_x = positions[i + 1];
+            let has_more_tabs_after = chars.iter().skip(i + 1).any(|ch| *ch == '\t');
+            let tabdef_page_number_fill = if tab_extended.is_empty()
+                && !has_more_tabs_after
+                && tab_suffix_is_ascii_page_number(&chars, i + 1)
+            {
+                right_leader_tab_fill(style)
+            } else {
+                None
+            };
 
             // 1. tab_extended에서 leader 가져오기 (HWPX 인라인 탭)
             let ext_fill = if tab_idx < tab_extended.len() {
@@ -169,7 +228,9 @@ pub fn extract_tab_leaders_with_extended(
             };
 
             // 2. TabDef에서 fill_type 가져오기 (HWP TabDef)
-            let tabdef_fill = if !style.tab_stops.is_empty() || style.auto_tab_right {
+            let tabdef_fill = if let Some(fill) = tabdef_page_number_fill {
+                fill
+            } else if !style.tab_stops.is_empty() || style.auto_tab_right {
                 let abs_before = style.line_x_offset + before_x;
                 let (_, _, ft) = find_next_tab_stop(
                     abs_before,
@@ -188,13 +249,33 @@ pub fn extract_tab_leaders_with_extended(
             let fill_type = if ext_fill > 0 { ext_fill } else { tabdef_fill };
             if fill_type > 0 && after_x > before_x + 1.0 {
                 let space_gap = style.font_size * 0.25;
+                let content_x = text.chars().enumerate().skip(i + 1).find_map(|(j, ch)| {
+                    if ch != '\t' && !ch.is_whitespace() && j < positions.len() {
+                        Some(positions[j])
+                    } else {
+                        None
+                    }
+                });
+                let end_x = content_x
+                    .map(|x| x - space_gap)
+                    .unwrap_or(after_x - space_gap)
+                    .min(after_x - space_gap);
                 leaders.push(TabLeaderInfo {
                     start_x: before_x,
-                    end_x: (after_x - space_gap).max(before_x),
+                    end_x: end_x.max(before_x),
                     fill_type,
                 });
             }
             tab_idx += 1;
+        }
+    }
+    if leaders.len() > 1 {
+        let mut min_following_end = f64::INFINITY;
+        for leader in leaders.iter_mut().rev() {
+            if min_following_end.is_finite() && leader.end_x > min_following_end {
+                leader.end_x = min_following_end.max(leader.start_x);
+            }
+            min_following_end = min_following_end.min(leader.end_x);
         }
     }
     leaders
@@ -323,6 +404,17 @@ impl TextMeasurer for EmbeddedTextMeasurer {
                         let right_edge_rel =
                             style.text_start_offset + style.available_width - style.line_x_offset;
                         total = (right_edge_rel - seg_w).max(total);
+                    } else if inline_type_hi == 0
+                        && !has_more_tabs_after
+                        && tab_suffix_is_ascii_page_number(&chars, i + 1)
+                    {
+                        if let Some(target_rel) = right_leader_tab_target_rel(style, font_size) {
+                            let seg_w =
+                                measure_segment_from(&chars, &cluster_len, i + 1, &char_width);
+                            total = (target_rel - seg_w).max(total);
+                        } else {
+                            total = tab_target.max(total);
+                        }
                     } else {
                         match tab_type {
                             1 => {
@@ -342,6 +434,16 @@ impl TextMeasurer for EmbeddedTextMeasurer {
                     }
                     tab_char_idx += 1;
                 } else if has_custom_tabs {
+                    let has_more_tabs_after = chars[i + 1..].contains(&'\t');
+                    if !has_more_tabs_after && tab_suffix_is_ascii_page_number(&chars, i + 1) {
+                        if let Some(target_rel) = right_leader_body_target_rel(style) {
+                            let seg_w =
+                                measure_segment_from(&chars, &cluster_len, i + 1, &char_width);
+                            total = (target_rel - seg_w).max(total);
+                            tab_char_idx += 1;
+                            continue;
+                        }
+                    }
                     let abs_x = style.line_x_offset + total;
                     let (tab_pos, tab_type, fill_type) = find_next_tab_stop(
                         abs_x,
@@ -525,8 +627,20 @@ impl TextMeasurer for EmbeddedTextMeasurer {
                             measure_segment_from(&chars, &cluster_len, seg_start, &char_width)
                         };
                         x = (body_right_text_rel - seg_w).max(x);
+                    } else if inline_type_hi == 0
+                        && !has_more_tabs_after
+                        && tab_suffix_is_ascii_page_number(&chars, i + 1)
+                    {
+                        if let Some(target_rel) = right_leader_tab_target_rel(style, font_size) {
+                            let seg_w =
+                                measure_segment_from(&chars, &cluster_len, i + 1, &char_width);
+                            x = (target_rel - seg_w).max(x);
+                        } else {
+                            x = tab_target.max(x);
+                        }
                     } else {
                         let high_byte = (tab_type_raw >> 8) & 0xFF;
+                        let fill_low = tab_type_raw & 0xFF;
                         match (high_byte, tab_type_raw) {
                             (_, 1) => {
                                 // 기존 raw 1 (LEFT 또는 잘못된 RIGHT 1) — 호환 유지
@@ -552,8 +666,54 @@ impl TextMeasurer for EmbeddedTextMeasurer {
                                     measure_segment_from(&chars, &cluster_len, i + 1, &char_width);
                                 x = (tab_target - seg_w / 2.0).max(x);
                             }
+                            (2, _) if fill_low != 0 => {
+                                // [Task #874 후속] 단일-run RIGHT + leader (목차 페이지번호) —
+                                // Task #874 는 cross-run RIGHT+leader 의 text_start_offset
+                                // 미포함 본질을 fix (body_right_text_rel +
+                                // right_tab_block_width_override). 단일-run 케이스는
+                                // 여전히 body_right_legacy (= available_width - line_x_offset)
+                                // 사용 → text_start_offset 미포함 으로 cell right inner
+                                // (= text_start_offset + available_width) 미달. 또한 leading
+                                // space skip 으로 seg_w 가 space 폭만큼 과소 → digit right
+                                // edge 가 cell right inner 보다 좌측에 위치 (정렬 미달).
+                                //
+                                // Fix: \t 뒤 content 가 있는 단일-run 은 cell_right_run_rel
+                                // (= text_start_offset + available_width - line_x_offset) 정렬
+                                // + seg_w_full (i+1 부터, leading space 포함). content 없는
+                                // trailing space / 끝 케이스 (= cross-run 직전) 는 원본 path
+                                // 유지 (다음 run 의 pending_right_tab 분기가 처리).
+                                let seg_start_skipped = {
+                                    let mut s = i + 1;
+                                    while s < chars.len() && chars[s] == ' ' && cluster_len[s] != 0
+                                    {
+                                        s += 1;
+                                    }
+                                    s
+                                };
+                                let has_content_after = seg_start_skipped < chars.len();
+                                if has_content_after {
+                                    let seg_w_full = measure_segment_from(
+                                        &chars,
+                                        &cluster_len,
+                                        i + 1,
+                                        &char_width,
+                                    );
+                                    let cell_right_run_rel = style.text_start_offset
+                                        + style.available_width
+                                        - style.line_x_offset;
+                                    x = (cell_right_run_rel - seg_w_full).max(x);
+                                } else {
+                                    let seg_w = measure_segment_from(
+                                        &chars,
+                                        &cluster_len,
+                                        seg_start_skipped,
+                                        &char_width,
+                                    );
+                                    x = (body_right_legacy - seg_w).max(x);
+                                }
+                            }
                             (2, _) => {
-                                // RIGHT 인라인 탭: 한컴 metrics 차이 흡수.
+                                // RIGHT 인라인 탭 (no leader): 한컴 metrics 차이 흡수.
                                 let seg_start = {
                                     let mut s = i + 1;
                                     while s < chars.len() && chars[s] == ' ' && cluster_len[s] != 0
@@ -577,6 +737,17 @@ impl TextMeasurer for EmbeddedTextMeasurer {
                     }
                     tab_char_idx += 1;
                 } else if has_custom_tabs {
+                    let has_more_tabs_after = chars[i + 1..].contains(&'\t');
+                    if !has_more_tabs_after && tab_suffix_is_ascii_page_number(&chars, i + 1) {
+                        if let Some(target_rel) = right_leader_body_target_rel(style) {
+                            let seg_w =
+                                measure_segment_from(&chars, &cluster_len, i + 1, &char_width);
+                            x = (target_rel - seg_w).max(x);
+                            tab_char_idx += 1;
+                            positions.push(x);
+                            continue;
+                        }
+                    }
                     let abs_x = style.line_x_offset + x;
                     let (tab_pos, tab_type, fill_type) = find_next_tab_stop(
                         abs_x,
@@ -599,7 +770,9 @@ impl TextMeasurer for EmbeddedTextMeasurer {
                     match tab_type {
                         1 => {
                             // 오른쪽
-                            let seg_start = {
+                            let seg_start = if fill_type != 0 {
+                                i + 1
+                            } else {
                                 let mut s = i + 1;
                                 while s < chars.len() && chars[s] == ' ' && cluster_len[s] != 0 {
                                     s += 1;
@@ -769,17 +942,38 @@ mod wasm_internals {
             return hangul_width_hwp as f64 / 75.0;
         }
 
-        // 3차: JS 폴백 (미등록 폰트)
-        let raw_px = cached_js_measure(measure_font, c);
-        let actual_px = raw_px * font_size / 1000.0;
-        let hwp = (actual_px * 75.0).round() as i32;
-        hwp as f64 / 75.0
+        // 좁은 구두점 폴백 — native EmbeddedTextMeasurer 와 동기화.
+        // measure_char_width_embedded 의 is_narrow_punctuation 분기 (0.3 em) 가
+        // 적용되지 못한 미등록 폰트 케이스 (예: 휴먼명조 U+2027) 에서 JS Canvas
+        // 측정값 (~0.5 em) 이 그대로 들어가지 않도록 동일 폴백 적용.
+        if super::is_narrow_punctuation(c) {
+            return font_size * 0.3;
+        }
+
+        // [Task #977] 미등록 폰트 폴백을 native EmbeddedTextMeasurer 와 동기화한다.
+        // 종전(PR #1026 이전)은 JS Canvas `measureText` 실측값을 사용했으나, 미등록
+        // 폰트는 브라우저 fallback 폰트로 측정되어 폰트별로 폭이 달라(예: 나눔바른
+        // 고딕 ≠ 맑은 고딕) 목차 페이지의 선두 공백 CharShape 가 인접 문단과 다를 때
+        // 개요번호 시작 x 가 ~9~10px 어긋났다. native compute_char_positions 와 동일한
+        // 휴리스틱(공백·일반 0.5em, CJK·fullwidth em, narrow_punct 0.3em)으로 폰트 무관
+        // 통일한다. PR #1026 의 narrow_punct 분기는 위에서 이미 처리(보존).
+        if super::is_cjk_char(c) || super::is_fullwidth_symbol(c) {
+            return font_size;
+        }
+        font_size * 0.5
     }
 
     /// 한글 '가' 대리 측정값 (HWP 단위, 정수)
     /// 내장 메트릭이 있으면 JS 호출 없이 반환.
+    ///
+    /// [Task #977 v3] 미등록 폰트의 한글 폭은 native `EmbeddedTextMeasurer`
+    /// 폴백(`font_size`, 1.0 em CJK 휴리스틱)과 동기화한다. 종전 JS `cached_js_measure('가')`
+    /// 폴백은 브라우저의 폰트 대체 결과(폰트별 ≠ 한컴 metrics)를 폭으로 채택해
+    /// 한컴 저장값(tab_extended[0] = "tab_pos - 한컴_선행텍스트폭")과 합산 시 오차가
+    /// 누적, 목차 페이지번호의 디지트 x 좌표가 행별로 어긋났다.
+    /// 미등록 한글 폰트(나눔바른고딕 등)에서도 native 와 일관된 폭으로 폴백한다.
     pub(super) fn measure_hangul_width_hwp(
-        measure_font: &str,
+        _measure_font: &str,
         font_family: &str,
         bold: bool,
         italic: bool,
@@ -790,9 +984,8 @@ mod wasm_internals {
         {
             return (w * 75.0).round() as i32;
         }
-        let raw_px = cached_js_measure(measure_font, '\u{AC00}');
-        let actual_px = raw_px * font_size / 1000.0;
-        (actual_px * 75.0).round() as i32
+        // native EmbeddedTextMeasurer 동기화: 미등록 폰트의 한글(CJK)은 font_size (1.0 em).
+        (font_size * 75.0).round() as i32
     }
 }
 
@@ -907,6 +1100,17 @@ impl TextMeasurer for WasmTextMeasurer {
                         let right_edge_rel =
                             style.text_start_offset + style.available_width - style.line_x_offset;
                         total = (right_edge_rel - seg_w).max(total);
+                    } else if tab_type == 0
+                        && !has_more_tabs_after
+                        && tab_suffix_is_ascii_page_number(&chars, i + 1)
+                    {
+                        if let Some(target_rel) = right_leader_tab_target_rel(style, font_size) {
+                            let seg_w =
+                                measure_segment_from(&chars, &cluster_len, i + 1, &char_width);
+                            total = (target_rel - seg_w).max(total);
+                        } else {
+                            total = tab_target.max(total);
+                        }
                     } else {
                         match tab_type {
                             2 => {
@@ -929,6 +1133,16 @@ impl TextMeasurer for WasmTextMeasurer {
                     }
                     tab_char_idx += 1;
                 } else if has_custom_tabs {
+                    let has_more_tabs_after = chars[i + 1..].iter().any(|c| *c == '\t');
+                    if !has_more_tabs_after && tab_suffix_is_ascii_page_number(&chars, i + 1) {
+                        if let Some(target_rel) = right_leader_body_target_rel(style) {
+                            let seg_w =
+                                measure_segment_from(&chars, &cluster_len, i + 1, &char_width);
+                            total = (target_rel - seg_w).max(total);
+                            tab_char_idx += 1;
+                            continue;
+                        }
+                    }
                     let abs_x = style.line_x_offset + total;
                     let (tab_pos, tab_type, fill_type) = find_next_tab_stop(
                         abs_x,
@@ -1101,11 +1315,27 @@ impl TextMeasurer for WasmTextMeasurer {
                             measure_segment_from(&chars, &cluster_len, seg_start, &char_width)
                         };
                         x = (body_right_text_rel - seg_w).max(x);
+                    } else if tab_type == 0
+                        && !has_more_tabs_after
+                        && tab_suffix_is_ascii_page_number(&chars, i + 1)
+                    {
+                        if let Some(target_rel) = right_leader_tab_target_rel(style, font_size) {
+                            let seg_w =
+                                measure_segment_from(&chars, &cluster_len, i + 1, &char_width);
+                            x = (target_rel - seg_w).max(x);
+                        } else {
+                            x = tab_target.max(x);
+                        }
                     } else {
                         match tab_type {
                             2 if fill_low != 0 => {
-                                // RIGHT + leader: body_right 정렬
-                                let seg_start = {
+                                // [Task #874 후속] 단일-run RIGHT + leader (목차 페이지번호).
+                                // EmbeddedTextMeasurer 영역 정합 (text_measurement.rs 위쪽 동일
+                                // 분기 본문 참조). \t 뒤 content 가 있는 단일-run 은
+                                // cell_right_run_rel (= text_start_offset + available_width -
+                                // line_x_offset) 정렬 + seg_w_full (leading space 포함).
+                                // content 없는 trailing space / 끝 케이스는 원본 path 유지.
+                                let seg_start_skipped = {
                                     let mut s = i + 1;
                                     while s < chars.len() && chars[s] == ' ' && cluster_len[s] != 0
                                     {
@@ -1113,13 +1343,27 @@ impl TextMeasurer for WasmTextMeasurer {
                                     }
                                     s
                                 };
-                                let seg_w = measure_segment_from(
-                                    &chars,
-                                    &cluster_len,
-                                    seg_start,
-                                    &char_width,
-                                );
-                                x = (body_right_legacy - seg_w).max(x);
+                                let has_content_after = seg_start_skipped < chars.len();
+                                if has_content_after {
+                                    let seg_w_full = measure_segment_from(
+                                        &chars,
+                                        &cluster_len,
+                                        i + 1,
+                                        &char_width,
+                                    );
+                                    let cell_right_run_rel = style.text_start_offset
+                                        + style.available_width
+                                        - style.line_x_offset;
+                                    x = (cell_right_run_rel - seg_w_full).max(x);
+                                } else {
+                                    let seg_w = measure_segment_from(
+                                        &chars,
+                                        &cluster_len,
+                                        seg_start_skipped,
+                                        &char_width,
+                                    );
+                                    x = (body_right_legacy - seg_w).max(x);
+                                }
                             }
                             2 => {
                                 // RIGHT (no leader)
@@ -1153,6 +1397,17 @@ impl TextMeasurer for WasmTextMeasurer {
                     }
                     tab_char_idx += 1;
                 } else if has_custom_tabs {
+                    let has_more_tabs_after = chars[i + 1..].iter().any(|c| *c == '\t');
+                    if !has_more_tabs_after && tab_suffix_is_ascii_page_number(&chars, i + 1) {
+                        if let Some(target_rel) = right_leader_body_target_rel(style) {
+                            let seg_w =
+                                measure_segment_from(&chars, &cluster_len, i + 1, &char_width);
+                            x = (target_rel - seg_w).max(x);
+                            tab_char_idx += 1;
+                            positions.push(x);
+                            continue;
+                        }
+                    }
                     let abs_x = style.line_x_offset + x;
                     let (tab_pos, tab_type, fill_type) = find_next_tab_stop(
                         abs_x,
@@ -1174,7 +1429,9 @@ impl TextMeasurer for WasmTextMeasurer {
                     };
                     match tab_type {
                         1 => {
-                            let seg_start = {
+                            let seg_start = if fill_type != 0 {
+                                i + 1
+                            } else {
                                 let mut s = i + 1;
                                 while s < chars.len() && chars[s] == ' ' && cluster_len[s] != 0 {
                                     s += 1;
@@ -1278,6 +1535,36 @@ pub(crate) fn resolved_to_text_style(
 
 // ── 내장 폰트 메트릭 측정 ───────────────────────────────────────────
 
+/// 폰트가 고정폭(monospace)인지 판정한다.
+///
+/// Basic Latin (U+0021~U+007E) 의 0 이 아닌 글자폭이 모두 동일하면 monospace.
+/// 돋움체/바탕체/굴림체 등 한컴 고정폭 폰트는 `·` 를 포함한 모든 글리프가
+/// em_size 폭을 가지므로, U+00B7 의 `.notdef` 위장값 가드에서 이들을 제외해
+/// 전각 측정을 보존하기 위함이다 (Issue #630, aift 목차 right-tab 정합).
+fn is_monospace_metric(metric: &font_metrics_data::FontMetric) -> bool {
+    let mut common: Option<u16> = None;
+    let mut count = 0u32;
+    for range in metric.latin_ranges {
+        if range.start > 0x007E || range.end < 0x0021 {
+            continue;
+        }
+        for (i, &w) in range.widths.iter().enumerate() {
+            let code = range.start + i as u32;
+            if !(0x0021..=0x007E).contains(&code) || w == 0 {
+                continue;
+            }
+            count += 1;
+            match common {
+                None => common = Some(w),
+                Some(cw) if cw != w => return false,
+                _ => {}
+            }
+        }
+    }
+    // 표본이 충분할 때만 monospace 로 판정 (Latin 글리프가 거의 없는 폰트 오판 방지).
+    count >= 16
+}
+
 /// 내장 폰트 메트릭으로 문자 폭 측정 (em 단위 → px 변환)
 ///
 /// 내장 메트릭이 있으면 JS 브릿지 호출 없이 즉시 반환.
@@ -1306,7 +1593,25 @@ fn measure_char_width_embedded(
             c,
             '\u{2018}'..='\u{2027}' // ''‚‛""„‟†‡•‣․‥…‧ 구두점/기호
         );
-        if is_halfwidth_punct && glyph_w >= mm.metric.em_size {
+        // 휴먼명조/HY중고딕/HY신명조/HY견명조 등 일부 폰트 DB 가 U+2018/U+2019/
+        // U+2027 을 fullwidth (1.0 em) 로 잘못 기록한 케이스 정정. em/2 (0.5 em)
+        // 강제 시 한컴 대비 약 4px (font-size 20px 기준, 0.5→0.3 em 차) 과대.
+        // glyph_w 가 비정상 fullwidth (>= em_size) 일 때만 0.3 em 강제 — 함초롬
+        // 바탕 (0.32) / Pretendard (0.22) 등 정상 DB 값은 조건 미충족으로 영향 없음.
+        let is_narrow_unicode_punct = matches!(c, '\u{2018}' | '\u{2019}' | '\u{2027}');
+        // [U+00B7 .notdef 위장값 정정] 비례폰트(휴먼명조 등)가 `·` (가운뎃점)
+        // 글리프를 갖지 않으면 cmap 이 .notdef(glyph 0) 로 매핑돼 advance 가
+        // em_size(전각) 로 기록된다. 한컴은 이 경우 점 글리프를 가진 대체
+        // 폰트(바탕 ≈0.33em 등)로 `·` 를 렌더하므로 전각 advance 는 PDF 대비
+        // 과대 (시·군 점 좌우 공백 큼). 비례폰트에서 U+00B7 이 전각이면 위장값
+        // 으로 보고 0.3em 으로 정정한다. 고정폭(monospace) 폰트(돋움체 등)는
+        // 모든 글리프가 em_size 이므로 제외 — 해당 `·` 는 진짜 전각이다
+        // (Issue #630, aift 목차 right-tab 정합 보존).
+        let is_b7_notdef_artifact =
+            c == '\u{00B7}' && glyph_w >= mm.metric.em_size && !is_monospace_metric(mm.metric);
+        if (is_narrow_unicode_punct && glyph_w >= mm.metric.em_size) || is_b7_notdef_artifact {
+            (mm.metric.em_size as f64 * 0.3) as u16
+        } else if is_halfwidth_punct && glyph_w >= mm.metric.em_size {
             mm.metric.em_size / 2
         } else {
             glyph_w
@@ -1439,10 +1744,18 @@ pub(crate) fn is_cjk_char(c: char) -> bool {
 /// 실제 글리프 폭이 반각(em/2)보다 뚜렷이 좁은 구두점·기호.
 /// 메트릭 DB 미등록 폰트의 폴백 폭 계산 시 `font_size * 0.5` 대신
 /// `font_size * 0.3` 을 쓰도록 분기하는 기준 (Task #257).
+///
+/// General Punctuation 좁은 글리프 확장: 휴먼명조 U+2027 등 DB 미수록
+/// 폰트의 폴백 `font_size * 0.5` 가 한컴 대비 ~10px 과대 (font-size 20px
+/// 기준). 한컴은 약 0.25-0.3 em 으로 렌더하므로 동일 분기 적용.
 fn is_narrow_punctuation(c: char) -> bool {
     matches!(
         c,
-        ',' | '.' | ':' | ';' | '\'' | '"' | '`' | '\u{00B7}' // · MIDDLE DOT
+        ',' | '.' | ':' | ';' | '\'' | '"' | '`' |
+        '\u{00B7}' |  // · MIDDLE DOT
+        '\u{2018}' |  // ' LEFT SINGLE QUOTATION MARK
+        '\u{2019}' |  // ' RIGHT SINGLE QUOTATION MARK
+        '\u{2027}' // ‧ HYPHENATION POINT
     )
 }
 
@@ -2090,6 +2403,33 @@ mod tests {
             expected,
             dot_advance,
             expected / 2.0
+        );
+    }
+
+    /// [U+00B7 .notdef 위장값 정정] 비례폰트(휴먼명조)에서 `·`(U+00B7) 글리프
+    /// 부재로 cmap 이 .notdef(em_size) 로 위장 → 전각 측정되던 것을 narrow 로
+    /// 정정한다. 한컴은 점 글리프를 가진 대체 폰트(바탕 ≈0.33em)로 `·` 를
+    /// 렌더하므로 한컴 PDF 정합. 고정폭 폰트(돋움체)는 영향 없음 —
+    /// test_630_middle_dot_full_width_in_registered_font 가 전각 보존을 가드.
+    #[test]
+    fn test_b7_notdef_artifact_narrow_in_proportional_font() {
+        let m = EmbeddedTextMeasurer;
+        let style = TextStyle {
+            font_family: "휴먼명조".to_string(),
+            font_size: 20.0,
+            ratio: 1.0,
+            ..Default::default()
+        };
+        let positions = m.compute_char_positions("가\u{00B7}나", &style);
+        assert!(positions.len() >= 3, "positions should have ≥ 3 entries");
+        let dot_advance = positions[2] - positions[1];
+        // 비례폰트의 .notdef 위장 전각(≈20px) 이 아니라 narrow(0.3em ≈ 6px) 여야 함.
+        assert!(
+            dot_advance <= style.font_size * 0.4,
+            "휴먼명조의 `·` (U+00B7) 는 .notdef 위장 전각이 아니라 narrow \
+             (≤ font_size * 0.4 = {:.2}) 로 측정되어야 함, got {:.2}",
+            style.font_size * 0.4,
+            dot_advance
         );
     }
 

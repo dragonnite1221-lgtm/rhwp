@@ -1,7 +1,7 @@
 //! HWPX → HWP IR 어댑터 통합 테스트 (#178)
 //!
-//! Stage 1: 베이스라인 측정 (페이지 폭주 + 영역별 차이 인벤토리).
-//!         아직 어댑터 본체가 동작하지 않으므로 회복 검증 없음 — 측정만.
+//! Stage 1: 베이스라인 측정 (페이지 수 + 영역별 차이 인벤토리).
+//!         일부 샘플은 HWPX 제어 스트림 보존이 누적되며 어댑터 전에도 페이지 수가 안정화된다.
 
 use rhwp::document_core::converters::diagnostics::diff_hwpx_vs_serializer_assumptions;
 use rhwp::document_core::converters::hwpx_to_hwp::{
@@ -45,33 +45,48 @@ fn page_count_after_hwp_export(hwpx_bytes: &[u8]) -> (u32, u32) {
     (original_pages, reloaded_pages)
 }
 
-/// 베이스라인 측정: 현 단계는 페이지 폭주 (reloaded > orig) 가 발생하는 것이 "정상".
-/// 어댑터 영역별 매핑이 누적되면서 폭주 비율이 줄고, Stage 5 완료 시점에는
-/// reloaded == orig 가 되도록 게이트가 강화된다.
-fn assert_explosion_baseline(name: &str, bytes: &[u8]) {
+/// 베이스라인 측정: HWPX 파서/IR 보존이 누적된 샘플은 어댑터 전에도 페이지 수가 안정적이다.
+fn assert_stable_baseline(name: &str, bytes: &[u8]) {
     let (orig, reloaded) = page_count_after_hwp_export(bytes);
     eprintln!(
         "[#178 baseline] {}: orig={}, reloaded={}",
         name, orig, reloaded
     );
     assert!(orig >= 1, "{}: 원본 페이지 수 측정 실패", name);
-    assert!(
-        reloaded > orig,
-        "{}: 현 단계는 폭주가 발생해야 정상 (어댑터 미적용). orig={}, reloaded={}",
-        name,
-        orig,
-        reloaded
+    assert_eq!(
+        reloaded, orig,
+        "{}: baseline export/reload 페이지 수 불안정",
+        name
     );
 }
 
 #[test]
-fn baseline_page_count_explosion_hwpx_h_01() {
-    assert_explosion_baseline("hwpx-h-01", &load_sample("hwpx-h-01.hwpx"));
+fn baseline_page_count_stable_hwpx_h_01() {
+    assert_stable_baseline("hwpx-h-01", &load_sample("hwpx-h-01.hwpx"));
 }
 
 #[test]
-fn baseline_page_count_explosion_hwpx_h_02() {
-    assert_explosion_baseline("hwpx-h-02", &load_sample("hwpx-h-02.hwpx"));
+fn baseline_page_count_measured_hwpx_h_02() {
+    let name = "hwpx-h-02";
+    let bytes = load_sample("hwpx-h-02.hwpx");
+    let (orig, reloaded) = page_count_after_hwp_export(&bytes);
+    let expected = expected_hwp_page_count(name, orig);
+    eprintln!(
+        "[#178 baseline] {}: orig={}, expected_hwp={}, reloaded={}",
+        name, orig, expected, reloaded
+    );
+    assert_eq!(
+        orig, expected,
+        "{}: HWPX 로드 페이지 수는 한컴 HWP 저장 기준과 일치해야 한다",
+        name
+    );
+    assert!(
+        (1..=expected).contains(&reloaded),
+        "{}: 어댑터 없는 baseline export는 측정만 하되 0쪽/폭주는 허용하지 않는다 (expected={}, reloaded={})",
+        name,
+        expected,
+        reloaded
+    );
 }
 
 #[test]
@@ -99,7 +114,7 @@ fn baseline_diff_inventory_hwpx_h_01() {
         *c > 0
             && (*a == "table.raw_ctrl_data"
                 || *a == "paragraph.line_seg.vertical_pos"
-                || *a == "cell.list_attr.bit16")
+                || *a == "cell.list_header_width_ref.bit0")
     });
     assert!(
         interesting,
@@ -325,11 +340,17 @@ fn task888_basic_table_materializes_hancom_table_attrs() {
         })
         .expect("basic-table-01 표 없음");
 
-    assert_eq!(report.table_ctrl_header_attr_materialized, 1);
-    assert_eq!(report.table_record_attr_materialized, 1);
     assert_eq!(
-        table.raw_table_record_attr, 0x0000_0006,
-        "HWPX table record attr는 pageBreak/repeatHeader/noAdjust 계약 필드로 재구성한다"
+        report.table_ctrl_header_attr_materialized, 0,
+        "HWPX 파서가 table CTRL_HEADER attr를 이미 materialize한다"
+    );
+    assert_eq!(
+        report.table_record_attr_materialized, 0,
+        "HWPX 파서가 TABLE record attr를 이미 materialize한다"
+    );
+    assert_eq!(
+        table.raw_table_record_attr, 0x0400_0006,
+        "HWPX table record attr는 pageBreak/repeatHeader/noAdjust와 안쪽 여백 활성 계약 필드로 재구성한다"
     );
     assert_eq!(report.table_record_row_sizes_materialized, 1);
     assert_eq!(table.row_sizes, vec![4, 4, 4]);
@@ -383,7 +404,10 @@ fn task888_expense_report_materializes_tac_table_ctrl_attrs() {
         vec![vec![5, 3, 3], vec![4, 1, 4, 3, 6, 1, 3, 1, 2]],
         "TAC table row_sizes must be row cell counts, not row heights"
     );
-    assert_eq!(report.table_ctrl_header_attr_materialized, 2);
+    assert_eq!(
+        report.table_ctrl_header_attr_materialized, 0,
+        "HWPX 파서가 TAC table CTRL_HEADER attr를 이미 materialize한다"
+    );
     assert_eq!(report.table_record_row_sizes_materialized, 2);
 }
 
@@ -432,7 +456,7 @@ fn task888_expense_report_parses_page_border_fills() {
     let core = DocumentCore::from_bytes(&bytes).expect("HWPX 로드 실패");
     let section_def = &core.document().sections[0].section_def;
 
-    assert_eq!(section_def.page_border_fill.attr, 0x0000_0041);
+    assert_eq!(section_def.page_border_fill.attr, 0x0000_0001);
     assert_eq!(section_def.page_border_fill.border_fill_id, 3);
     assert_eq!(section_def.page_border_fill.spacing_left, 4252);
     assert_eq!(section_def.page_border_fill.spacing_right, 4252);
@@ -440,7 +464,7 @@ fn task888_expense_report_parses_page_border_fills() {
     assert_eq!(section_def.page_border_fill.spacing_bottom, 4252);
 
     assert_eq!(section_def.extra_page_border_fills.len(), 2);
-    assert_eq!(section_def.extra_page_border_fills[0].attr, 0x0000_0041);
+    assert_eq!(section_def.extra_page_border_fills[0].attr, 0x0000_0001);
     assert_eq!(section_def.extra_page_border_fills[0].border_fill_id, 3);
     assert_eq!(section_def.extra_page_border_fills[1].attr, 0x0000_0001);
     assert_eq!(section_def.extra_page_border_fills[1].border_fill_id, 3);
@@ -455,7 +479,7 @@ fn task888_expense_report_page_border_fills_survive_hwp_save_reload() {
     let reloaded = DocumentCore::from_bytes(&hwp_bytes).expect("HWP 재로드 실패");
     let section_def = &reloaded.document().sections[0].section_def;
 
-    assert_eq!(section_def.page_border_fill.attr, 0x0000_0041);
+    assert_eq!(section_def.page_border_fill.attr, 0x0000_0001);
     assert_eq!(section_def.page_border_fill.border_fill_id, 3);
     assert_eq!(section_def.page_border_fill.spacing_left, 4252);
     assert_eq!(section_def.page_border_fill.spacing_right, 4252);
@@ -463,7 +487,7 @@ fn task888_expense_report_page_border_fills_survive_hwp_save_reload() {
     assert_eq!(section_def.page_border_fill.spacing_bottom, 4252);
 
     assert_eq!(section_def.extra_page_border_fills.len(), 2);
-    assert_eq!(section_def.extra_page_border_fills[0].attr, 0x0000_0041);
+    assert_eq!(section_def.extra_page_border_fills[0].attr, 0x0000_0001);
     assert_eq!(section_def.extra_page_border_fills[0].border_fill_id, 3);
     assert_eq!(section_def.extra_page_border_fills[1].attr, 0x0000_0001);
     assert_eq!(section_def.extra_page_border_fills[1].border_fill_id, 3);
@@ -513,21 +537,29 @@ fn stage4_section_def_control_inserted() {
     let bytes = load_sample("hwpx-h-01.hwpx");
     let core = DocumentCore::from_bytes(&bytes).expect("HWPX 로드 실패");
 
-    // 어댑터 적용 전: 첫 문단에 SectionDef 컨트롤이 없어야 함 (HWPX 출처 특성)
+    // 현재 HWPX 파서는 secPr 를 Section.section_def 와 control stream 에 함께 실체화한다.
     let first_para_orig = &core.document().sections[0].paragraphs[0];
     assert!(
-        !first_para_orig
+        first_para_orig
             .controls
             .iter()
             .any(|c| matches!(c, Control::SectionDef(_))),
-        "HWPX 출처 첫 문단에 SectionDef 가 이미 있다면 가정 위반"
+        "HWPX secPr 는 첫 문단 SectionDef 컨트롤로 materialize 되어야 함"
     );
 
+    // 옛 파서 산출물/외부 IR 호환 fallback 검증을 위해 SectionDef 컨트롤을 제거한다.
     let mut doc = core.document().clone();
+    for section in &mut doc.sections {
+        if let Some(first_para) = section.paragraphs.first_mut() {
+            first_para
+                .controls
+                .retain(|c| !matches!(c, Control::SectionDef(_)));
+        }
+    }
     let report = convert_hwpx_to_hwp_ir(&mut doc);
     assert!(
         report.section_def_controls_inserted > 0,
-        "SectionDef 삽입이 발생해야 함"
+        "SectionDef fallback 삽입이 발생해야 함"
     );
 
     // 어댑터 적용 후: 모든 섹션의 첫 문단에 SectionDef 가 있어야 함
@@ -549,6 +581,13 @@ fn stage4_section_def_idempotent() {
     let bytes = load_sample("hwpx-h-01.hwpx");
     let core = DocumentCore::from_bytes(&bytes).expect("HWPX 로드 실패");
     let mut doc = core.document().clone();
+    for section in &mut doc.sections {
+        if let Some(first_para) = section.paragraphs.first_mut() {
+            first_para
+                .controls
+                .retain(|c| !matches!(c, Control::SectionDef(_)));
+        }
+    }
 
     let r1 = convert_hwpx_to_hwp_ir(&mut doc);
     let r2 = convert_hwpx_to_hwp_ir(&mut doc);
@@ -7428,4 +7467,648 @@ fn task903_stage54_generate_minimal_impl_candidate() {
     task903_stage54_write_generation_report(out_dir, bytes, pages, &hash);
 
     assert_eq!(pages, Some(9), "Stage54 rhwp 재로드 기준 9페이지 필요");
+}
+
+fn task1110_stage19_load_hwp(path: &str) -> Option<Document> {
+    let bytes = match std::fs::read(path) {
+        Ok(bytes) => bytes,
+        Err(err) => {
+            eprintln!("[skip] {} 읽기 실패: {}", path, err);
+            return None;
+        }
+    };
+    let core = DocumentCore::from_bytes(&bytes)
+        .unwrap_or_else(|err| panic!("{} HWP 파싱 실패: {:?}", path, err));
+    Some(core.document().clone())
+}
+
+fn task1110_stage19_prepare(doc: &mut Document) {
+    doc.header.compressed = true;
+    doc.header.flags |= 0x01;
+    doc.doc_info.raw_stream_dirty = false;
+}
+
+fn task1110_stage19_write_probe(
+    out_dir: &std::path::Path,
+    name: &str,
+    mut doc: Document,
+) -> (String, usize, Option<u32>, String) {
+    task1110_stage19_prepare(&mut doc);
+    let hwp_bytes = rhwp::serializer::serialize_hwp(&doc).expect("Stage19 HWP 직렬화 실패");
+    let hash = task903_short_hash(&hwp_bytes);
+    let out_path = out_dir.join(name);
+    std::fs::write(&out_path, &hwp_bytes).expect("Stage19 HWP 저장 실패");
+    let pages = DocumentCore::from_bytes(&hwp_bytes)
+        .map(|core| core.page_count())
+        .ok();
+    eprintln!(
+        "[#1110 Stage19] generated {} bytes={} rhwp_pages={:?} hash={}",
+        out_path.display(),
+        hwp_bytes.len(),
+        pages,
+        hash
+    );
+    (name.to_string(), hwp_bytes.len(), pages, hash)
+}
+
+fn task1110_stage19_write_report(
+    out_dir: &std::path::Path,
+    rows: &[(String, usize, Option<u32>, String)],
+) {
+    use std::fmt::Write as _;
+
+    let mut report = String::new();
+    writeln!(
+        report,
+        "# Task M100-1110 Stage 19 Hancom 2020 p1 Warning Probe"
+    )
+    .unwrap();
+    writeln!(report).unwrap();
+    writeln!(report, "## 1. 생성 파일").unwrap();
+    writeln!(report).unwrap();
+    writeln!(report, "| file | bytes | rhwp reload | hash |").unwrap();
+    writeln!(report, "|---|---:|---|---|").unwrap();
+    for (name, bytes, pages, hash) in rows {
+        writeln!(
+            report,
+            "| `{}` | {} | {} | `{}` |",
+            name,
+            bytes,
+            pages
+                .map(|page_count| format!("ok, pages={}", page_count))
+                .unwrap_or_else(|| "failed".to_string()),
+            hash
+        )
+        .unwrap();
+    }
+
+    writeln!(report).unwrap();
+    writeln!(report, "## 2. 판정표").unwrap();
+    writeln!(report).unwrap();
+    writeln!(
+        report,
+        "| file | 한컴2020 판정 | 한컴2010 판정 | p1 렌더링 | 비고 |"
+    )
+    .unwrap();
+    writeln!(report, "|---|---|---|---|---|").unwrap();
+    for (name, _, _, _) in rows {
+        let note = match name.as_str() {
+            "01_stage18_current.hwp" => "Stage18 p1 baseline",
+            "02_oracle_file_header.hwp" => "FileHeader만 정답지 raw 사용",
+            "03_oracle_docinfo.hwp" => "DocInfo/DocProperties만 정답지 raw/model 사용",
+            "04_oracle_bodytext.hwp" => "BodyText Section0만 정답지 raw 사용",
+            "05_oracle_docinfo_bodytext.hwp" => "DocInfo + BodyText Section0 정답지 사용",
+            "06_oracle_file_header_docinfo_bodytext.hwp" => {
+                "FileHeader + DocInfo + BodyText Section0 정답지 사용"
+            }
+            "07_oracle_container_meta.hwp" => "FileHeader + preview/extra stream 정답지 사용",
+            _ => "",
+        };
+        writeln!(report, "| `{}` |  |  |  | {} |", name, note).unwrap();
+    }
+
+    writeln!(report).unwrap();
+    writeln!(report, "## 3. 해석 기준").unwrap();
+    writeln!(report).unwrap();
+    writeln!(
+        report,
+        "한컴2020의 손상/변조 가능성 판정은 Stage10 p1에서도 재현되므로 Stage18 FACE_NAME/typeInfo 변경만의 회귀로 보지 않는다."
+    )
+    .unwrap();
+    writeln!(
+        report,
+        "이 probe는 p1 공통 계약을 FileHeader, DocInfo, BodyText, container metadata 축으로 분리하기 위한 것이다."
+    )
+    .unwrap();
+
+    std::fs::write(out_dir.join("stage19_generation.md"), report)
+        .expect("Stage19 generation report 저장 실패");
+}
+
+#[test]
+#[ignore]
+fn task1110_stage19_generate_p1_hancom2020_warning_probe() {
+    let out_dir =
+        std::path::Path::new("output/poc/hwpx2hwp/task1110/stage19_p1_hancom2020_warning_probe");
+    std::fs::create_dir_all(out_dir).expect("Stage19 output dir 생성 실패");
+
+    let Some(baseline) = task1110_stage19_load_hwp(
+        "output/poc/hwpx2hwp/task1110/stage18_facename_typeinfo_contract/exam_social-p1-stage18.hwp",
+    ) else {
+        return;
+    };
+    let oracle = task1110_stage19_load_hwp("samples/exam_social-p1.hwp")
+        .expect("Stage19 oracle p1 HWP 필요");
+
+    let mut rows = Vec::new();
+    rows.push(task1110_stage19_write_probe(
+        out_dir,
+        "01_stage18_current.hwp",
+        baseline.clone(),
+    ));
+
+    let mut file_header = baseline.clone();
+    file_header.header = oracle.header.clone();
+    rows.push(task1110_stage19_write_probe(
+        out_dir,
+        "02_oracle_file_header.hwp",
+        file_header,
+    ));
+
+    let mut docinfo = baseline.clone();
+    docinfo.doc_properties = oracle.doc_properties.clone();
+    docinfo.doc_info = oracle.doc_info.clone();
+    docinfo.doc_info.raw_stream_dirty = false;
+    rows.push(task1110_stage19_write_probe(
+        out_dir,
+        "03_oracle_docinfo.hwp",
+        docinfo,
+    ));
+
+    let mut bodytext = baseline.clone();
+    bodytext.sections[0].raw_stream = oracle.sections[0].raw_stream.clone();
+    rows.push(task1110_stage19_write_probe(
+        out_dir,
+        "04_oracle_bodytext.hwp",
+        bodytext,
+    ));
+
+    let mut docinfo_bodytext = baseline.clone();
+    docinfo_bodytext.doc_properties = oracle.doc_properties.clone();
+    docinfo_bodytext.doc_info = oracle.doc_info.clone();
+    docinfo_bodytext.doc_info.raw_stream_dirty = false;
+    docinfo_bodytext.sections[0].raw_stream = oracle.sections[0].raw_stream.clone();
+    rows.push(task1110_stage19_write_probe(
+        out_dir,
+        "05_oracle_docinfo_bodytext.hwp",
+        docinfo_bodytext,
+    ));
+
+    let mut all_core_streams = baseline.clone();
+    all_core_streams.header = oracle.header.clone();
+    all_core_streams.doc_properties = oracle.doc_properties.clone();
+    all_core_streams.doc_info = oracle.doc_info.clone();
+    all_core_streams.doc_info.raw_stream_dirty = false;
+    all_core_streams.sections[0].raw_stream = oracle.sections[0].raw_stream.clone();
+    rows.push(task1110_stage19_write_probe(
+        out_dir,
+        "06_oracle_file_header_docinfo_bodytext.hwp",
+        all_core_streams,
+    ));
+
+    let mut container_meta = baseline.clone();
+    container_meta.header = oracle.header.clone();
+    container_meta.preview = oracle.preview.clone();
+    container_meta.extra_streams = oracle.extra_streams.clone();
+    rows.push(task1110_stage19_write_probe(
+        out_dir,
+        "07_oracle_container_meta.hwp",
+        container_meta,
+    ));
+
+    task1110_stage19_write_report(out_dir, &rows);
+}
+
+fn task1110_stage20_patch_section0_tags(
+    baseline: &Document,
+    oracle: &Document,
+    tags: &[u32],
+) -> Document {
+    let mut doc = baseline.clone();
+    let target_raw = doc.sections[0]
+        .raw_stream
+        .as_ref()
+        .expect("Stage20 target Section0 raw_stream 필요");
+    let oracle_raw = oracle.sections[0]
+        .raw_stream
+        .as_ref()
+        .expect("Stage20 oracle Section0 raw_stream 필요");
+    let patched = task1110_stage20_graft_record_tags_allow_level_diff(target_raw, oracle_raw, tags);
+    doc.sections[0].raw_stream = Some(patched);
+    doc
+}
+
+fn task1110_stage20_graft_record_tags_allow_level_diff(
+    target_raw: &[u8],
+    oracle_raw: &[u8],
+    tags: &[u32],
+) -> Vec<u8> {
+    let target_records = task903_parse_records(target_raw);
+    let oracle_records = task903_parse_records(oracle_raw);
+    assert_eq!(
+        target_records.len(),
+        oracle_records.len(),
+        "Stage20 BodyText record count mismatch"
+    );
+
+    let mut out = Vec::with_capacity(target_raw.len().max(oracle_raw.len()));
+    let mut cursor = 0usize;
+    for (idx, target_record) in target_records.iter().enumerate() {
+        let oracle_record = &oracle_records[idx];
+        assert_eq!(
+            target_record.tag, oracle_record.tag,
+            "Stage20 record tag mismatch at idx {}: target={} oracle={}",
+            idx, target_record.tag, oracle_record.tag
+        );
+
+        if cursor < target_record.offset {
+            out.extend_from_slice(&target_raw[cursor..target_record.offset]);
+        }
+
+        if tags.contains(&target_record.tag) {
+            out.extend_from_slice(
+                &oracle_raw[oracle_record.offset..task903_record_end(oracle_record)],
+            );
+        } else {
+            out.extend_from_slice(
+                &target_raw[target_record.offset..task903_record_end(target_record)],
+            );
+        }
+        cursor = task903_record_end(target_record);
+    }
+    if cursor < target_raw.len() {
+        out.extend_from_slice(&target_raw[cursor..]);
+    }
+    out
+}
+
+fn task1110_stage20_unique_tags(doc: &Document) -> Vec<u32> {
+    let raw = doc.sections[0]
+        .raw_stream
+        .as_ref()
+        .expect("Stage20 Section0 raw_stream 필요");
+    let mut tags = std::collections::BTreeSet::new();
+    for record in task903_parse_records(raw) {
+        tags.insert(record.tag);
+    }
+    tags.into_iter().collect()
+}
+
+fn task1110_stage20_write_report(
+    out_dir: &std::path::Path,
+    rows: &[(String, usize, Option<u32>, String, String)],
+) {
+    use std::fmt::Write as _;
+
+    let mut report = String::new();
+    writeln!(
+        report,
+        "# Task M100-1110 Stage 20 Section0 Tag Contract Probe"
+    )
+    .unwrap();
+    writeln!(report).unwrap();
+    writeln!(report, "## 1. 생성 파일").unwrap();
+    writeln!(report).unwrap();
+    writeln!(report, "| file | bytes | rhwp reload | hash | tags |").unwrap();
+    writeln!(report, "|---|---:|---|---|---|").unwrap();
+    for (name, bytes, pages, hash, tags) in rows {
+        writeln!(
+            report,
+            "| `{}` | {} | {} | `{}` | {} |",
+            name,
+            bytes,
+            pages
+                .map(|page_count| format!("ok, pages={}", page_count))
+                .unwrap_or_else(|| "failed".to_string()),
+            hash,
+            tags
+        )
+        .unwrap();
+    }
+
+    writeln!(report).unwrap();
+    writeln!(report, "## 2. 판정표").unwrap();
+    writeln!(report).unwrap();
+    writeln!(report, "| file | 한컴2020 판정 | p1 렌더링 | 비고 |").unwrap();
+    writeln!(report, "|---|---|---|---|").unwrap();
+    for (name, _, _, _, tags) in rows {
+        writeln!(report, "| `{}` |  |  | {} |", name, tags).unwrap();
+    }
+
+    writeln!(report).unwrap();
+    writeln!(report, "## 3. 해석 기준").unwrap();
+    writeln!(report).unwrap();
+    writeln!(
+        report,
+        "Stage19에서 BodyText Section0만 정답지로 치환한 후보가 한컴2020 정상 판정을 받았다."
+    )
+    .unwrap();
+    writeln!(
+        report,
+        "이 단계는 Section0 내부 record tag 단위로 경고 원인을 분리한다."
+    )
+    .unwrap();
+
+    std::fs::write(out_dir.join("stage20_generation.md"), report)
+        .expect("Stage20 generation report 저장 실패");
+}
+
+#[test]
+#[ignore]
+fn task1110_stage20_generate_p1_section0_tag_probe() {
+    let out_dir =
+        std::path::Path::new("output/poc/hwpx2hwp/task1110/stage20_p1_section0_tag_probe");
+    std::fs::create_dir_all(out_dir).expect("Stage20 output dir 생성 실패");
+
+    let Some(baseline) = task1110_stage19_load_hwp(
+        "output/poc/hwpx2hwp/task1110/stage18_facename_typeinfo_contract/exam_social-p1-stage18.hwp",
+    ) else {
+        return;
+    };
+    let oracle = task1110_stage19_load_hwp("samples/exam_social-p1.hwp")
+        .expect("Stage20 oracle p1 HWP 필요");
+
+    let variants: &[(&str, &[u32], &str)] = &[
+        ("01_para_header.hwp", &[66], "PARA_HEADER"),
+        ("02_para_text.hwp", &[67], "PARA_TEXT"),
+        ("03_para_char_shape.hwp", &[68], "PARA_CHAR_SHAPE"),
+        ("04_para_line_seg.hwp", &[69], "PARA_LINE_SEG"),
+        ("05_para_range_tag.hwp", &[70], "PARA_RANGE_TAG"),
+        ("06_ctrl_header.hwp", &[71], "CTRL_HEADER"),
+        ("07_list_header.hwp", &[72], "LIST_HEADER"),
+        (
+            "08_page_records.hwp",
+            &[73, 74, 75],
+            "PAGE_DEF/FOOTNOTE_SHAPE/PAGE_BORDER_FILL",
+        ),
+        (
+            "09_shape_records.hwp",
+            &[76, 78, 79, 80, 81, 82, 83, 84, 85, 86, 87],
+            "SHAPE/CTRL_DATA records",
+        ),
+        ("10_table_records.hwp", &[77], "TABLE"),
+        (
+            "11_para_core.hwp",
+            &[66, 67, 68, 69, 70],
+            "PARA_HEADER/TEXT/CHAR/LINE/RANGE",
+        ),
+        (
+            "12_control_envelope.hwp",
+            &[71, 72, 73, 74, 75, 76, 77, 78, 79, 82, 85, 86, 87],
+            "control/list/page/shape/table",
+        ),
+        (
+            "13_text_layout_table.hwp",
+            &[66, 67, 68, 69, 70, 77],
+            "paragraph core + TABLE",
+        ),
+    ];
+
+    let mut rows = Vec::new();
+    for (name, tags, label) in variants {
+        let doc = task1110_stage20_patch_section0_tags(&baseline, &oracle, tags);
+        let (file, bytes, pages, hash) = task1110_stage19_write_probe(out_dir, name, doc);
+        rows.push((file, bytes, pages, hash, (*label).to_string()));
+    }
+
+    let all_tags = task1110_stage20_unique_tags(&oracle);
+    let all_doc = task1110_stage20_patch_section0_tags(&baseline, &oracle, &all_tags);
+    let all_label = format!(
+        "all Section0 tags: {}",
+        all_tags
+            .iter()
+            .map(|tag| tag.to_string())
+            .collect::<Vec<_>>()
+            .join(",")
+    );
+    let (file, bytes, pages, hash) =
+        task1110_stage19_write_probe(out_dir, "14_all_section0_tags.hwp", all_doc);
+    rows.push((file, bytes, pages, hash, all_label));
+
+    task1110_stage20_write_report(out_dir, &rows);
+}
+
+fn task1110_stage21_write_report(
+    out_dir: &std::path::Path,
+    rows: &[(String, usize, Option<u32>, String, String)],
+) {
+    use std::fmt::Write as _;
+
+    let mut report = String::new();
+    writeln!(report, "# Task M100-1110 Stage 21 Para Core Combo Probe").unwrap();
+    writeln!(report).unwrap();
+    writeln!(report, "## 1. 생성 파일").unwrap();
+    writeln!(report).unwrap();
+    writeln!(report, "| file | bytes | rhwp reload | hash | tags |").unwrap();
+    writeln!(report, "|---|---:|---|---|---|").unwrap();
+    for (name, bytes, pages, hash, tags) in rows {
+        writeln!(
+            report,
+            "| `{}` | {} | {} | `{}` | {} |",
+            name,
+            bytes,
+            pages
+                .map(|page_count| format!("ok, pages={}", page_count))
+                .unwrap_or_else(|| "failed".to_string()),
+            hash,
+            tags
+        )
+        .unwrap();
+    }
+
+    writeln!(report).unwrap();
+    writeln!(report, "## 2. 판정표").unwrap();
+    writeln!(report).unwrap();
+    writeln!(report, "| file | 한컴2020 판정 | p1 렌더링 | 비고 |").unwrap();
+    writeln!(report, "|---|---|---|---|").unwrap();
+    for (name, _, _, _, tags) in rows {
+        writeln!(report, "| `{}` |  |  | {} |", name, tags).unwrap();
+    }
+
+    writeln!(report).unwrap();
+    writeln!(report, "## 3. 해석 기준").unwrap();
+    writeln!(report).unwrap();
+    writeln!(
+        report,
+        "Stage20에서 PARA_HEADER/TEXT/CHAR_SHAPE/LINE_SEG/RANGE_TAG 묶음이 한컴2020 정상 판정을 받았다."
+    )
+    .unwrap();
+    writeln!(
+        report,
+        "이 단계는 para core 내부의 최소 정상화 조합을 찾기 위한 것이다."
+    )
+    .unwrap();
+
+    std::fs::write(out_dir.join("stage21_generation.md"), report)
+        .expect("Stage21 generation report 저장 실패");
+}
+
+#[test]
+#[ignore]
+fn task1110_stage21_generate_p1_para_core_combo_probe() {
+    let out_dir =
+        std::path::Path::new("output/poc/hwpx2hwp/task1110/stage21_p1_para_core_combo_probe");
+    std::fs::create_dir_all(out_dir).expect("Stage21 output dir 생성 실패");
+
+    let Some(baseline) = task1110_stage19_load_hwp(
+        "output/poc/hwpx2hwp/task1110/stage18_facename_typeinfo_contract/exam_social-p1-stage18.hwp",
+    ) else {
+        return;
+    };
+    let oracle = task1110_stage19_load_hwp("samples/exam_social-p1.hwp")
+        .expect("Stage21 oracle p1 HWP 필요");
+
+    let variants: &[(&str, &[u32], &str)] = &[
+        ("01_header_text.hwp", &[66, 67], "PARA_HEADER + PARA_TEXT"),
+        (
+            "02_header_char.hwp",
+            &[66, 68],
+            "PARA_HEADER + PARA_CHAR_SHAPE",
+        ),
+        (
+            "03_header_line.hwp",
+            &[66, 69],
+            "PARA_HEADER + PARA_LINE_SEG",
+        ),
+        (
+            "04_header_range.hwp",
+            &[66, 70],
+            "PARA_HEADER + PARA_RANGE_TAG",
+        ),
+        ("05_text_char.hwp", &[67, 68], "PARA_TEXT + PARA_CHAR_SHAPE"),
+        ("06_text_line.hwp", &[67, 69], "PARA_TEXT + PARA_LINE_SEG"),
+        ("07_text_range.hwp", &[67, 70], "PARA_TEXT + PARA_RANGE_TAG"),
+        (
+            "08_char_line.hwp",
+            &[68, 69],
+            "PARA_CHAR_SHAPE + PARA_LINE_SEG",
+        ),
+        (
+            "09_char_range.hwp",
+            &[68, 70],
+            "PARA_CHAR_SHAPE + PARA_RANGE_TAG",
+        ),
+        (
+            "10_line_range.hwp",
+            &[69, 70],
+            "PARA_LINE_SEG + PARA_RANGE_TAG",
+        ),
+        (
+            "11_header_text_char.hwp",
+            &[66, 67, 68],
+            "PARA_HEADER + PARA_TEXT + PARA_CHAR_SHAPE",
+        ),
+        (
+            "12_header_text_line.hwp",
+            &[66, 67, 69],
+            "PARA_HEADER + PARA_TEXT + PARA_LINE_SEG",
+        ),
+        (
+            "13_header_text_range.hwp",
+            &[66, 67, 70],
+            "PARA_HEADER + PARA_TEXT + PARA_RANGE_TAG",
+        ),
+        (
+            "14_header_char_line.hwp",
+            &[66, 68, 69],
+            "PARA_HEADER + PARA_CHAR_SHAPE + PARA_LINE_SEG",
+        ),
+        (
+            "15_header_char_range.hwp",
+            &[66, 68, 70],
+            "PARA_HEADER + PARA_CHAR_SHAPE + PARA_RANGE_TAG",
+        ),
+        (
+            "16_header_line_range.hwp",
+            &[66, 69, 70],
+            "PARA_HEADER + PARA_LINE_SEG + PARA_RANGE_TAG",
+        ),
+        (
+            "17_text_char_line.hwp",
+            &[67, 68, 69],
+            "PARA_TEXT + PARA_CHAR_SHAPE + PARA_LINE_SEG",
+        ),
+        (
+            "18_text_char_range.hwp",
+            &[67, 68, 70],
+            "PARA_TEXT + PARA_CHAR_SHAPE + PARA_RANGE_TAG",
+        ),
+        (
+            "19_text_line_range.hwp",
+            &[67, 69, 70],
+            "PARA_TEXT + PARA_LINE_SEG + PARA_RANGE_TAG",
+        ),
+        (
+            "20_char_line_range.hwp",
+            &[68, 69, 70],
+            "PARA_CHAR_SHAPE + PARA_LINE_SEG + PARA_RANGE_TAG",
+        ),
+    ];
+
+    let mut rows = Vec::new();
+    for (name, tags, label) in variants {
+        let doc = task1110_stage20_patch_section0_tags(&baseline, &oracle, tags);
+        let (file, bytes, pages, hash) = task1110_stage19_write_probe(out_dir, name, doc);
+        rows.push((file, bytes, pages, hash, (*label).to_string()));
+    }
+
+    task1110_stage21_write_report(out_dir, &rows);
+}
+
+#[test]
+#[ignore]
+fn task1110_stage23_generate_p1_header_text_payload_pair_probe() {
+    let out_dir = std::path::Path::new(
+        "output/poc/hwpx2hwp/task1110/stage23_p1_header_text_payload_pair_probe",
+    );
+    std::fs::create_dir_all(out_dir).expect("Stage23 output dir 생성 실패");
+
+    let Some(baseline) = task1110_stage19_load_hwp(
+        "output/poc/hwpx2hwp/task1110/stage22_header_footer_para_level_candidate/exam_social-p1-stage22.hwp",
+    ) else {
+        return;
+    };
+    let oracle = task1110_stage19_load_hwp("samples/exam_social-p1.hwp")
+        .expect("Stage23 oracle p1 HWP 필요");
+    let baseline_raw = baseline.sections[0]
+        .raw_stream
+        .as_ref()
+        .expect("Stage23 baseline Section0 raw_stream 필요");
+    let oracle_raw = oracle.sections[0]
+        .raw_stream
+        .as_ref()
+        .expect("Stage23 oracle Section0 raw_stream 필요");
+
+    let variants: &[(&str, &[usize], &str)] = &[
+        ("01_pair_0_1.hwp", &[0, 1], "records 0/1"),
+        ("02_pair_67_68.hwp", &[67, 68], "records 67/68"),
+        ("03_pair_72_73.hwp", &[72, 73], "records 72/73"),
+        ("04_pair_90_91.hwp", &[90, 91], "records 90/91"),
+        ("05_pair_134_135.hwp", &[134, 135], "records 134/135"),
+        ("06_pair_147_148.hwp", &[147, 148], "records 147/148"),
+        ("07_pair_154_155.hwp", &[154, 155], "records 154/155"),
+        ("08_pair_169_170.hwp", &[169, 170], "records 169/170"),
+        ("09_pair_176_177.hwp", &[176, 177], "records 176/177"),
+        (
+            "10_front_pairs.hwp",
+            &[0, 1, 67, 68, 72, 73, 90, 91],
+            "front changed PARA_HEADER/TEXT pairs",
+        ),
+        (
+            "11_late_pairs.hwp",
+            &[134, 135, 147, 148, 154, 155, 169, 170, 176, 177],
+            "late changed PARA_HEADER/TEXT pairs",
+        ),
+        (
+            "12_all_changed_pairs.hwp",
+            &[
+                0, 1, 67, 68, 72, 73, 90, 91, 134, 135, 147, 148, 154, 155, 169, 170, 176, 177,
+            ],
+            "all changed PARA_HEADER/TEXT pairs",
+        ),
+    ];
+
+    let mut rows = Vec::new();
+    for (name, indices, label) in variants {
+        let mut doc = baseline.clone();
+        doc.sections[0].raw_stream = Some(task903_graft_record_indices(
+            baseline_raw,
+            oracle_raw,
+            indices,
+        ));
+        let (file, bytes, pages, hash) = task1110_stage19_write_probe(out_dir, name, doc);
+        rows.push((file, bytes, pages, hash, (*label).to_string()));
+    }
+
+    task1110_stage21_write_report(out_dir, &rows);
 }

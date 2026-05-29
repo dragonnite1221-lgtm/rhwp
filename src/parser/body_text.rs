@@ -550,11 +550,12 @@ fn parse_section_def(ctrl_data: &[u8], child_records: &[Record]) -> SectionDef {
     }
 
     // 숨기기 플래그 (flags에서 추출)
-    sd.hide_header = sd.flags & 0x0100 != 0;
-    sd.hide_footer = sd.flags & 0x0200 != 0;
+    // HWP 5.0 spec table 119: bit 0..5 are first-page hide flags.
+    sd.hide_header = sd.flags & 0x0001 != 0;
+    sd.hide_footer = sd.flags & 0x0002 != 0;
     sd.hide_master_page = sd.flags & 0x0004 != 0; // bit 2 (HWP5 스펙, 첫쪽 바탕쪽 감춤)
-    sd.hide_border = sd.flags & 0x0800 != 0;
-    sd.hide_fill = sd.flags & 0x1000 != 0;
+    sd.hide_border = sd.flags & 0x0008 != 0;
+    sd.hide_fill = sd.flags & 0x0010 != 0;
     sd.hide_empty_line = sd.flags & 0x00080000 != 0; // bit 19: 빈 줄 감추기
     sd.page_num_type = ((sd.flags >> 20) & 0x03) as u8; // bit 20-21: 쪽 번호 종류 (0=이어서, 1=홀수, 2=짝수)
 
@@ -699,12 +700,14 @@ fn parse_master_pages_from_raw(raw_records: &[RawRecord]) -> Vec<MasterPage> {
             apply_to,
             is_extension,
             overlap,
+            replace_base: false,
             ext_flags,
             paragraphs,
             text_width,
             text_height,
             text_ref,
             num_ref,
+            hwpx_page_number: None,
             raw_list_header,
         });
     }
@@ -865,6 +868,8 @@ fn parse_page_border_fill(data: &[u8]) -> PageBorderFill {
     pbf.spacing_top = r.read_i16().unwrap_or(0);
     pbf.spacing_bottom = r.read_i16().unwrap_or(0);
     pbf.border_fill_id = r.read_u16().unwrap_or(0);
+    // [Task #1006] HWP5: PR #956 한컴 viewer 정합 — paper-based.
+    pbf.basis = crate::model::page::PageBorderBasis::PaperBased;
 
     pbf
 }

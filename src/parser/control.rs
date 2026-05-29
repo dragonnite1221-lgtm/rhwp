@@ -132,6 +132,7 @@ fn parse_field_control(ctrl_id: u32, ctrl_data: &[u8]) -> Control {
         ctrl_id,
         ctrl_data_name: None,
         memo_index,
+        memo_paragraphs: Vec::new(),
     })
 }
 
@@ -342,6 +343,7 @@ fn parse_cell(records: &[Record]) -> Cell {
     //   bit 1 (=property bit 17): 셀 보호
     //   bit 2 (=property bit 18): 제목 셀
     //   bit 3 (=property bit 19): 양식모드 편집 가능
+    // 현재 IR은 미해석 확장 bit를 분해하지 않고 list_header_width_ref 원값으로 보존한다.
     cell.is_header = (cell.list_header_width_ref & 0x04) != 0;
 
     // 셀 속성 (표 82: 26바이트)
@@ -361,14 +363,14 @@ fn parse_cell(records: &[Record]) -> Cell {
 
     cell.border_fill_id = r.read_u16().unwrap_or(0);
 
-    // "안 여백 지정" (list_attr bit 16, hwplib: isApplyInnerMargin) 미설정이면
+    // "안 여백 지정" (LIST_HEADER bytes 6-7 bit 0, hwplib: isApplyInnerMargin) 미설정이면
     // 셀 패딩을 무시하고 테이블 기본 패딩을 사용해야 함
     // HWP는 이 비트가 0이어도 패딩 필드에 값을 저장하지만 렌더링에서 무시
-    // "안 여백 지정" (list_attr bit 16): 셀 고유 여백 vs 표 기본 여백 선택
-    // bit 16=1: 셀 고유 여백 사용 (파싱한 패딩값 그대로)
-    // bit 16=0: 표 기본 여백 사용 — 단, 레이아웃 시 표 기본 패딩으로 대체
+    // "안 여백 지정" (width_ref bit 0): 셀 고유 여백 vs 표 기본 여백 선택
+    // bit 0=1: 셀 고유 여백 사용 (파싱한 패딩값 그대로)
+    // bit 0=0: 표 기본 여백 사용 — 단, 레이아웃 시 표 기본 패딩으로 대체
     // → 파싱 단계에서는 원본값을 보존하고, 레이아웃에서 처리
-    cell.apply_inner_margin = (list_attr >> 16) & 0x01 != 0;
+    cell.apply_inner_margin = (cell.list_header_width_ref & 0x0001) != 0;
 
     // 34바이트 이후 추가 데이터 보존 (라운드트립용)
     if r.remaining() > 0 {
@@ -518,13 +520,25 @@ fn parse_footer_control(ctrl_data: &[u8], child_records: &[Record]) -> Control {
 /// 각주 컨트롤 파싱
 fn parse_footnote_control(ctrl_data: &[u8], child_records: &[Record]) -> Control {
     let mut footnote = Footnote::default();
-
-    if ctrl_data.len() >= 2 {
+    // [Task #1050] hwplib CtrlHeaderFootnote 정합:
+    //   number(UInt4) + before(WChar) + after(WChar) + numberShape(UInt4) + instanceId(UInt4, optional)
+    if ctrl_data.len() >= 4 {
         let mut r = ByteReader::new(ctrl_data);
-        footnote.number = r.read_u16().unwrap_or(0);
+        footnote.number = r.read_u32().unwrap_or(0) as u16;
+        if ctrl_data.len() >= 8 {
+            footnote.before_decoration_letter = r.read_u16().unwrap_or(0);
+            footnote.after_decoration_letter = r.read_u16().unwrap_or(0);
+        }
+        if ctrl_data.len() >= 12 {
+            footnote.number_shape = r.read_u32().unwrap_or(0);
+        }
+        if ctrl_data.len() >= 16 {
+            footnote.instance_id = r.read_u32().unwrap_or(0);
+        }
     }
 
     footnote.paragraphs = find_list_header_paragraphs(child_records);
+    footnote.list_header_property = find_list_header_property_for_footnote_endnote(child_records);
 
     Control::Footnote(Box::new(footnote))
 }
@@ -532,15 +546,39 @@ fn parse_footnote_control(ctrl_data: &[u8], child_records: &[Record]) -> Control
 /// 미주 컨트롤 파싱
 fn parse_endnote_control(ctrl_data: &[u8], child_records: &[Record]) -> Control {
     let mut endnote = Endnote::default();
-
-    if ctrl_data.len() >= 2 {
+    // [Task #1050] CTRL_FOOTNOTE 와 동일 구조
+    if ctrl_data.len() >= 4 {
         let mut r = ByteReader::new(ctrl_data);
-        endnote.number = r.read_u16().unwrap_or(0);
+        endnote.number = r.read_u32().unwrap_or(0) as u16;
+        if ctrl_data.len() >= 8 {
+            endnote.before_decoration_letter = r.read_u16().unwrap_or(0);
+            endnote.after_decoration_letter = r.read_u16().unwrap_or(0);
+        }
+        if ctrl_data.len() >= 12 {
+            endnote.number_shape = r.read_u32().unwrap_or(0);
+        }
+        if ctrl_data.len() >= 16 {
+            endnote.instance_id = r.read_u32().unwrap_or(0);
+        }
     }
 
     endnote.paragraphs = find_list_header_paragraphs(child_records);
+    endnote.list_header_property = find_list_header_property_for_footnote_endnote(child_records);
 
     Control::Endnote(Box::new(endnote))
+}
+
+/// [Task #1050] CTRL_FOOTNOTE / CTRL_ENDNOTE 의 직속 LIST_HEADER property 읽기.
+/// 형식: paraCount(SInt4) + property(UInt4) + 8 byte zero padding.
+fn find_list_header_property_for_footnote_endnote(child_records: &[Record]) -> u32 {
+    for record in child_records {
+        if record.tag_id == crate::parser::tags::HWPTAG_LIST_HEADER && record.data.len() >= 8 {
+            let mut r = ByteReader::new(&record.data);
+            let _para_count = r.read_i32().unwrap_or(0);
+            return r.read_u32().unwrap_or(0);
+        }
+    }
+    0
 }
 
 // ============================================================
@@ -776,6 +814,11 @@ fn parse_equation_control(ctrl_data: &[u8], child_records: &[Record]) -> Control
 
         // baseline: i16 (2바이트)
         equation.baseline = r.read_i16().unwrap_or(0);
+
+        // [Task #1061] unknown: u16 (2바이트) — HWP5 spec 표 105 누락 영역.
+        // hwplib ForEQEdit.readUInt2() 정합. 한컴 실제 저장본에 baseline 과
+        // version_info 사이 UINT16 zero 가 위치.
+        equation.unknown = r.read_u16().unwrap_or(0);
 
         // version_info: WCHAR 문자열
         if let Ok(ver) = r.read_hwp_string() {

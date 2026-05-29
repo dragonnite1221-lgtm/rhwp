@@ -1,7 +1,7 @@
 //! 커서 좌표/히트테스트/셀 커서/경로 기반 조작 관련 native 메서드
 
 use super::super::helpers::{
-    color_ref_to_css, find_char_at_x, find_control_text_positions, has_table_control,
+    color_ref_to_css, find_char_at_x, find_logical_control_positions, has_table_control,
     navigable_text_len, utf16_pos_to_char_idx, LineInfoResult,
 };
 use crate::document_core::DocumentCore;
@@ -41,7 +41,7 @@ impl DocumentCore {
             .get(section_idx)
             .and_then(|section| section.paragraphs.get(para_idx))
             .map(|para| {
-                let ctrl_positions = find_control_text_positions(para);
+                let ctrl_positions = find_logical_control_positions(para);
                 para.controls
                     .iter()
                     .enumerate()
@@ -52,11 +52,327 @@ impl DocumentCore {
             .unwrap_or_default();
 
         // 커서 결과를 담을 구조체
+        #[derive(Clone, Copy)]
         struct CursorHit {
             page_index: u32,
             x: f64,
             y: f64,
             height: f64,
+        }
+
+        fn is_inline_cursor_control(ctrl: &Control) -> bool {
+            match ctrl {
+                Control::Shape(_) | Control::Picture(_) | Control::Equation(_) => true,
+                Control::Table(table) => table.common.treat_as_char,
+                _ => false,
+            }
+        }
+
+        fn text_offset_after_same_pos_inline_controls(
+            para: &Paragraph,
+            text_offset: usize,
+        ) -> usize {
+            let ctrl_positions = para.control_text_positions();
+            let same_or_before_count = para
+                .controls
+                .iter()
+                .enumerate()
+                .filter(|(_, ctrl)| is_inline_cursor_control(ctrl))
+                .filter_map(|(ci, _)| ctrl_positions.get(ci))
+                .filter(|&&pos| pos <= text_offset)
+                .count();
+            text_offset + same_or_before_count
+        }
+
+        fn collect_inline_control_bboxes(
+            node: &RenderNode,
+            sec: usize,
+            para: usize,
+            bboxes: &mut std::collections::HashMap<usize, (f64, f64, f64, f64)>,
+        ) {
+            match &node.node_type {
+                RenderNodeType::Image(image_node) => {
+                    if image_node.section_index == Some(sec) && image_node.para_index == Some(para)
+                    {
+                        if let Some(ci) = image_node.control_index {
+                            bboxes.insert(
+                                ci,
+                                (node.bbox.x, node.bbox.y, node.bbox.width, node.bbox.height),
+                            );
+                        }
+                    }
+                }
+                RenderNodeType::Equation(eq_node) => {
+                    if eq_node.section_index == Some(sec) && eq_node.para_index == Some(para) {
+                        if let Some(ci) = eq_node.control_index {
+                            bboxes.insert(
+                                ci,
+                                (node.bbox.x, node.bbox.y, node.bbox.width, node.bbox.height),
+                            );
+                        }
+                    }
+                }
+                RenderNodeType::Group(group_node) => {
+                    if group_node.section_index == Some(sec) && group_node.para_index == Some(para)
+                    {
+                        if let Some(ci) = group_node.control_index {
+                            bboxes.insert(
+                                ci,
+                                (node.bbox.x, node.bbox.y, node.bbox.width, node.bbox.height),
+                            );
+                        }
+                    }
+                }
+                RenderNodeType::Rectangle(rect_node) => {
+                    if rect_node.section_index == Some(sec) && rect_node.para_index == Some(para) {
+                        if let Some(ci) = rect_node.control_index {
+                            bboxes.insert(
+                                ci,
+                                (node.bbox.x, node.bbox.y, node.bbox.width, node.bbox.height),
+                            );
+                        }
+                    }
+                }
+                RenderNodeType::Line(line_node) => {
+                    if line_node.section_index == Some(sec) && line_node.para_index == Some(para) {
+                        if let Some(ci) = line_node.control_index {
+                            bboxes.insert(
+                                ci,
+                                (node.bbox.x, node.bbox.y, node.bbox.width, node.bbox.height),
+                            );
+                        }
+                    }
+                }
+                RenderNodeType::Ellipse(ell_node) => {
+                    if ell_node.section_index == Some(sec) && ell_node.para_index == Some(para) {
+                        if let Some(ci) = ell_node.control_index {
+                            bboxes.insert(
+                                ci,
+                                (node.bbox.x, node.bbox.y, node.bbox.width, node.bbox.height),
+                            );
+                        }
+                    }
+                }
+                RenderNodeType::Path(path_node) => {
+                    if path_node.section_index == Some(sec) && path_node.para_index == Some(para) {
+                        if let Some(ci) = path_node.control_index {
+                            bboxes.insert(
+                                ci,
+                                (node.bbox.x, node.bbox.y, node.bbox.width, node.bbox.height),
+                            );
+                        }
+                    }
+                }
+                RenderNodeType::Table(table_node) => {
+                    if table_node.section_index == Some(sec) && table_node.para_index == Some(para)
+                    {
+                        if let Some(ci) = table_node.control_index {
+                            bboxes.insert(
+                                ci,
+                                (node.bbox.x, node.bbox.y, node.bbox.width, node.bbox.height),
+                            );
+                        }
+                    }
+                }
+                _ => {}
+            }
+
+            for child in &node.children {
+                collect_inline_control_bboxes(child, sec, para, bboxes);
+            }
+        }
+
+        fn collect_text_caret_stops(
+            node: &RenderNode,
+            sec: usize,
+            para_idx: usize,
+            para: &Paragraph,
+            raw_text_index: &mut usize,
+            stops: &mut std::collections::BTreeMap<usize, CursorHit>,
+            page_index: u32,
+        ) {
+            if let RenderNodeType::TextRun(ref text_run) = node.node_type {
+                if text_run.section_index == Some(sec)
+                    && text_run.para_index == Some(para_idx)
+                    && text_run.cell_context.is_none()
+                    && text_run.char_start.is_some()
+                {
+                    let para_chars: Vec<char> = para.text.chars().collect();
+                    let run_chars: Vec<char> = text_run.text.chars().collect();
+                    let positions = compute_char_positions(&text_run.text, &text_run.style);
+                    let font_size = text_run.style.font_size;
+                    let ascent = font_size * 0.8;
+                    let caret_y = node.bbox.y + text_run.baseline - ascent;
+
+                    for (idx, ch) in run_chars.iter().enumerate() {
+                        if *ch == '\u{fffc}' {
+                            continue;
+                        }
+                        if *raw_text_index >= para_chars.len() {
+                            break;
+                        }
+                        if *ch != para_chars[*raw_text_index] {
+                            continue;
+                        }
+
+                        let logical_start =
+                            text_offset_after_same_pos_inline_controls(para, *raw_text_index);
+                        let x0 = node.bbox.x + positions.get(idx).copied().unwrap_or(0.0);
+                        let x1 = node.bbox.x
+                            + positions
+                                .get(idx + 1)
+                                .copied()
+                                .or_else(|| positions.last().copied())
+                                .unwrap_or(0.0);
+
+                        stops.entry(logical_start).or_insert(CursorHit {
+                            page_index,
+                            x: x0,
+                            y: caret_y,
+                            height: font_size,
+                        });
+                        stops.entry(logical_start + 1).or_insert(CursorHit {
+                            page_index,
+                            x: x1,
+                            y: caret_y,
+                            height: font_size,
+                        });
+                        *raw_text_index += 1;
+                    }
+                }
+            }
+
+            for child in &node.children {
+                collect_text_caret_stops(
+                    child,
+                    sec,
+                    para_idx,
+                    para,
+                    raw_text_index,
+                    stops,
+                    page_index,
+                );
+            }
+        }
+
+        fn find_inline_flow_cursor_hit(
+            tree: &crate::renderer::render_tree::PageRenderTree,
+            sec: usize,
+            para_idx: usize,
+            para: &Paragraph,
+            offset: usize,
+            page_index: u32,
+        ) -> Option<CursorHit> {
+            if !para.controls.iter().any(is_inline_cursor_control) {
+                return None;
+            }
+
+            let mut stops = std::collections::BTreeMap::new();
+            let mut raw_text_index = 0usize;
+            collect_text_caret_stops(
+                &tree.root,
+                sec,
+                para_idx,
+                para,
+                &mut raw_text_index,
+                &mut stops,
+                page_index,
+            );
+
+            let mut control_bboxes = std::collections::HashMap::new();
+            collect_inline_control_bboxes(&tree.root, sec, para_idx, &mut control_bboxes);
+            let ctrl_positions = find_logical_control_positions(para);
+            let raw_ctrl_positions = para.control_text_positions();
+            let mut inline_controls = Vec::new();
+
+            for (ci, ctrl) in para.controls.iter().enumerate() {
+                if !is_inline_cursor_control(ctrl) {
+                    continue;
+                }
+                let Some(pos) = ctrl_positions.get(ci).copied() else {
+                    continue;
+                };
+                let Some(raw_pos) = raw_ctrl_positions.get(ci).copied() else {
+                    continue;
+                };
+                let Some((x, y, w, h)) = control_bboxes.get(&ci).copied() else {
+                    continue;
+                };
+                inline_controls.push((ci, raw_pos, pos, x, x + w));
+
+                let line_metrics = stops
+                    .range(..=pos + 1)
+                    .next_back()
+                    .map(|(_, hit)| (hit.y, hit.height))
+                    .or_else(|| stops.values().next().map(|hit| (hit.y, hit.height)))
+                    .unwrap_or((y, h.max(10.0)));
+
+                stops.insert(
+                    pos,
+                    CursorHit {
+                        page_index,
+                        x,
+                        y: line_metrics.0,
+                        height: line_metrics.1,
+                    },
+                );
+                stops.insert(
+                    pos + 1,
+                    CursorHit {
+                        page_index,
+                        x: x + w,
+                        y: line_metrics.0,
+                        height: line_metrics.1,
+                    },
+                );
+            }
+            inline_controls.sort_by_key(|&(ci, raw_pos, pos, _, _)| (raw_pos, pos, ci));
+
+            let para_chars: Vec<char> = para.text.chars().collect();
+            for pair in inline_controls.windows(2) {
+                let (_, prev_raw, prev_pos, _, prev_right) = pair[0];
+                let (_, next_raw, next_pos, next_left, _) = pair[1];
+                if next_raw <= prev_raw || next_left <= prev_right {
+                    continue;
+                }
+
+                let Some(between) = para_chars.get(prev_raw..next_raw) else {
+                    continue;
+                };
+                if between.is_empty() || !between.iter().all(|ch| *ch == ' ') {
+                    continue;
+                }
+
+                let space_count = between.len();
+                if next_pos != prev_pos + 1 + space_count {
+                    continue;
+                }
+
+                let Some(metrics) = stops
+                    .get(&(prev_pos + 1))
+                    .or_else(|| stops.get(&next_pos))
+                    .or_else(|| stops.values().next())
+                    .copied()
+                else {
+                    continue;
+                };
+
+                for step in 0..=space_count {
+                    let ratio = step as f64 / space_count as f64;
+                    let x = prev_right + (next_left - prev_right) * ratio;
+                    stops.insert(
+                        prev_pos + 1 + step,
+                        CursorHit {
+                            page_index,
+                            x,
+                            y: metrics.y,
+                            height: metrics.height,
+                        },
+                    );
+                }
+            }
+
+            stops.get(&offset).copied()
         }
 
         // 렌더 트리에서 커서 위치를 찾는 재귀 함수
@@ -196,6 +512,25 @@ impl DocumentCore {
         // 1차: 정확한 앵커(zero-width 노드) 우선 검색, 2차: 일반 검색
         for &page_num in &pages {
             let tree = self.build_page_tree(page_num)?;
+            if !self.show_control_codes {
+                if let Some(section) = self.document.sections.get(section_idx) {
+                    if let Some(para) = section.paragraphs.get(para_idx) {
+                        if let Some(hit) = find_inline_flow_cursor_hit(
+                            &tree,
+                            section_idx,
+                            para_idx,
+                            para,
+                            char_offset,
+                            page_num,
+                        ) {
+                            return Ok(format!(
+                                "{{\"pageIndex\":{},\"x\":{:.1},\"y\":{:.1},\"height\":{:.1}}}",
+                                hit.page_index, hit.x, hit.y, hit.height
+                            ));
+                        }
+                    }
+                }
+            }
             let exact_hit = find_cursor_in_node(
                 &tree.root,
                 section_idx,
@@ -230,7 +565,8 @@ impl DocumentCore {
             if let Some(section) = self.document.sections.get(section_idx) {
                 if let Some(para) = section.paragraphs.get(para_idx) {
                     let text_len = para.text.chars().count();
-                    let ctrl_positions = crate::document_core::find_control_text_positions(para);
+                    let ctrl_positions =
+                        crate::document_core::helpers::find_logical_control_positions(para);
 
                     // char_offset 위치에 인라인 컨트롤이 있는지 확인
                     let inline_ctrl = para.controls.iter().enumerate().find(|(ci, ctrl)| {
@@ -442,6 +778,19 @@ impl DocumentCore {
             cell_context: Option<CellContext>,
         }
 
+        /// [Task #919] 글상자(TextBox) bbox 정보 — Shape 컨트롤의 외곽 도형 노드
+        /// (Rectangle/Ellipse/Path) 가 layout_textbox_content 로 자식에 텍스트를 가진 경우.
+        /// 글상자 안 빈 영역 클릭 시 첫 paragraph 진입에 사용.
+        struct TextBoxBboxInfo {
+            section_index: usize,
+            parent_para_index: usize,
+            control_index: usize,
+            x: f64,
+            y: f64,
+            w: f64,
+            h: f64,
+        }
+
         fn table_ctx_from_node(
             node: &RenderNode,
             current_table_ctx: Option<&CellContext>,
@@ -523,6 +872,7 @@ impl DocumentCore {
             runs: &mut Vec<RunInfo>,
             guide_runs: &mut Vec<GuideRunInfo>,
             cell_bboxes: &mut Vec<CellBboxInfo>,
+            textbox_bboxes: &mut Vec<TextBoxBboxInfo>,
             current_column: Option<u16>,
             current_table_id: Option<u32>,
             // Table 노드에서 전파되는 (section_index, parent_para_index, control_index)
@@ -561,6 +911,40 @@ impl DocumentCore {
                 current_table_meta
             };
             let mut child_cell_ctx = current_cell_ctx.clone();
+            // [Task #919] 글상자(TextBox) bbox 수집 — Shape 컨트롤 (Rectangle/Ellipse/Path)
+            // 노드가 layout_textbox_content 로 자식에 텍스트를 가진 경우. 외곽 도형 노드의
+            // section/para/control 메타 + bbox 가 모두 채워져 있으므로 그대로 사용.
+            // (글상자 안 빈 영역 클릭 시 첫 paragraph 진입에 사용)
+            let textbox_meta: Option<(usize, usize, usize)> = match &node.node_type {
+                RenderNodeType::Rectangle(r) => {
+                    match (r.section_index, r.para_index, r.control_index) {
+                        (Some(si), Some(pi), Some(ci)) => Some((si, pi, ci)),
+                        _ => None,
+                    }
+                }
+                RenderNodeType::Ellipse(e) => {
+                    match (e.section_index, e.para_index, e.control_index) {
+                        (Some(si), Some(pi), Some(ci)) => Some((si, pi, ci)),
+                        _ => None,
+                    }
+                }
+                RenderNodeType::Path(p) => match (p.section_index, p.para_index, p.control_index) {
+                    (Some(si), Some(pi), Some(ci)) => Some((si, pi, ci)),
+                    _ => None,
+                },
+                _ => None,
+            };
+            if let Some((si, pi, ci)) = textbox_meta {
+                textbox_bboxes.push(TextBoxBboxInfo {
+                    section_index: si,
+                    parent_para_index: pi,
+                    control_index: ci,
+                    x: node.bbox.x,
+                    y: node.bbox.y,
+                    w: node.bbox.width,
+                    h: node.bbox.height,
+                });
+            }
             // TableCell 노드의 bbox 수집
             if let RenderNodeType::TableCell(ref tc) = node.node_type {
                 if let Some(cell_idx) = tc.model_cell_index {
@@ -639,6 +1023,7 @@ impl DocumentCore {
                     runs,
                     guide_runs,
                     cell_bboxes,
+                    textbox_bboxes,
                     col,
                     current_table_id,
                     table_meta,
@@ -697,14 +1082,40 @@ impl DocumentCore {
             }
         }
 
+        /// [Task #919] 글상자 빈 영역 클릭 시 글상자 첫 paragraph (cellParaIndex=0)
+        /// 시작 위치로 진입 응답을 만든다. table-in-tbox.hwp 의 글상자 안 표 셀
+        /// 빈 영역 등을 한컴 UX 정합으로 처리.
+        fn format_textbox_entry(tb: &TextBoxBboxInfo, page_num: u32) -> String {
+            // cell_index=0 (글상자 외곽 자체), cellParaIndex=0 (글상자 첫 paragraph)
+            // 캐럿: 글상자 좌상단 + 약간 안쪽 패딩.
+            let caret_h = (tb.h - 4.0).max(12.0).min(20.0);
+            format!(
+                "{{\"sectionIndex\":{},\"paragraphIndex\":0,\"charOffset\":0,\
+                 \"parentParaIndex\":{},\"controlIndex\":{},\"cellIndex\":0,\"cellParaIndex\":0,\
+                 \"cellPath\":[{{\"controlIndex\":{},\"cellIndex\":0,\"cellParaIndex\":0}}],\
+                 \"isTextBox\":true,\
+                 \"cursorRect\":{{\"pageIndex\":{},\"x\":{:.1},\"y\":{:.1},\"height\":{:.1}}}}}",
+                tb.section_index,
+                tb.parent_para_index,
+                tb.control_index,
+                tb.control_index,
+                page_num,
+                tb.x + 2.0,
+                tb.y + 2.0,
+                caret_h
+            )
+        }
+
         let mut runs: Vec<RunInfo> = Vec::new();
         let mut guide_runs: Vec<GuideRunInfo> = Vec::new();
         let mut cell_bboxes: Vec<CellBboxInfo> = Vec::new();
+        let mut textbox_bboxes: Vec<TextBoxBboxInfo> = Vec::new();
         collect_runs(
             &tree.root,
             &mut runs,
             &mut guide_runs,
             &mut cell_bboxes,
+            &mut textbox_bboxes,
             None,
             None,
             None,
@@ -836,8 +1247,38 @@ impl DocumentCore {
                             _ => continue,
                         };
                         if x >= sx && x <= sx + sw && y >= sy && y <= sy + sh {
+                            // [Task #919] 글상자(Shape with text_box) 영역 hit — 본문
+                            // TextRun 위치가 아닌 메인 매칭으로 fall-through 한다.
+                            // 메인 매칭 (cell hit / textbox hit / body hit) 이 글상자
+                            // 안 표 셀 / 글상자 빈 영역 / 본문 우선순위로 처리.
+                            // (이 분기에서 글상자 안 표 셀을 가로채면 안 됨)
+                            let shape_has_textbox = match ctrl {
+                                Control::Shape(s) => match s.as_ref() {
+                                    crate::model::shape::ShapeObject::Rectangle(r) => {
+                                        r.drawing.text_box.is_some()
+                                    }
+                                    crate::model::shape::ShapeObject::Ellipse(e) => {
+                                        e.drawing.text_box.is_some()
+                                    }
+                                    crate::model::shape::ShapeObject::Polygon(p) => {
+                                        p.drawing.text_box.is_some()
+                                    }
+                                    crate::model::shape::ShapeObject::Arc(a) => {
+                                        a.drawing.text_box.is_some()
+                                    }
+                                    crate::model::shape::ShapeObject::Curve(c) => {
+                                        c.drawing.text_box.is_some()
+                                    }
+                                    _ => false,
+                                },
+                                _ => false,
+                            };
+                            if shape_has_textbox {
+                                // 글상자는 메인 매칭에서 처리 — 0.5 분기 break.
+                                break;
+                            }
                             let ctrl_positions =
-                                crate::document_core::find_control_text_positions(para);
+                                crate::document_core::helpers::find_logical_control_positions(para);
                             let char_offset = ctrl_positions.get(ci).copied().unwrap_or(0);
                             // 클릭이 Shape 오른쪽 절반이면 Shape 뒤(offset+1)
                             let offset = if x > sx + sw / 2.0 {
@@ -907,15 +1348,24 @@ impl DocumentCore {
                 }
             }
         }
-        // 셀/글상자 히트가 있으면 우선, 없으면 본문 히트
-        if let Some((idx, offset)) = hit_cell.or(hit_body) {
+
+        // [Task #919] 우선순위 — 가장 specific 한 매칭부터:
+        //   1. hit_cell (셀 안 텍스트 위 hit — best-match area)
+        //   2. clicked_cell (셀 bbox 매칭 — 텍스트가 없는 빈 셀 포함)
+        //      ⇒ 글상자 안 표의 빈 셀도 여기서 매칭
+        //   3. textbox_hit (글상자 안 빈 영역 — 셀 없는 영역)
+        //   4. hit_body (본문 fall-through)
+        //
+        // 글상자 안 표 셀 (textbox 안 cell) 매칭이 textbox 영역보다 specific 이므로
+        // clicked_cell 을 textbox_hit 보다 먼저 처리한다.
+        if let Some((idx, offset)) = hit_cell {
             return Ok(format_hit(&runs[idx], offset, page_num));
         }
 
         // 클릭 좌표가 속한 칼럼 결정 (다단 지원)
         let click_column = self.find_column_at_x(page_num, x);
 
-        // 2. 셀 bbox 기반으로 클릭한 셀 판별
+        // 2. 셀 bbox 기반으로 클릭한 셀 판별 (글상자 안 표 셀 포함)
         let clicked_cell: Option<&CellBboxInfo> = cell_bboxes
             .iter()
             .filter(|cb| cb.has_meta)
@@ -1023,6 +1473,22 @@ impl DocumentCore {
                     cb.x + 2.0, cb.y + 2.0, caret_h
                 ));
             }
+        }
+
+        // [Task #919] 글상자 빈 영역 매칭 — clicked_cell 매칭 안 됐으면 글상자 시도.
+        // 글상자 안 표 셀은 위쪽 clicked_cell 분기에서 이미 처리됨.
+        // 후보 여럿이면 가장 작은 (가장 specific) 것 선택.
+        let textbox_hit: Option<&TextBoxBboxInfo> = textbox_bboxes
+            .iter()
+            .filter(|tb| x >= tb.x && x <= tb.x + tb.w && y >= tb.y && y <= tb.y + tb.h)
+            .min_by_key(|tb| ((tb.w.max(0.0) * tb.h.max(0.0)) * 1000.0) as i64);
+        if let Some(tb) = textbox_hit {
+            return Ok(format_textbox_entry(tb, page_num));
+        }
+
+        // 본문 hit (1차 hit 검사에서 발견된 본문 paragraph)
+        if let Some((idx, offset)) = hit_body {
+            return Ok(format_hit(&runs[idx], offset, page_num));
         }
 
         // 같은 줄(y 범위)에서 가장 가까운 본문 TextRun 찾기

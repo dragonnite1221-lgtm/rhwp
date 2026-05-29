@@ -56,7 +56,7 @@ export class CursorState {
 
   // ─── F5 본문 블록 선택 모드 (#220) ────────────────────────
   private _blockSelectionMode = false;
-  private _expandPhase = 0; // F3 확장 단계: 0=none, 1=word, 2=paragraph, 3=section, 4=document
+  private _expandPhase = 0; // F3 확장 단계: 0=none, 1=word, 2=sentence, 3=paragraph, 4=section, 5=document
 
   // ─── 표 객체 선택 ──────────────────────────────────────
   private _tableObjectSelected = false;
@@ -999,11 +999,18 @@ export class CursorState {
         this.anchor = { ...pos, charOffset: start };
         this.position = { ...pos, charOffset: end };
       } else if (this._expandPhase === 2) {
+        // 문장 선택 (#839, 한컴 F3 5단계 정합)
+        const paraLen = this.wasm.getParagraphLength(sec, para);
+        const text = this.wasm.getTextRange(sec, para, 0, paraLen);
+        const { start, end } = findSentenceAt(text, pos.charOffset);
+        this.anchor = { ...pos, charOffset: start };
+        this.position = { ...pos, charOffset: end };
+      } else if (this._expandPhase === 3) {
         // 문단 전체 선택
         const paraLen = this.wasm.getParagraphLength(sec, para);
         this.anchor = { ...pos, charOffset: 0 };
         this.position = { ...pos, charOffset: paraLen };
-      } else if (this._expandPhase === 3) {
+      } else if (this._expandPhase === 4) {
         // 구역 전체 선택
         const paraCount = this.wasm.getParagraphCount(sec);
         const lastParaLen = this.wasm.getParagraphLength(sec, paraCount - 1);
@@ -1017,7 +1024,7 @@ export class CursorState {
         const lastParaLen = this.wasm.getParagraphLength(lastSec, lastParaCount - 1);
         this.anchor = { sectionIndex: 0, paragraphIndex: 0, charOffset: 0 };
         this.position = { sectionIndex: lastSec, paragraphIndex: lastParaCount - 1, charOffset: lastParaLen };
-        this._expandPhase = 4; // cap
+        this._expandPhase = 5; // cap
       }
       this.updateRect();
     } catch (e) {
@@ -1127,11 +1134,18 @@ export class CursorState {
 
   // ─── 표 객체 선택 모드 ─────────────────────────────────
 
-  /** 현재 셀 위치의 표를 객체 선택한다. 셀 내부가 아니면 false. */
+  /** 현재 셀 위치의 표를 객체 선택한다. 셀 내부가 아니면 false.
+   *
+   *  [Task #919] 글상자 안 표 셀 (isInTextBox + cellPath.length >= 2) 도
+   *  허용 — 가장 안쪽 표를 객체 선택한다. 한컴 UX 정합 (글상자 안 표 Esc).
+   *  글상자 직접 셀 (cellPath.length === 1, 글상자 자체) 은 표가 아니므로 제외.
+   */
   enterTableObjectSelection(): boolean {
-    if (!this.isInCell() || this.isInTextBox()) return false;
+    if (!this.isInCell()) return false;
     const { sectionIndex: sec, parentParaIndex: ppi, controlIndex: ci, cellPath } = this.position;
     if (ppi === undefined || ci === undefined) return false;
+    // 글상자 안 본문 (cellPath.length === 1, 글상자 자체) → 표 객체 선택 대상 아님
+    if (this.isInTextBox() && (cellPath?.length ?? 0) < 2) return false;
     this._tableObjectSelected = true;
     if (cellPath && cellPath.length > 1) {
       // 중첩 표: 내부 표를 선택 (cellPath 포함)
@@ -1177,8 +1191,13 @@ export class CursorState {
 
     if (cellPath && cellPath.length > 1) {
       // 중첩 표 객체 선택 → 외부 셀로 이동 (한 단계 위)
+      // [Task #919] 글상자 안 표였으면 (가장 바깥이 글상자 = isTextBox) 유지.
+      const wasInTextBox = this.position.isTextBox === true;
       const outerPath = cellPath.slice(0, -1);
       const lastOuter = outerPath[outerPath.length - 1];
+      // outerPath.length === 1 이고 글상자였으면 isTextBox 유지 → 다음 Esc 시
+      // 글상자 객체 선택으로 전이 가능
+      const stillInTextBox = wasInTextBox && outerPath.length === 1;
       this.position = {
         sectionIndex: sec,
         paragraphIndex: lastOuter.cellParaIndex,
@@ -1188,6 +1207,7 @@ export class CursorState {
         cellIndex: lastOuter.cellIndex,
         cellParaIndex: lastOuter.cellParaIndex,
         cellPath: outerPath,
+        isTextBox: stillInTextBox ? true : undefined,
       };
     } else {
       // 단일 표 객체 선택 → 표 밖으로 이동
@@ -1409,7 +1429,14 @@ export class CursorState {
   get fnFootnoteIndex(): number { return this._fnFootnoteIndex; }
   get fnPageNum(): number { return this._fnPageNum; }
 
-  /** 각주 편집 모드에 진입한다. */
+  /** 각주 편집 모드에 진입한다.
+   *
+   * [Task #1058 reopen Round 5] 신규/기존 각주 inner_para 의 한컴 contract 는
+   * 두 placeholder space + AutoNumber 8 cu 차지 (text="  ", char_offsets=[0, 8]).
+   * caret 초기 위치를 char_offset=2 로 설정하여 사용자 입력이 placeholder 뒤
+   * (실제 본문 작성 영역) 부터 시작하도록 한다. char_offset=0/1 위치는 placeholder
+   * 자리이므로 사용자 입력 시 AutoNumber jump 8 byte contract 깨짐 (한컴 거부).
+   */
   enterFootnoteMode(
     sectionIdx: number, paraIdx: number, controlIdx: number,
     footnoteIndex: number, pageNum: number,
@@ -1421,7 +1448,7 @@ export class CursorState {
     this._fnControlIdx = controlIdx;
     this._fnFootnoteIndex = footnoteIndex;
     this._fnInnerParaIdx = 0;
-    this._fnCharOffset = 0;
+    this._fnCharOffset = 2;
     this._fnPageNum = pageNum;
     this.clearSelection();
     this.updateRect();
@@ -1550,5 +1577,31 @@ function findWordAt(text: string, offset: number): { start: number; end: number 
     while (start > 0 && !isWordChar(text[start - 1])) start--;
     while (end < text.length && !isWordChar(text[end])) end++;
   }
+  return { start, end };
+}
+
+// ─── 문장 범위 탐색 유틸 (#839, F3 단계 2 문장 선택) ──────────────────────────────────
+
+const SENTENCE_TERMINATORS = new Set(['.', '?', '!', '。', '？', '！']);
+
+function findSentenceAt(text: string, offset: number): { start: number; end: number } {
+  if (!text) return { start: offset, end: offset };
+  const len = text.length;
+  const clampedOffset = Math.min(offset, len);
+
+  let start = clampedOffset;
+  while (start > 0) {
+    const prev = text[start - 1];
+    if (SENTENCE_TERMINATORS.has(prev)) break;
+    start--;
+  }
+  while (start < clampedOffset && (text[start] === ' ' || text[start] === '\t')) start++;
+
+  let end = clampedOffset;
+  while (end < len) {
+    if (SENTENCE_TERMINATORS.has(text[end])) { end++; break; }
+    end++;
+  }
+
   return { start, end };
 }

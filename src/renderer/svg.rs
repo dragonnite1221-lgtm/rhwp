@@ -6,14 +6,18 @@
 use super::composer::{
     decode_pua_overlap_number, expand_pua_render_text, pua_to_display_text, CharOverlapInfo,
 };
+pub(crate) use super::image_resolver::{
+    bmp_bytes_to_png_bytes, detect_image_mime_type, pcx_bytes_to_png_bytes,
+    watermark_jpeg_bytes_to_hancom_baked_png_bytes,
+};
 use super::pua_oldhangul::map_pua_old_hangul;
 use super::render_tree::{
     BoundingBox, FormObjectNode, ImageNode, PageRenderTree, RenderNode, RenderNodeType,
     ShapeTransform,
 };
 use super::{
-    GradientFillInfo, LineStyle, PathCommand, PatternFillInfo, Renderer, ShapeStyle, StrokeDash,
-    TextStyle,
+    clamp_tab_leader_end_x, GradientFillInfo, LineStyle, PathCommand, PatternFillInfo, Renderer,
+    ShapeStyle, StrokeDash, TextStyle,
 };
 
 /// Hanyang-PUA 옛한글 코드포인트를 KS X 1026-1:2007 자모 시퀀스로 확장.
@@ -405,8 +409,10 @@ impl SvgRenderer {
                 );
             }
             RenderNodeType::Image(img) => {
-                self.open_shape_transform(&img.transform, &node.bbox);
-                self.render_image_node(img, &node.bbox);
+                // [shot 05] 회전 90/270° 시 bbox extent swap — 이중회전 방지.
+                let eff_bbox = img.transform.effective_image_bbox(&node.bbox);
+                self.open_shape_transform(&img.transform, &eff_bbox);
+                self.render_image_node(img, &eff_bbox);
             }
             RenderNodeType::Path(path) => {
                 self.open_shape_transform(&path.transform, &node.bbox);
@@ -689,16 +695,24 @@ impl SvgRenderer {
         let cx = bbox.x + bbox.width / 2.0;
         let cy = bbox.y + bbox.height / 2.0;
         let mut parts = Vec::new();
-        // 대칭을 먼저 적용 (중심 기준 스케일 반전)
+        // [Task #1067] SVG transform 은 left-to-right 적용 (첫 transform 이 마지막 영향).
+        // 한컴 정답지 시각 표준: 도형이 자체 좌표계 기준으로 먼저 회전 후 flip 적용.
+        // SVG 에서 동일 결과 = "translate(flip) scale(-1,1) rotate(-θ)"
+        // (flip 와 함께 회전 시 각도 부호 반전 필요).
+        let flip_negate_rotation = transform.horz_flip ^ transform.vert_flip;
         if transform.horz_flip {
             parts.push(format!("translate({},0) scale(-1,1)", cx * 2.0));
         }
         if transform.vert_flip {
             parts.push(format!("translate(0,{}) scale(1,-1)", cy * 2.0));
         }
-        // 회전 (중심 기준)
         if transform.rotation != 0.0 {
-            parts.push(format!("rotate({},{},{})", transform.rotation, cx, cy));
+            let effective_rotation = if flip_negate_rotation {
+                -transform.rotation
+            } else {
+                transform.rotation
+            };
+            parts.push(format!("rotate({},{},{})", effective_rotation, cx, cy));
         }
         self.output
             .push_str(&format!("<g transform=\"{}\">\n", parts.join(" ")));
@@ -1689,20 +1703,25 @@ impl SvgRenderer {
         let is_circle = overlap.border_type == 1 || overlap.border_type == 2;
         let is_rect = overlap.border_type == 3 || overlap.border_type == 4;
 
+        // inner_char_size 해석:
+        //   > 0 → percent ratio (HWPX 양수 case 보존: 50 = 0.5)
+        //   < 0 → 10% step 축소 (한컴 정합: charSz=-3 → 1.0 + (-3)×0.10 = 0.70, 13pt→9.1pt)
+        //   == 0 → 기본 100%
         let size_ratio = if overlap.inner_char_size > 0 {
             overlap.inner_char_size as f64 / 100.0
+        } else if overlap.inner_char_size < 0 {
+            1.0 + overlap.inner_char_size as f64 * 0.10
         } else {
             1.0
         };
         let inner_font_size = font_size * size_ratio;
 
+        // 한컴은 동그라미 테두리도 글자색과 동일 색상으로 그림 (raw PDF 0 0 1 RG/rg).
+        // reversed(반전)는 기존대로 검정 채움 + 흰 글자.
+        let glyph_color = color_to_svg(style.color);
         let fill_color = if is_reversed { "#000000" } else { "none" };
-        let stroke_color = "#000000";
-        let text_color = if is_reversed {
-            "#FFFFFF"
-        } else {
-            &color_to_svg(style.color)
-        };
+        let stroke_color: &str = if is_reversed { "#000000" } else { &glyph_color };
+        let text_color: &str = if is_reversed { "#FFFFFF" } else { &glyph_color };
 
         let font_family_str = if style.font_family.is_empty() {
             "sans-serif".to_string()
@@ -1740,10 +1759,12 @@ impl SvgRenderer {
             let cy = bbox_y + bbox_h / 2.0;
 
             if is_circle {
-                let r = box_size / 2.0;
+                // 한컴 글자겹침은 세로로 긴 타원 (h/w ≈ 1.18). 한글 글리프 비율과 정합.
+                let ry = box_size / 2.0;
+                let rx = ry * 0.85;
                 self.output.push_str(&format!(
-                    "<circle cx=\"{:.2}\" cy=\"{:.2}\" r=\"{:.2}\" fill=\"{}\" stroke=\"{}\" stroke-width=\"0.8\"/>\n",
-                    cx, cy, r, fill_color, stroke_color,
+                    "<ellipse cx=\"{:.2}\" cy=\"{:.2}\" rx=\"{:.2}\" ry=\"{:.2}\" fill=\"{}\" stroke=\"{}\" stroke-width=\"0.8\"/>\n",
+                    cx, cy, rx, ry, fill_color, stroke_color,
                 ));
             } else if is_rect {
                 let rx = cx - box_size / 2.0;
@@ -1792,20 +1813,20 @@ impl SvgRenderer {
         let is_circle = effective_border == 1 || effective_border == 2;
         let is_rect = effective_border == 3 || effective_border == 4;
 
+        // inner_char_size 해석 (draw_char_overlap와 동일 — 음수=10% step 축소)
         let size_ratio = if overlap.inner_char_size > 0 {
             overlap.inner_char_size as f64 / 100.0
+        } else if overlap.inner_char_size < 0 {
+            1.0 + overlap.inner_char_size as f64 * 0.10
         } else {
             1.0
         };
         let inner_font_size = font_size * size_ratio;
 
+        let glyph_color = color_to_svg(style.color);
         let fill_color = if is_reversed { "#000000" } else { "none" };
-        let stroke_color = "#000000";
-        let text_color = if is_reversed {
-            "#FFFFFF"
-        } else {
-            &color_to_svg(style.color)
-        };
+        let stroke_color: &str = if is_reversed { "#000000" } else { &glyph_color };
+        let text_color: &str = if is_reversed { "#FFFFFF" } else { &glyph_color };
 
         let font_family_str = if style.font_family.is_empty() {
             "sans-serif".to_string()
@@ -1830,12 +1851,13 @@ impl SvgRenderer {
         let cx = bbox_x + box_size / 2.0;
         let cy = bbox_y + bbox_h / 2.0;
 
-        // 도형 렌더링
+        // 도형 렌더링 — 세로로 긴 타원 (한컴 정합, rx=ry*0.85)
         if is_circle {
-            let r = box_size / 2.0;
+            let ry = box_size / 2.0;
+            let rx = ry * 0.85;
             self.output.push_str(&format!(
-                "<circle cx=\"{:.2}\" cy=\"{:.2}\" r=\"{:.2}\" fill=\"{}\" stroke=\"{}\" stroke-width=\"0.8\"/>\n",
-                cx, cy, r, fill_color, stroke_color,
+                "<ellipse cx=\"{:.2}\" cy=\"{:.2}\" rx=\"{:.2}\" ry=\"{:.2}\" fill=\"{}\" stroke=\"{}\" stroke-width=\"0.8\"/>\n",
+                cx, cy, rx, ry, fill_color, stroke_color,
             ));
         } else if is_rect {
             let rx = cx - box_size / 2.0;
@@ -2235,10 +2257,18 @@ impl Renderer for SvgRenderer {
     }
 
     fn draw_text(&mut self, text: &str, x: f64, y: f64, style: &TextStyle) {
+        // [Task #1067] inline 컨트롤 placeholder (U+FFFC OBJECT REPLACEMENT CHARACTER) 를
+        // 보이지 않게 처리. HWP/HWPX 의 inline 도형/표/그림 등 treat_as_char 컨트롤이
+        // paragraph text 자체에 U+FFFC 로 표현됨 — 도형 path 는 별도 emit 되므로 본
+        // placeholder character 는 시각적으로 invisible 해야 한다. 한컴 정답지 정합.
+        let text: String = text.chars().filter(|&c| c != '\u{FFFC}').collect();
+        if text.is_empty() {
+            return;
+        }
         // [Task #509] 한컴은 폰트 지정과 상관없이 PUA 를 자체 처리. 지정 폰트에 글리프
         // 부재 시 한컴 내부 매핑이 발행. rhwp 도 동일 동작 모방 — 일반 텍스트도 PUA
         // 변환 적용 (PR #251 정합). 매핑 표는 한컴 PDF 정답지 기준.
-        let text = &expand_pua_render_text(text);
+        let text = &expand_pua_render_text(&text);
         // [Task #528] Hanyang-PUA 옛한글 → KS X 1026-1:2007 자모 시퀀스.
         // 한/글 2010 이전 옛한글 PUA 인코딩을 표준 자모로 변환 (KTUG 매핑).
         let text = &expand_pua_old_hangul(text);
@@ -2398,21 +2428,28 @@ impl Renderer for SvgRenderer {
                 }
                 let char_x = x + char_positions[*char_idx] + dx;
                 let char_y = y + dy;
+                let length_attrs = svg_text_length_attrs(
+                    cluster_str,
+                    cluster_advance(*char_idx, cluster_str),
+                    ratio,
+                );
                 if has_ratio {
                     self.output.push_str(&format!(
-                        "<text transform=\"translate({},{}) scale({:.4},1)\" {}>{}</text>\n",
+                        "<text transform=\"translate({},{}) scale({:.4},1)\" {}{}>{}</text>\n",
                         char_x,
                         char_y,
                         ratio,
                         shadow_attrs,
+                        length_attrs,
                         escape_xml(cluster_str),
                     ));
                 } else {
                     self.output.push_str(&format!(
-                        "<text x=\"{}\" y=\"{}\" {}>{}</text>\n",
+                        "<text x=\"{}\" y=\"{}\" {}{}>{}</text>\n",
                         char_x,
                         char_y,
                         shadow_attrs,
+                        length_attrs,
                         escape_xml(cluster_str),
                     ));
                 }
@@ -2447,22 +2484,26 @@ impl Renderer for SvgRenderer {
                 continue;
             }
             let char_x = x + char_positions[*char_idx];
+            let length_attrs =
+                svg_text_length_attrs(cluster_str, cluster_advance(*char_idx, cluster_str), ratio);
 
             if has_ratio {
                 self.output.push_str(&format!(
-                    "<text transform=\"translate({},{}) scale({:.4},1)\" {}>{}</text>\n",
+                    "<text transform=\"translate({},{}) scale({:.4},1)\" {}{}>{}</text>\n",
                     char_x,
                     y,
                     ratio,
                     common_attrs,
+                    length_attrs,
                     escape_xml(cluster_str),
                 ));
             } else {
                 self.output.push_str(&format!(
-                    "<text x=\"{}\" y=\"{}\" {}>{}</text>\n",
+                    "<text x=\"{}\" y=\"{}\" {}{}>{}</text>\n",
                     char_x,
                     y,
                     common_attrs,
+                    length_attrs,
                     escape_xml(cluster_str),
                 ));
             }
@@ -2539,7 +2580,8 @@ impl Renderer for SvgRenderer {
                 continue;
             }
             let lx1 = x + leader.start_x;
-            let lx2 = x + leader.end_x;
+            let leader_end_x = clamp_tab_leader_end_x(text, &char_positions, leader, font_size);
+            let lx2 = x + leader_end_x;
             let ly = y - font_size * 0.35; // 글자 세로 중앙 (베이스라인에서 x-height 절반)
                                            // 채울 모양 12종: 0=없음, 1=실선, 2=파선, 3=점선, 4=일점쇄선,
                                            // 5=이점쇄선, 6=긴파선, 7=원형점선, 8=이중실선,
@@ -2777,6 +2819,25 @@ fn color_to_svg(color: u32) -> String {
     format!("#{:02x}{:02x}{:02x}", r, g, b)
 }
 
+fn svg_text_length_attrs(cluster_str: &str, cluster_advance: f64, scale_x: f64) -> String {
+    if !cluster_str.chars().any(|ch| ch.is_ascii_alphanumeric()) {
+        return String::new();
+    }
+    if !cluster_advance.is_finite() || cluster_advance <= 0.0 {
+        return String::new();
+    }
+    let scale_x = if scale_x.is_finite() && scale_x.abs() > 0.0001 {
+        scale_x.abs()
+    } else {
+        1.0
+    };
+    let text_length = cluster_advance / scale_x;
+    format!(
+        " textLength=\"{:.4}\" lengthAdjust=\"spacingAndGlyphs\"",
+        text_length
+    )
+}
+
 /// XML 특수문자 이스케이프
 fn escape_xml(s: &str) -> String {
     let mut result = String::with_capacity(s.len());
@@ -2805,220 +2866,6 @@ pub(crate) fn convert_wmf_to_svg(data: &[u8]) -> Option<Vec<u8>> {
     let player = SVGPlayer::new();
     let converter = WMFConverter::new(data, player);
     converter.run().ok()
-}
-
-/// BMP 바이트를 PNG 바이트로 재인코딩한다. 실패 시 None 반환.
-///
-/// 브라우저는 SVG `<image>` 내부의 `data:image/bmp` URI를 표준 지원하지 않으므로,
-/// SVG 임베딩 전에 PNG로 변환해 호환성을 확보한다.
-pub(crate) fn bmp_bytes_to_png_bytes(data: &[u8]) -> Option<Vec<u8>> {
-    use image::{load_from_memory_with_format, ImageFormat};
-    use std::io::Cursor;
-    let img = load_from_memory_with_format(data, ImageFormat::Bmp).ok()?;
-    let mut out = Vec::new();
-    img.write_to(&mut Cursor::new(&mut out), ImageFormat::Png)
-        .ok()?;
-    Some(out)
-}
-
-/// PCX 바이트를 PNG 바이트로 재인코딩한다. 실패 시 None 반환.
-///
-/// 브라우저는 PCX 포맷을 native 렌더링하지 못하므로 (구형 ZSoft Paintbrush 포맷),
-/// SVG 임베딩 전에 PNG로 변환해 호환성을 확보한다.
-/// paletted PCX (8bpp) 와 RGB PCX (24bpp) 모두 지원.
-///
-/// **투명 처리**: PCX 자체는 알파 채널을 지원하지 않지만, HWP 의 PCX 임베드는
-/// 보통 BehindText (글뒤로) 배경/로고 용도로 흰색 (255,255,255) 영역을 투명으로
-/// 보여야 한다 (한컴 호환). 변환 시 흰색 픽셀을 투명 알파로 매핑한 RGBA PNG 를
-/// 출력한다.
-pub(crate) fn pcx_bytes_to_png_bytes(data: &[u8]) -> Option<Vec<u8>> {
-    use image::{ImageFormat, RgbaImage};
-    use std::io::Cursor;
-    let mut reader = pcx::Reader::new(Cursor::new(data)).ok()?;
-    let width = reader.width() as u32;
-    let height = reader.height() as u32;
-    if width == 0 || height == 0 {
-        return None;
-    }
-    let pixel_count = (width as usize) * (height as usize);
-    let mut rgba = vec![0u8; pixel_count * 4];
-    if reader.is_paletted() {
-        // paletted: row 별 인덱스 읽기 + 끝에서 팔레트 추출
-        let row_bytes = width as usize;
-        let mut indices = vec![0u8; row_bytes * height as usize];
-        for y in 0..height as usize {
-            reader
-                .next_row_paletted(&mut indices[y * row_bytes..(y + 1) * row_bytes])
-                .ok()?;
-        }
-        let mut palette = vec![0u8; 256 * 3];
-        reader.read_palette(&mut palette).ok()?;
-        for (dst, &idx) in rgba.chunks_exact_mut(4).zip(indices.iter()) {
-            let p = idx as usize * 3;
-            let r = palette[p];
-            let g = palette[p + 1];
-            let b = palette[p + 2];
-            dst[0] = r;
-            dst[1] = g;
-            dst[2] = b;
-            // 흰색 (255,255,255) → 투명 (한컴 BehindText 배경 호환)
-            dst[3] = if r == 255 && g == 255 && b == 255 {
-                0
-            } else {
-                255
-            };
-        }
-    } else {
-        // RGB: row 별 RGB 읽고 RGBA 로 확장
-        let row_bytes_rgb = width as usize * 3;
-        let mut rgb_row = vec![0u8; row_bytes_rgb];
-        for y in 0..height as usize {
-            reader.next_row_rgb(&mut rgb_row).ok()?;
-            for (x, src) in rgb_row.chunks_exact(3).enumerate() {
-                let dst = &mut rgba[(y * width as usize + x) * 4..(y * width as usize + x) * 4 + 4];
-                dst[0] = src[0];
-                dst[1] = src[1];
-                dst[2] = src[2];
-                dst[3] = if src[0] == 255 && src[1] == 255 && src[2] == 255 {
-                    0
-                } else {
-                    255
-                };
-            }
-        }
-    }
-    let img = RgbaImage::from_raw(width, height, rgba)?;
-    let mut out = Vec::new();
-    img.write_to(&mut Cursor::new(&mut out), ImageFormat::Png)
-        .ok()?;
-    Some(out)
-}
-
-/// 워터마크 JPEG 를 한컴 PDF 정답지에 가까운 회색 톤 PNG 로 변환한다.
-pub(crate) fn watermark_jpeg_bytes_to_hancom_baked_png_bytes(data: &[u8]) -> Option<Vec<u8>> {
-    use image::{load_from_memory_with_format, ImageFormat};
-    use std::io::Cursor;
-
-    let mut img = load_from_memory_with_format(data, ImageFormat::Jpeg)
-        .ok()?
-        .to_rgba8();
-    let width = img.width();
-    let height = img.height();
-    if width == 0 || height == 0 {
-        return None;
-    }
-
-    fn is_near_white(px: [u8; 4]) -> bool {
-        px[0] >= 245 && px[1] >= 245 && px[2] >= 245
-    }
-
-    let mut border_total = 0u64;
-    let mut border_near_white = 0u64;
-    for x in 0..width {
-        for y in [0, height - 1] {
-            border_total += 1;
-            if is_near_white(img.get_pixel(x, y).0) {
-                border_near_white += 1;
-            }
-        }
-    }
-    if height > 2 {
-        for y in 1..height - 1 {
-            for x in [0, width - 1] {
-                border_total += 1;
-                if is_near_white(img.get_pixel(x, y).0) {
-                    border_near_white += 1;
-                }
-            }
-        }
-    }
-
-    let mut all_near_white = 0u64;
-    for px in img.pixels() {
-        if is_near_white(px.0) {
-            all_near_white += 1;
-        }
-    }
-
-    let pixel_total = (width as u64) * (height as u64);
-    if (border_near_white as f64 / border_total as f64) < 0.85
-        || (all_near_white as f64 / pixel_total as f64) < 0.20
-    {
-        return None;
-    }
-
-    fn map_watermark_gray(gray: f64) -> u8 {
-        let value = if gray < 50.0 {
-            198.0 + 0.46 * gray
-        } else if gray < 80.0 {
-            221.0 + 0.47 * (gray - 50.0)
-        } else if gray < 100.0 {
-            235.1 + 0.14 * (gray - 80.0)
-        } else if gray < 120.0 {
-            237.9 + 0.385 * (gray - 100.0)
-        } else if gray < 160.0 {
-            245.6 + 0.1625 * (gray - 120.0)
-        } else {
-            252.1 + 0.032 * (gray - 160.0)
-        };
-        value.clamp(0.0, 255.0).round() as u8
-    }
-
-    for px in img.pixels_mut() {
-        if is_near_white(px.0) {
-            px.0 = [255, 255, 255, 255];
-        } else {
-            let gray = 0.299 * px.0[0] as f64 + 0.587 * px.0[1] as f64 + 0.114 * px.0[2] as f64;
-            let mapped = map_watermark_gray(gray);
-            px.0 = [mapped, mapped, mapped, 255];
-        }
-    }
-
-    let mut out = Vec::new();
-    img.write_to(&mut Cursor::new(&mut out), ImageFormat::Png)
-        .ok()?;
-    Some(out)
-}
-
-/// 이미지 데이터에서 MIME 타입 감지
-pub(crate) fn detect_image_mime_type(data: &[u8]) -> &'static str {
-    if data.len() >= 8 {
-        // PNG: 89 50 4E 47 0D 0A 1A 0A
-        if data.starts_with(&[0x89, 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A]) {
-            return "image/png";
-        }
-        // JPEG: FF D8 FF
-        if data.starts_with(&[0xFF, 0xD8, 0xFF]) {
-            return "image/jpeg";
-        }
-        // GIF: GIF87a or GIF89a
-        if data.starts_with(b"GIF87a") || data.starts_with(b"GIF89a") {
-            return "image/gif";
-        }
-        // BMP: BM
-        if data.starts_with(&[0x42, 0x4D]) {
-            return "image/bmp";
-        }
-        // WMF: Placeable (D7 CD C6 9A) 또는 Standard (01 00 09 00)
-        if data.starts_with(&[0xD7, 0xCD, 0xC6, 0x9A])
-            || data.starts_with(&[0x01, 0x00, 0x09, 0x00])
-        {
-            return "image/x-wmf";
-        }
-        // TIFF: II or MM
-        if data.starts_with(&[0x49, 0x49, 0x2A, 0x00])
-            || data.starts_with(&[0x4D, 0x4D, 0x00, 0x2A])
-        {
-            return "image/tiff";
-        }
-    }
-    // PCX: 0A 05 (ZSoft Paintbrush v3.0+, 1980년대 비표준 포맷)
-    // 브라우저 native 미지원 → emit 시 PNG 변환 필요 (pcx_bytes_to_png_bytes)
-    if data.len() >= 2 && data.starts_with(&[0x0A, 0x05]) {
-        return "image/x-pcx";
-    }
-    // 알 수 없는 형식 → 기본값
-    "application/octet-stream"
 }
 
 /// 이미지 데이터에서 픽셀 크기(width, height)를 파싱한다.

@@ -18,8 +18,8 @@ use super::render_tree::{
     BoundingBox, FormObjectNode, PageRenderTree, RenderNode, RenderNodeType, ShapeTransform,
 };
 use super::{
-    GradientFillInfo, LineStyle, PathCommand, PatternFillInfo, Renderer, ShapeStyle, StrokeDash,
-    TextStyle,
+    clamp_tab_leader_end_x, GradientFillInfo, LineStyle, PathCommand, PatternFillInfo, Renderer,
+    ShapeStyle, StrokeDash, TextStyle,
 };
 use crate::model::style::ImageFillMode;
 use crate::model::style::UnderlineType;
@@ -526,12 +526,14 @@ impl WebCanvasRenderer {
                 );
             }
             RenderNodeType::Image(img) => {
-                self.open_shape_transform(&img.transform, &node.bbox);
+                // [shot 05] 회전 90/270° 시 bbox extent swap — 이중회전 방지.
+                let eff_bbox = img.transform.effective_image_bbox(&node.bbox);
+                self.open_shape_transform(&img.transform, &eff_bbox);
                 // [Task #741 후속] 외부 file path 그림 (data 부재 + external_path 보유) →
                 // placeholder 영역 (회색 점선 사각형 + file path 텍스트). SVG renderer
                 // (svg.rs:1075~) 영역 정합. 본 분기 부재 시 image 표시 부재.
                 if img.data.is_none() && img.external_path.is_some() {
-                    let bbox = &node.bbox;
+                    let bbox = &eff_bbox;
                     self.ctx.set_fill_style_str("#f0f0f0");
                     self.ctx.fill_rect(bbox.x, bbox.y, bbox.width, bbox.height);
                     self.ctx.set_stroke_style_str("#999999");
@@ -589,7 +591,7 @@ impl WebCanvasRenderer {
                     }
                     self.draw_image_with_fill_mode(
                         render_data.as_ref(),
-                        &node.bbox,
+                        &eff_bbox,
                         img.fill_mode,
                         img.original_size,
                         img.crop,
@@ -1057,9 +1059,18 @@ impl WebCanvasRenderer {
                             RenderNodeType::Path(path.clone()),
                             *bbox,
                         ),
-                        PaintOp::Image { bbox, image } => RenderNode::new(
+                        PaintOp::Image {
+                            bbox,
+                            image,
+                            resolved,
+                        } => RenderNode::new(
                             node.source_node_id.unwrap_or(0),
-                            RenderNodeType::Image(image.clone()),
+                            RenderNodeType::Image(
+                                crate::renderer::image_resolver::image_node_with_resolved_payload(
+                                    image,
+                                    resolved.as_deref(),
+                                ),
+                            ),
                             *bbox,
                         ),
                         PaintOp::Equation { bbox, equation } => RenderNode::new(
@@ -1103,15 +1114,22 @@ impl WebCanvasRenderer {
         let cx = bbox.x + bbox.width / 2.0;
         let cy = bbox.y + bbox.height / 2.0;
         self.ctx.save();
-        // 중심으로 이동 → 대칭 → 회전 → 원래 위치로
+        // [Task #1067] 한컴 정답지 시각 표준 정합 — flip 와 회전 동시 적용 시 회전 부호 반전.
+        // svg.rs::open_shape_transform 와 동일 패턴.
+        let flip_negate_rotation = transform.horz_flip ^ transform.vert_flip;
         let _ = self.ctx.translate(cx, cy);
         let sx = if transform.horz_flip { -1.0 } else { 1.0 };
         let sy = if transform.vert_flip { -1.0 } else { 1.0 };
         let _ = self.ctx.scale(sx, sy);
         if transform.rotation != 0.0 {
+            let effective_rotation = if flip_negate_rotation {
+                -transform.rotation
+            } else {
+                transform.rotation
+            };
             let _ = self
                 .ctx
-                .rotate(transform.rotation * std::f64::consts::PI / 180.0);
+                .rotate(effective_rotation * std::f64::consts::PI / 180.0);
         }
         let _ = self.ctx.translate(-cx, -cy);
     }
@@ -1877,9 +1895,15 @@ impl Renderer for WebCanvasRenderer {
     }
 
     fn draw_text(&mut self, text: &str, x: f64, y: f64, style: &TextStyle) {
+        // [Task #1067] inline 컨트롤 placeholder (U+FFFC OBJECT REPLACEMENT CHARACTER) skip.
+        // svg.rs::draw_text 와 동일 정합.
+        let text: String = text.chars().filter(|&c| c != '\u{FFFC}').collect();
+        if text.is_empty() {
+            return;
+        }
         // [Task #509] 한컴은 폰트 지정과 상관없이 PUA 를 자체 처리. 지정 폰트에 글리프
         // 부재 시 한컴 내부 매핑이 발행. rhwp 도 동일 동작 모방 (PR #251 정합).
-        let text = &expand_pua_render_text(text);
+        let text = &expand_pua_render_text(&text);
         // [Task #528] Hanyang-PUA 옛한글 → KS X 1026-1:2007 자모 시퀀스 (KTUG 매핑).
         let text = &expand_pua_old_hangul_canvas(text);
 
@@ -2063,14 +2087,45 @@ impl Renderer for WebCanvasRenderer {
                     self.ctx.scale(0.5, 1.0).unwrap_or(());
                     let _ = self.ctx.fill_text(cluster_str, 0.0, 0.0);
                     self.ctx.restore();
-                } else if has_ratio {
+                } else {
+                    let cluster_advance = {
+                        let end = *char_idx + cluster_str.chars().count();
+                        if end < char_positions.len() {
+                            char_positions[end] - char_positions[*char_idx]
+                        } else {
+                            0.0
+                        }
+                    };
+                    let pin_ascii_advance =
+                        cluster_str.chars().any(|ch| ch.is_ascii_alphanumeric());
+                    let fit_scale = if cluster_advance > 0.0 {
+                        self.ctx
+                            .measure_text(cluster_str)
+                            .ok()
+                            .map(|metrics| metrics.width())
+                            .and_then(|actual_w| {
+                                let visual_w = actual_w * ratio;
+                                if visual_w <= 0.0 {
+                                    None
+                                } else if pin_ascii_advance {
+                                    Some((cluster_advance / visual_w).clamp(0.1, 2.0))
+                                } else if visual_w > cluster_advance + 0.25 {
+                                    Some((cluster_advance / visual_w).clamp(0.1, 1.0))
+                                } else {
+                                    None
+                                }
+                            })
+                    } else {
+                        None
+                    };
+
                     self.ctx.save();
                     self.ctx.translate(char_x, y).unwrap_or(());
-                    self.ctx.scale(ratio, 1.0).unwrap_or(());
+                    self.ctx
+                        .scale(ratio * fit_scale.unwrap_or(1.0), 1.0)
+                        .unwrap_or(());
                     let _ = self.ctx.fill_text(cluster_str, 0.0, 0.0);
                     self.ctx.restore();
-                } else {
-                    let _ = self.ctx.fill_text(cluster_str, char_x, y);
                 }
             }
         }
@@ -2151,7 +2206,8 @@ impl Renderer for WebCanvasRenderer {
                 continue;
             }
             let lx1 = x + leader.start_x;
-            let lx2 = x + leader.end_x;
+            let leader_end_x = clamp_tab_leader_end_x(text, &char_positions, leader, font_size);
+            let lx2 = x + leader_end_x;
             let ly = y - font_size * 0.35; // 글자 세로 중앙
             let stroke_color = color_to_css(style.color);
 
@@ -2628,19 +2684,27 @@ impl WebCanvasRenderer {
         let is_circle = overlap.border_type == 1 || overlap.border_type == 2;
         let is_rect = overlap.border_type == 3 || overlap.border_type == 4;
 
+        // inner_char_size 해석:
+        //   > 0 → percent ratio (HWPX 양수 case 보존)
+        //   < 0 → 10% step 축소 (한컴 정합: charSz=-3 → 0.70)
+        //   == 0 → 기본 100%
         let size_ratio = if overlap.inner_char_size > 0 {
             overlap.inner_char_size as f64 / 100.0
+        } else if overlap.inner_char_size < 0 {
+            1.0 + overlap.inner_char_size as f64 * 0.10
         } else {
             1.0
         };
         let inner_font_size = font_size * size_ratio;
 
+        // 동그라미 테두리 색 = 글자색 (한컴 정합). reversed는 기존대로 검정 채움.
+        let glyph_color = color_to_css(style.color);
         let fill_color = if is_reversed { "#000000" } else { "none" };
-        let stroke_color = "#000000";
+        let stroke_color: &str = if is_reversed { "#000000" } else { &glyph_color };
         let text_color = if is_reversed {
             "#FFFFFF".to_string()
         } else {
-            color_to_css(style.color)
+            glyph_color.clone()
         };
 
         let font_family = if style.font_family.is_empty() {
@@ -2672,9 +2736,13 @@ impl WebCanvasRenderer {
             let cy = bbox_y + bbox_h - box_size / 2.0;
 
             if is_circle {
-                let r = box_size / 2.0;
+                // 세로로 긴 타원 (한컴 정합, rx=ry*0.85)
+                let ry = box_size / 2.0;
+                let rx = ry * 0.85;
                 self.ctx.begin_path();
-                let _ = self.ctx.arc(cx, cy, r, 0.0, std::f64::consts::PI * 2.0);
+                let _ = self
+                    .ctx
+                    .ellipse(cx, cy, rx, ry, 0.0, 0.0, std::f64::consts::TAU);
                 if is_reversed {
                     self.ctx.set_fill_style_str(fill_color);
                     self.ctx.fill();
@@ -2733,19 +2801,23 @@ impl WebCanvasRenderer {
         let is_circle = effective_border == 1 || effective_border == 2;
         let is_rect = effective_border == 3 || effective_border == 4;
 
+        // inner_char_size 해석 (draw_char_overlap와 동일 — 음수=10% step 축소)
         let size_ratio = if overlap.inner_char_size > 0 {
             overlap.inner_char_size as f64 / 100.0
+        } else if overlap.inner_char_size < 0 {
+            1.0 + overlap.inner_char_size as f64 * 0.10
         } else {
             1.0
         };
         let inner_font_size = font_size * size_ratio;
 
+        let glyph_color = color_to_css(style.color);
         let fill_color = if is_reversed { "#000000" } else { "none" };
-        let stroke_color = "#000000";
+        let stroke_color: &str = if is_reversed { "#000000" } else { &glyph_color };
         let text_color = if is_reversed {
             "#FFFFFF".to_string()
         } else {
-            color_to_css(style.color)
+            glyph_color.clone()
         };
 
         let font_family = if style.font_family.is_empty() {
@@ -2758,11 +2830,14 @@ impl WebCanvasRenderer {
         let cx = bbox_x + box_size / 2.0;
         let cy = bbox_y + bbox_h - box_size / 2.0;
 
-        // 도형 렌더링
+        // 도형 렌더링 — 세로로 긴 타원 (한컴 정합, rx=ry*0.85)
         if is_circle {
-            let r = box_size / 2.0;
+            let ry = box_size / 2.0;
+            let rx = ry * 0.85;
             self.ctx.begin_path();
-            let _ = self.ctx.arc(cx, cy, r, 0.0, std::f64::consts::PI * 2.0);
+            let _ = self
+                .ctx
+                .ellipse(cx, cy, rx, ry, 0.0, 0.0, std::f64::consts::TAU);
             if is_reversed {
                 self.ctx.set_fill_style_str(fill_color);
                 self.ctx.fill();
