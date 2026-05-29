@@ -662,7 +662,7 @@ mod tests {
         );
 
         // IR delta 정합 검증: 5448 HU = 72.64 px.
-        let expected_gap = (5448.0_f64 * 96.0 / 7200.0_f64);
+        let expected_gap = 5448.0_f64 * 96.0 / 7200.0_f64;
         assert!(
             (gap_12 - expected_gap).abs() < 0.5,
             "①→② gap({:.2}) 가 IR vpos delta({:.2}) 와 일치해야 함",
@@ -739,8 +739,7 @@ mod tests {
         // '르' 직전 line 의 글자 y 찾기 (gap 측정용)
         let prev_line_y = points
             .iter()
-            .filter(|(y, _, _)| *y < leporeut_y - 0.5)
-            .last()
+            .rfind(|(y, _, _)| *y < leporeut_y - 0.5)
             .map(|(y, _, _)| *y)
             .expect("'르' 직전 line 을 찾을 수 없음");
 
@@ -821,8 +820,7 @@ mod tests {
 
         let prev_line_y = points
             .iter()
-            .filter(|(y, _, _)| *y < deobureo_y - 0.5)
-            .last()
+            .rfind(|(y, _, _)| *y < deobureo_y - 0.5)
             .map(|(y, _, _)| *y)
             .expect("'더' 직전 line 을 찾을 수 없음");
 
