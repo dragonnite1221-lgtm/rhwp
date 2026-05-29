@@ -62,6 +62,8 @@ pub extern "C" fn rhwp_string_free(ptr: *mut c_char) {
     }
 
     unsafe {
+        // SAFETY: The native API returns strings allocated with CString::into_raw.
+        // Callers must pass each returned pointer back exactly once for release.
         drop(CString::from_raw(ptr));
     }
 }
@@ -264,6 +266,8 @@ fn read_utf8(ptr: *const c_char, name: &str) -> Result<String, String> {
     }
 
     unsafe {
+        // SAFETY: Null pointers are rejected above. The FFI contract requires
+        // input strings to be valid, NUL-terminated C strings for this call.
         CStr::from_ptr(ptr)
             .to_str()
             .map(|s| s.to_string())
