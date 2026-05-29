@@ -71,22 +71,27 @@ pub fn read_variable<R: crate::wmf::Read>(
 }
 
 macro_rules! impl_from_le_bytes {
-    ($(($t:ty, $n:expr)),+) => {
-        paste::paste!{
-            $(
-                pub fn [<read_ $t _from_le_bytes>]<R: $crate::wmf::Read>(
-                    buf: &mut R,
-                ) -> Result<($t, usize), ReadError> {
-                    let (bytes, consumed_bytes) = read::<R, $n>(buf)?;
+    ($(($t:ty, $n:expr, $read_fn:ident)),+) => {
+        $(
+            pub fn $read_fn<R: $crate::wmf::Read>(
+                buf: &mut R,
+            ) -> Result<($t, usize), ReadError> {
+                let (bytes, consumed_bytes) = read::<R, $n>(buf)?;
 
-                    Ok((<$t>::from_le_bytes(bytes), consumed_bytes))
-                }
-            )*
-        }
+                Ok((<$t>::from_le_bytes(bytes), consumed_bytes))
+            }
+        )*
     };
 }
 
-impl_from_le_bytes! {(i8, 1), (i16, 2), (i32, 4), (u8, 1), (u16, 2), (u32, 4) }
+impl_from_le_bytes! {
+    (i8, 1, read_i8_from_le_bytes),
+    (i16, 2, read_i16_from_le_bytes),
+    (i32, 4, read_i32_from_le_bytes),
+    (u8, 1, read_u8_from_le_bytes),
+    (u16, 2, read_u16_from_le_bytes),
+    (u32, 4, read_u32_from_le_bytes)
+}
 
 /// Converts the given byte slice to a UTF-8 string using the specified
 /// character set.
