@@ -10,6 +10,9 @@ Cargo.lock
 # Node
 node_modules/
 
+# CodeGraph local index
+.codegraph/
+
 # Local HTTPS certificates
 /web/certs/*
 !/web/certs/README.md

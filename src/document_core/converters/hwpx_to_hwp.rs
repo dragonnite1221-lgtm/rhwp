@@ -8,7 +8,9 @@
 //!   `control.rs` 등은 변경하지 않는다.
 //! - **IR 만 만진다**: 진입점은 `&mut Document` 이며, 출력은 IR 필드 갱신뿐.
 //! - **idempotent**: 같은 IR 에 두 번 호출해도 같은 결과.
-//! - **HWP 출처 보호**: `source_format == Hwpx` 일 때만 동작. HWP 출처는 no-op.
+//! - **HWP 출처 보호**: `source_format == Hwpx` 또는 `Hwp3` 일 때만 동작.
+//!   HWP5 출처는 no-op. HWP3 허용은 HWP 저장 어댑터가 필요한 legacy IR 정규화 경로이며,
+//!   공통 converter 에 새 HWP3 파서 로직을 섞는 예외가 아니다.
 //!
 //! ## 매핑 명세서
 //!
@@ -1260,6 +1262,9 @@ fn adapt_cell_list_attr(cell: &mut Cell, report: &mut AdapterReport) {
 ///
 /// 호출자: `DocumentCore::export_hwp_with_adapter()` (Stage 5 에서 추가).
 pub fn convert_if_hwpx_source(doc: &mut Document, source_format: FileFormat) -> AdapterReport {
+    // Guardrail: this converter only materializes HWP-save contracts for HWPX
+    // and native HWP3 IR. Do not add format-specific parsing here; keep that in
+    // the parser modules before DocumentCore reaches the export adapter.
     if !matches!(source_format, FileFormat::Hwpx | FileFormat::Hwp3) {
         return AdapterReport::new().no_op("source_format != Hwpx/Hwp3");
     }

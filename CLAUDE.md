@@ -16,10 +16,11 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 | 포맷 | 파서 위치 | 출력 IR |
 |------|----------|---------|
 | HWPX (ZIP+XML) | `src/parser/hwpx/` | `Document` |
-| HWP5 (OLE 복합) | `src/parser/hwp5/` | `Document` |
+| HWP5 (OLE 복합) | `src/parser/` 루트의 HWP5 모듈들 | `Document` |
 | HWP3 (고전 바이너리) | `src/parser/hwp3/` | `Document` |
 
 > 역사적으로 `Document` 모델은 HWP5 형식의 구조를 기반으로 설계되었으며, HWPX는 같은 의미의 XML 포맷이다. HWP3는 고전 포맷이지만 동일한 `Document` IR로 변환한다.
+> HWP5 파서는 별도 `src/parser/hwp5/` 디렉터리가 아니라 `body_text.rs`, `doc_info.rs`, `control.rs` 등 `src/parser/` 루트 모듈로 구성되어 있다.
 
 **HWP3 파서 규칙**: `src/parser/hwp3/` 내부에서 HWP3 바이너리를 읽어 `Document` IR로 변환하여 반환한다. HWP3 전용 로직은 **반드시 `src/parser/hwp3/` 안에서만** 구현한다. 렌더러(`src/renderer/`), 레이아웃(`src/renderer/layout.rs`), 문서 코어(`src/document_core/`) 등 공통 모듈에 HWP3 전용 분기를 추가하지 않는다.
 
