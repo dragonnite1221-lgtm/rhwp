@@ -69,8 +69,7 @@ pub fn write_section(
     };
     vert_cursor = first_advance;
 
-    let mut out = EMPTY_SECTION_XML.replacen(TEXT_SLOT, &first_t, 1);
-    out = replace_first_linesegs(&out, &first_linesegs);
+    let mut out = EMPTY_SECTION_XML.to_string();
 
     // 첫 문단 `<hp:p>` 태그를 IR 기반 속성으로 교체
     if let Some(p) = first_para {
@@ -81,13 +80,11 @@ pub fn write_section(
         // 템플릿에서 TEXT_SLOT 이 있던 자리 바로 앞의 <hp:run charPrIDRef="0"> 패턴.
         let first_run_cs = first_run_char_shape_id(p);
         let new_run = format!(r#"<hp:run charPrIDRef="{}">"#, first_run_cs);
-        let replacement = format!("{}{}", new_run, &first_t);
-        // 이미 first_t 는 out 에 들어갔으므로 그 직전의 <hp:run charPrIDRef="0"> 만 변경
-        let anchor = format!("{}{}", r#"<hp:run charPrIDRef="0">"#, &first_t);
-        if out.contains(&anchor) {
-            out = out.replacen(&anchor, &replacement, 1);
-        }
+        let new_run_with_slot = format!("{}{}", new_run, TEXT_SLOT);
+        out = out.replacen(TEMPLATE_RUN_BEFORE_TEXT, &new_run_with_slot, 1);
     }
+    out = out.replacen(TEXT_SLOT, &first_t, 1);
+    out = replace_first_linesegs(&out, &first_linesegs)?;
 
     // 추가 문단: `</hp:p></hs:sec>` 직전에 `<hp:p>` 요소를 삽입.
     if section.paragraphs.len() > 1 {
@@ -633,20 +630,20 @@ fn push_lineseg_static(out: &mut String, textpos: u32, vertpos: u32) {
     ));
 }
 
-fn replace_first_linesegs(xml: &str, new_inner: &str) -> String {
-    let open = xml
-        .find(LINESEG_SLOT_OPEN)
-        .expect("template has linesegarray");
+fn replace_first_linesegs(xml: &str, new_inner: &str) -> Result<String, SerializeError> {
+    let open = xml.find(LINESEG_SLOT_OPEN).ok_or_else(|| {
+        SerializeError::XmlError("section template missing linesegarray start tag".to_string())
+    })?;
     let inner_start = open + LINESEG_SLOT_OPEN.len();
-    let close_rel = xml[inner_start..]
-        .find(LINESEG_SLOT_CLOSE)
-        .expect("template has closing linesegarray");
+    let close_rel = xml[inner_start..].find(LINESEG_SLOT_CLOSE).ok_or_else(|| {
+        SerializeError::XmlError("section template missing linesegarray end tag".to_string())
+    })?;
     let inner_end = inner_start + close_rel;
     let mut out = String::with_capacity(xml.len() + new_inner.len());
     out.push_str(&xml[..inner_start]);
     out.push_str(new_inner);
     out.push_str(&xml[inner_end..]);
-    out
+    Ok(out)
 }
 
 // `TEMPLATE_RUN_BEFORE_TEXT` 는 패턴 인식용 상수로만 쓰이므로 명시 참조.
@@ -795,6 +792,13 @@ mod tests {
         assert!(xml.contains(r#"<hp:lineseg textpos="0" vertpos="5000" vertsize="1200" textheight="1100" baseline="900" spacing="700" horzpos="100" horzsize="50000" flags="999"/>"#),
             "lineseg must reflect IR values exactly, got XML: {}",
             &xml[xml.find("<hp:lineseg").unwrap_or(0)..(xml.find("<hp:lineseg").unwrap_or(0) + 200).min(xml.len())]);
+    }
+
+    #[test]
+    fn replace_first_linesegs_returns_error_for_missing_template_slot() {
+        let err = replace_first_linesegs("<hs:sec></hs:sec>", "<hp:lineseg/>").unwrap_err();
+        assert!(matches!(err, SerializeError::XmlError(_)));
+        assert!(err.to_string().contains("linesegarray start tag"));
     }
 
     #[test]
