@@ -50,24 +50,36 @@ pub fn serialize_doc_info(doc_info: &DocInfo, doc_props: &DocProperties) -> Vec<
 
     // 3~10: ID_MAPPINGS 하위 레코드 (모두 level 1)
     for bin_data in &doc_info.bin_data_list {
-        let data = bin_data.raw_data.clone().unwrap_or_else(|| serialize_bin_data(bin_data));
+        let data = bin_data
+            .raw_data
+            .clone()
+            .unwrap_or_else(|| serialize_bin_data(bin_data));
         stream.extend(write_record(tags::HWPTAG_BIN_DATA, 1, &data));
     }
 
     for lang_fonts in &doc_info.font_faces {
         for font in lang_fonts {
-            let data = font.raw_data.clone().unwrap_or_else(|| serialize_face_name(font));
+            let data = font
+                .raw_data
+                .clone()
+                .unwrap_or_else(|| serialize_face_name(font));
             stream.extend(write_record(tags::HWPTAG_FACE_NAME, 1, &data));
         }
     }
 
     for bf in &doc_info.border_fills {
-        let data = bf.raw_data.clone().unwrap_or_else(|| serialize_border_fill(bf));
+        let data = bf
+            .raw_data
+            .clone()
+            .unwrap_or_else(|| serialize_border_fill(bf));
         stream.extend(write_record(tags::HWPTAG_BORDER_FILL, 1, &data));
     }
 
     for cs in &doc_info.char_shapes {
-        let data = cs.raw_data.clone().unwrap_or_else(|| serialize_char_shape(cs));
+        let data = cs
+            .raw_data
+            .clone()
+            .unwrap_or_else(|| serialize_char_shape(cs));
         stream.extend(write_record(tags::HWPTAG_CHAR_SHAPE, 1, &data));
     }
 
@@ -77,32 +89,40 @@ pub fn serialize_doc_info(doc_info: &DocInfo, doc_props: &DocProperties) -> Vec<
     }
 
     for numbering in &doc_info.numberings {
-        let data = numbering.raw_data.clone().unwrap_or_else(|| serialize_numbering(numbering));
+        let data = numbering
+            .raw_data
+            .clone()
+            .unwrap_or_else(|| serialize_numbering(numbering));
         stream.extend(write_record(tags::HWPTAG_NUMBERING, 1, &data));
     }
 
     for bullet in &doc_info.bullets {
-        let data = bullet.raw_data.clone().unwrap_or_else(|| serialize_bullet(bullet));
+        let data = bullet
+            .raw_data
+            .clone()
+            .unwrap_or_else(|| serialize_bullet(bullet));
         stream.extend(write_record(tags::HWPTAG_BULLET, 1, &data));
     }
 
     for ps in &doc_info.para_shapes {
-        let data = ps.raw_data.clone().unwrap_or_else(|| serialize_para_shape(ps));
+        let data = ps
+            .raw_data
+            .clone()
+            .unwrap_or_else(|| serialize_para_shape(ps));
         stream.extend(write_record(tags::HWPTAG_PARA_SHAPE, 1, &data));
     }
 
     for style in &doc_info.styles {
-        let data = style.raw_data.clone().unwrap_or_else(|| serialize_style(style));
+        let data = style
+            .raw_data
+            .clone()
+            .unwrap_or_else(|| serialize_style(style));
         stream.extend(write_record(tags::HWPTAG_STYLE, 1, &data));
     }
 
     // 미지원 레코드 원본 보존
     for record in &doc_info.extra_records {
-        stream.extend(write_record(
-            record.tag_id,
-            record.level,
-            &record.data,
-        ));
+        stream.extend(write_record(record.tag_id, record.level, &record.data));
     }
 
     stream
@@ -118,17 +138,17 @@ pub fn serialize_document_properties(props: &DocProperties) -> Vec<u8> {
         return raw.clone();
     }
     let mut w = ByteWriter::new();
-    w.write_u16(props.section_count).unwrap();
-    w.write_u16(props.page_start_num).unwrap();
-    w.write_u16(props.footnote_start_num).unwrap();
-    w.write_u16(props.endnote_start_num).unwrap();
-    w.write_u16(props.picture_start_num).unwrap();
-    w.write_u16(props.table_start_num).unwrap();
-    w.write_u16(props.equation_start_num).unwrap();
+    w.write_u16(props.section_count);
+    w.write_u16(props.page_start_num);
+    w.write_u16(props.footnote_start_num);
+    w.write_u16(props.endnote_start_num);
+    w.write_u16(props.picture_start_num);
+    w.write_u16(props.table_start_num);
+    w.write_u16(props.equation_start_num);
     // 캐럿 위치 정보 (스펙: 전체 26바이트)
-    w.write_u32(props.caret_list_id).unwrap();
-    w.write_u32(props.caret_para_id).unwrap();
-    w.write_u32(props.caret_char_pos).unwrap();
+    w.write_u32(props.caret_list_id);
+    w.write_u32(props.caret_para_id);
+    w.write_u32(props.caret_char_pos);
     w.into_bytes()
 }
 
@@ -136,7 +156,7 @@ pub fn serialize_id_mappings(doc_info: &DocInfo) -> Vec<u8> {
     let mut w = ByteWriter::new();
 
     // bin_data_count
-    w.write_u32(doc_info.bin_data_list.len() as u32).unwrap();
+    w.write_u32(doc_info.bin_data_list.len() as u32);
 
     // font_counts (7개 언어)
     for lang_idx in 0..7 {
@@ -145,57 +165,57 @@ pub fn serialize_id_mappings(doc_info: &DocInfo) -> Vec<u8> {
         } else {
             0
         };
-        w.write_u32(count).unwrap();
+        w.write_u32(count);
     }
 
     // border_fill_count
-    w.write_u32(doc_info.border_fills.len() as u32).unwrap();
+    w.write_u32(doc_info.border_fills.len() as u32);
     // char_shape_count
-    w.write_u32(doc_info.char_shapes.len() as u32).unwrap();
+    w.write_u32(doc_info.char_shapes.len() as u32);
     // tab_def_count
-    w.write_u32(doc_info.tab_defs.len() as u32).unwrap();
+    w.write_u32(doc_info.tab_defs.len() as u32);
     // numbering_count
-    w.write_u32(doc_info.numberings.len() as u32).unwrap();
+    w.write_u32(doc_info.numberings.len() as u32);
     // bullet_count (파싱된 bullets 배열 크기 우선, 없으면 보존값)
     let bullet_count = if doc_info.bullets.is_empty() {
         doc_info.bullet_count
     } else {
         doc_info.bullets.len() as u32
     };
-    w.write_u32(bullet_count).unwrap();
+    w.write_u32(bullet_count);
     // para_shape_count
-    w.write_u32(doc_info.para_shapes.len() as u32).unwrap();
+    w.write_u32(doc_info.para_shapes.len() as u32);
     // style_count
-    w.write_u32(doc_info.styles.len() as u32).unwrap();
+    w.write_u32(doc_info.styles.len() as u32);
     // memo_shape_count (5.0.2.x 이후, 파싱 시 보존된 값 사용)
-    w.write_u32(doc_info.memo_shape_count).unwrap();
+    w.write_u32(doc_info.memo_shape_count);
 
     w.into_bytes()
 }
 
 pub fn serialize_bin_data(bin_data: &BinData) -> Vec<u8> {
     let mut w = ByteWriter::new();
-    w.write_u16(bin_data.attr).unwrap();
+    w.write_u16(bin_data.attr);
 
     match bin_data.data_type {
         BinDataType::Link => {
             if let Some(ref abs_path) = bin_data.abs_path {
-                w.write_hwp_string(abs_path).unwrap();
+                w.write_hwp_string(abs_path);
             } else {
-                w.write_hwp_string("").unwrap();
+                w.write_hwp_string("");
             }
             if let Some(ref rel_path) = bin_data.rel_path {
-                w.write_hwp_string(rel_path).unwrap();
+                w.write_hwp_string(rel_path);
             } else {
-                w.write_hwp_string("").unwrap();
+                w.write_hwp_string("");
             }
         }
         BinDataType::Embedding | BinDataType::Storage => {
-            w.write_u16(bin_data.storage_id).unwrap();
+            w.write_u16(bin_data.storage_id);
             if let Some(ref ext) = bin_data.extension {
-                w.write_hwp_string(ext).unwrap();
+                w.write_hwp_string(ext);
             } else {
-                w.write_hwp_string("").unwrap();
+                w.write_hwp_string("");
             }
         }
     }
@@ -214,15 +234,15 @@ pub fn serialize_face_name(font: &Font) -> Vec<u8> {
     if font.default_name.is_some() {
         attr |= 0x40;
     }
-    w.write_u8(attr).unwrap();
+    w.write_u8(attr);
 
-    w.write_hwp_string(&font.name).unwrap();
+    w.write_hwp_string(&font.name);
 
     if let Some(ref alt_name) = font.alt_name {
-        w.write_hwp_string(alt_name).unwrap();
+        w.write_hwp_string(alt_name);
     }
     if let Some(ref default_name) = font.default_name {
-        w.write_hwp_string(default_name).unwrap();
+        w.write_hwp_string(default_name);
     }
 
     w.into_bytes()
@@ -263,19 +283,19 @@ fn image_fill_mode_to_u8(mode: ImageFillMode) -> u8 {
 
 pub fn serialize_border_fill(bf: &BorderFill) -> Vec<u8> {
     let mut w = ByteWriter::new();
-    w.write_u16(bf.attr).unwrap();
+    w.write_u16(bf.attr);
 
     // 4방향 테두리 (인터리브: 종류 + 굵기 + 색상)
     for border in &bf.borders {
-        w.write_u8(border_line_type_to_u8(border.line_type)).unwrap();
-        w.write_u8(border.width).unwrap();
-        w.write_color_ref(border.color).unwrap();
+        w.write_u8(border_line_type_to_u8(border.line_type));
+        w.write_u8(border.width);
+        w.write_color_ref(border.color);
     }
 
     // 대각선
-    w.write_u8(bf.diagonal.diagonal_type).unwrap();
-    w.write_u8(bf.diagonal.width).unwrap();
-    w.write_color_ref(bf.diagonal.color).unwrap();
+    w.write_u8(bf.diagonal.diagonal_type);
+    w.write_u8(bf.diagonal.width);
+    w.write_color_ref(bf.diagonal.color);
 
     // 채우기
     serialize_fill(&mut w, &bf.fill);
@@ -290,49 +310,49 @@ fn serialize_fill(w: &mut ByteWriter, fill: &crate::model::style::Fill) {
         FillType::Image => 2,
         FillType::Gradient => 4,
     };
-    w.write_u32(fill_type_val).unwrap();
+    w.write_u32(fill_type_val);
 
     match fill.fill_type {
         FillType::Solid => {
             if let Some(ref solid) = fill.solid {
-                w.write_color_ref(solid.background_color).unwrap();
-                w.write_color_ref(solid.pattern_color).unwrap();
-                w.write_i32(solid.pattern_type).unwrap();
+                w.write_color_ref(solid.background_color);
+                w.write_color_ref(solid.pattern_color);
+                w.write_i32(solid.pattern_type);
             }
             // 추가 채우기 속성: size(u32) + alpha(u8)
-            w.write_u32(1).unwrap();
-            w.write_u8(0).unwrap(); // alpha
+            w.write_u32(1);
+            w.write_u8(0); // alpha
         }
         FillType::Gradient => {
             if let Some(ref grad) = fill.gradient {
-                w.write_i16(grad.gradient_type).unwrap();
-                w.write_i16(grad.angle).unwrap();
-                w.write_i16(grad.center_x).unwrap();
-                w.write_i16(grad.center_y).unwrap();
-                w.write_i16(grad.blur).unwrap();
-                w.write_u32(grad.colors.len() as u32).unwrap();
+                w.write_i16(grad.gradient_type);
+                w.write_i16(grad.angle);
+                w.write_i16(grad.center_x);
+                w.write_i16(grad.center_y);
+                w.write_i16(grad.blur);
+                w.write_u32(grad.colors.len() as u32);
                 for &color in &grad.colors {
-                    w.write_color_ref(color).unwrap();
+                    w.write_color_ref(color);
                 }
                 for &pos in &grad.positions {
-                    w.write_i32(pos).unwrap();
+                    w.write_i32(pos);
                 }
             }
         }
         FillType::Image => {
             if let Some(ref img) = fill.image {
-                w.write_u8(image_fill_mode_to_u8(img.fill_mode)).unwrap();
-                w.write_i8(img.brightness).unwrap();
-                w.write_i8(img.contrast).unwrap();
-                w.write_u8(img.effect).unwrap();
-                w.write_u16(img.bin_data_id).unwrap();
+                w.write_u8(image_fill_mode_to_u8(img.fill_mode));
+                w.write_i8(img.brightness);
+                w.write_i8(img.contrast);
+                w.write_u8(img.effect);
+                w.write_u16(img.bin_data_id);
             }
             // 추가 채우기 속성: size(u32)
-            w.write_u32(0).unwrap();
+            w.write_u32(0);
         }
         FillType::None => {
             // 추가 채우기 속성: size(u32) = 0
-            w.write_u32(0).unwrap();
+            w.write_u32(0);
         }
     }
 }
@@ -342,32 +362,40 @@ pub fn serialize_char_shape(cs: &CharShape) -> Vec<u8> {
 
     // font_ids (7 × u16)
     for &id in &cs.font_ids {
-        w.write_u16(id).unwrap();
+        w.write_u16(id);
     }
     // ratios (7 × u8)
     for &ratio in &cs.ratios {
-        w.write_u8(ratio).unwrap();
+        w.write_u8(ratio);
     }
     // spacings (7 × i8)
     for &spacing in &cs.spacings {
-        w.write_i8(spacing).unwrap();
+        w.write_i8(spacing);
     }
     // relative_sizes (7 × u8)
     for &size in &cs.relative_sizes {
-        w.write_u8(size).unwrap();
+        w.write_u8(size);
     }
     // char_offsets (7 × i8)
     for &offset in &cs.char_offsets {
-        w.write_i8(offset).unwrap();
+        w.write_i8(offset);
     }
     // base_size
-    w.write_i32(cs.base_size).unwrap();
+    w.write_i32(cs.base_size);
     // attr: 원본 비트를 기반으로, 모델링된 필드 반영
     let mut attr = cs.attr;
     // bit 0: italic
-    if cs.italic { attr |= 0x01; } else { attr &= !0x01; }
+    if cs.italic {
+        attr |= 0x01;
+    } else {
+        attr &= !0x01;
+    }
     // bit 1: bold
-    if cs.bold { attr |= 0x02; } else { attr &= !0x02; }
+    if cs.bold {
+        attr |= 0x02;
+    } else {
+        attr &= !0x02;
+    }
     // bits 2-3: underline_type (0=none, 1=bottom, 3=top)
     attr &= !0x0C;
     attr |= match cs.underline_type {
@@ -382,18 +410,36 @@ pub fn serialize_char_shape(cs: &CharShape) -> Vec<u8> {
     attr &= !(0x03 << 11);
     attr |= (cs.shadow_type as u32 & 0x03) << 11;
     // bit 13: emboss
-    if cs.emboss { attr |= 1u32 << 13; } else { attr &= !(1u32 << 13); }
+    if cs.emboss {
+        attr |= 1u32 << 13;
+    } else {
+        attr &= !(1u32 << 13);
+    }
     // bit 14: engrave
-    if cs.engrave { attr |= 1u32 << 14; } else { attr &= !(1u32 << 14); }
+    if cs.engrave {
+        attr |= 1u32 << 14;
+    } else {
+        attr &= !(1u32 << 14);
+    }
     // HWP 스펙 표 37: bit 15 = 위첨자(superscript), bit 16 = 아래첨자(subscript)
-    if cs.superscript { attr |= 1u32 << 15; } else { attr &= !(1u32 << 15); }
-    if cs.subscript { attr |= 1u32 << 16; } else { attr &= !(1u32 << 16); }
+    if cs.superscript {
+        attr |= 1u32 << 15;
+    } else {
+        attr &= !(1u32 << 15);
+    }
+    if cs.subscript {
+        attr |= 1u32 << 16;
+    } else {
+        attr &= !(1u32 << 16);
+    }
     // bits 4-7: underline_shape (표 27 선 종류)
     attr &= !(0x0F << 4);
     attr |= (cs.underline_shape as u32 & 0x0F) << 4;
     // bits 18-20: strikethrough (≥2 means active)
     if cs.strikethrough {
-        if (attr >> 18) & 0x07 < 2 { attr = (attr & !(0x07 << 18)) | (2u32 << 18); }
+        if (attr >> 18) & 0x07 < 2 {
+            attr = (attr & !(0x07 << 18)) | (2u32 << 18);
+        }
     } else {
         attr &= !(0x07 << 18);
     }
@@ -404,33 +450,37 @@ pub fn serialize_char_shape(cs: &CharShape) -> Vec<u8> {
     attr &= !(0x0F << 26);
     attr |= (cs.strike_shape as u32 & 0x0F) << 26;
     // bit 30: kerning
-    if cs.kerning { attr |= 1u32 << 30; } else { attr &= !(1u32 << 30); }
-    w.write_u32(attr).unwrap();
+    if cs.kerning {
+        attr |= 1u32 << 30;
+    } else {
+        attr &= !(1u32 << 30);
+    }
+    w.write_u32(attr);
     // shadow offsets (i8 × 2)
-    w.write_i8(cs.shadow_offset_x).unwrap();
-    w.write_i8(cs.shadow_offset_y).unwrap();
+    w.write_i8(cs.shadow_offset_x);
+    w.write_i8(cs.shadow_offset_y);
     // colors
-    w.write_color_ref(cs.text_color).unwrap();
-    w.write_color_ref(cs.underline_color).unwrap();
-    w.write_color_ref(cs.shade_color).unwrap();
-    w.write_color_ref(cs.shadow_color).unwrap();
+    w.write_color_ref(cs.text_color);
+    w.write_color_ref(cs.underline_color);
+    w.write_color_ref(cs.shade_color);
+    w.write_color_ref(cs.shadow_color);
     // 글자 테두리/배경 ID (5.0.2.1 이상)
-    w.write_u16(cs.border_fill_id).unwrap();
+    w.write_u16(cs.border_fill_id);
     // 취소선 색 (5.0.3.0 이상)
-    w.write_color_ref(cs.strike_color).unwrap();
+    w.write_color_ref(cs.strike_color);
 
     w.into_bytes()
 }
 
 pub fn serialize_tab_def(td: &TabDef) -> Vec<u8> {
     let mut w = ByteWriter::new();
-    w.write_u32(td.attr).unwrap();
-    w.write_u32(td.tabs.len() as u32).unwrap();
+    w.write_u32(td.attr);
+    w.write_u32(td.tabs.len() as u32);
     for tab in &td.tabs {
-        w.write_u32(tab.position).unwrap();
-        w.write_u8(tab.tab_type).unwrap();
-        w.write_u8(tab.fill_type).unwrap();
-        w.write_zeros(2).unwrap(); // 예약
+        w.write_u32(tab.position);
+        w.write_u8(tab.tab_type);
+        w.write_u8(tab.fill_type);
+        w.write_zeros(2); // 예약
     }
     w.into_bytes()
 }
@@ -441,26 +491,26 @@ fn serialize_numbering(numbering: &Numbering) -> Vec<u8> {
     // 수준별(1~7) 문단 머리 정보 + 번호 형식 문자열
     for level in 0..7 {
         let head = &numbering.heads[level];
-        w.write_u32(head.attr).unwrap();
-        w.write_i16(head.width_adjust).unwrap();
-        w.write_i16(head.text_distance).unwrap();
-        w.write_u32(head.char_shape_id).unwrap();
+        w.write_u32(head.attr);
+        w.write_i16(head.width_adjust);
+        w.write_i16(head.text_distance);
+        w.write_u32(head.char_shape_id);
 
         // 번호 형식 문자열
         let fmt_str = &numbering.level_formats[level];
         let utf16: Vec<u16> = fmt_str.encode_utf16().collect();
-        w.write_u16(utf16.len() as u16).unwrap();
+        w.write_u16(utf16.len() as u16);
         for &ch in &utf16 {
-            w.write_u16(ch).unwrap();
+            w.write_u16(ch);
         }
     }
 
     // 시작 번호
-    w.write_u16(numbering.start_number).unwrap();
+    w.write_u16(numbering.start_number);
 
     // 수준별 시작 번호 (5.0.2.5 이상)
     for level in 0..7 {
-        w.write_u32(numbering.level_start_numbers[level]).unwrap();
+        w.write_u32(numbering.level_start_numbers[level]);
     }
 
     w.into_bytes()
@@ -471,23 +521,23 @@ fn serialize_bullet(bullet: &Bullet) -> Vec<u8> {
     let mut w = ByteWriter::new();
 
     // 문단 머리 정보 (8바이트)
-    w.write_u32(bullet.attr).unwrap();
-    w.write_i16(bullet.width_adjust).unwrap();
-    w.write_i16(bullet.text_distance).unwrap();
+    w.write_u32(bullet.attr);
+    w.write_i16(bullet.width_adjust);
+    w.write_i16(bullet.text_distance);
 
     // 글머리표 문자 (WCHAR)
-    w.write_u16(bullet.bullet_char as u16).unwrap();
+    w.write_u16(bullet.bullet_char as u16);
 
     // 이미지 글머리표 여부 (INT32)
-    w.write_i32(bullet.image_bullet).unwrap();
+    w.write_i32(bullet.image_bullet);
 
     // 이미지 글머리 데이터 (4바이트)
     for &byte in &bullet.image_data {
-        w.write_u8(byte).unwrap();
+        w.write_u8(byte);
     }
 
     // 체크 글머리표 문자 (WCHAR)
-    w.write_u16(bullet.check_bullet_char as u16).unwrap();
+    w.write_u16(bullet.check_bullet_char as u16);
 
     w.into_bytes()
 }
@@ -525,36 +575,36 @@ pub fn serialize_para_shape(ps: &ParaShape) -> Vec<u8> {
     // bits 25-27: para_level
     attr1 &= !(0x07 << 25);
     attr1 |= (ps.para_level as u32 & 0x07) << 25;
-    w.write_u32(attr1).unwrap();
-    w.write_i32(ps.margin_left).unwrap();
-    w.write_i32(ps.margin_right).unwrap();
-    w.write_i32(ps.indent).unwrap();
-    w.write_i32(ps.spacing_before).unwrap();
-    w.write_i32(ps.spacing_after).unwrap();
-    w.write_i32(ps.line_spacing).unwrap();
-    w.write_u16(ps.tab_def_id).unwrap();
-    w.write_u16(ps.numbering_id).unwrap();
-    w.write_u16(ps.border_fill_id).unwrap();
+    w.write_u32(attr1);
+    w.write_i32(ps.margin_left);
+    w.write_i32(ps.margin_right);
+    w.write_i32(ps.indent);
+    w.write_i32(ps.spacing_before);
+    w.write_i32(ps.spacing_after);
+    w.write_i32(ps.line_spacing);
+    w.write_u16(ps.tab_def_id);
+    w.write_u16(ps.numbering_id);
+    w.write_u16(ps.border_fill_id);
     for &spacing in &ps.border_spacing {
-        w.write_i16(spacing).unwrap();
+        w.write_i16(spacing);
     }
     // 속성2 (5.0.1.7 이상)
-    w.write_u32(ps.attr2).unwrap();
+    w.write_u32(ps.attr2);
     // 속성3 - 줄 간격 종류 확장 (5.0.2.5 이상)
-    w.write_u32(ps.attr3).unwrap();
+    w.write_u32(ps.attr3);
     // 줄 간격 (5.0.2.5 이상)
-    w.write_u32(ps.line_spacing_v2).unwrap();
+    w.write_u32(ps.line_spacing_v2);
     w.into_bytes()
 }
 
 pub fn serialize_style(style: &Style) -> Vec<u8> {
     let mut w = ByteWriter::new();
-    w.write_hwp_string(&style.local_name).unwrap();
-    w.write_hwp_string(&style.english_name).unwrap();
-    w.write_u8(style.style_type).unwrap();
-    w.write_u8(style.next_style_id).unwrap();
-    w.write_u16(style.para_shape_id).unwrap();
-    w.write_u16(style.char_shape_id).unwrap();
+    w.write_hwp_string(&style.local_name);
+    w.write_hwp_string(&style.english_name);
+    w.write_u8(style.style_type);
+    w.write_u8(style.next_style_id);
+    w.write_u16(style.para_shape_id);
+    w.write_u16(style.char_shape_id);
     w.into_bytes()
 }
 
@@ -583,8 +633,10 @@ fn scan_records(stream: &[u8]) -> Vec<RecordPos> {
 
     while offset + 4 <= stream.len() {
         let header = u32::from_le_bytes([
-            stream[offset], stream[offset + 1],
-            stream[offset + 2], stream[offset + 3],
+            stream[offset],
+            stream[offset + 1],
+            stream[offset + 2],
+            stream[offset + 3],
         ]);
         let tag_id = (header & 0x3FF) as u16;
         let level = ((header >> 10) & 0x3FF) as u16;
@@ -593,10 +645,14 @@ fn scan_records(stream: &[u8]) -> Vec<RecordPos> {
         let header_bytes;
         let data_offset;
         if size == 0xFFF {
-            if offset + 8 > stream.len() { break; }
+            if offset + 8 > stream.len() {
+                break;
+            }
             size = u32::from_le_bytes([
-                stream[offset + 4], stream[offset + 5],
-                stream[offset + 6], stream[offset + 7],
+                stream[offset + 4],
+                stream[offset + 5],
+                stream[offset + 6],
+                stream[offset + 7],
             ]);
             header_bytes = 8;
             data_offset = offset + 8;
@@ -605,7 +661,9 @@ fn scan_records(stream: &[u8]) -> Vec<RecordPos> {
             data_offset = offset + 4;
         }
 
-        if data_offset + size as usize > stream.len() { break; }
+        if data_offset + size as usize > stream.len() {
+            break;
+        }
 
         positions.push(RecordPos {
             tag_id,
@@ -665,7 +723,8 @@ pub fn surgical_insert_record(
     };
 
     // ID_MAPPINGS 위치를 삽입 전에 저장
-    let id_mappings_info = positions.iter()
+    let id_mappings_info = positions
+        .iter()
         .find(|r| r.tag_id == tags::HWPTAG_ID_MAPPINGS)
         .map(|r| (r.data_offset, r.data_size));
 
@@ -683,8 +742,10 @@ pub fn surgical_insert_record(
             let abs = data_off + field_off;
             if abs + 4 <= raw_stream.len() && field_off + 4 <= data_size as usize {
                 let cur = u32::from_le_bytes([
-                    raw_stream[abs], raw_stream[abs + 1],
-                    raw_stream[abs + 2], raw_stream[abs + 3],
+                    raw_stream[abs],
+                    raw_stream[abs + 1],
+                    raw_stream[abs + 2],
+                    raw_stream[abs + 3],
                 ]);
                 raw_stream[abs..abs + 4].copy_from_slice(&(cur + 1).to_le_bytes());
             }
@@ -699,16 +760,14 @@ pub fn surgical_insert_record(
 /// FACE_NAME 레코드는 언어별로 연속 배치된다:
 ///   [lang0_font0, lang0_font1, ..., lang1_font0, lang1_font1, ..., lang6_fontN]
 /// 각 언어 섹션의 끝에 한 레코드씩 삽입하고 ID_MAPPINGS 카운트를 갱신한다.
-pub fn surgical_insert_font_all_langs(
-    raw_stream: &mut Vec<u8>,
-    data: &[u8],
-) -> Result<(), String> {
+pub fn surgical_insert_font_all_langs(raw_stream: &mut Vec<u8>, data: &[u8]) -> Result<(), String> {
     use super::record_writer::write_record;
 
     let positions = scan_records(raw_stream);
 
     // ID_MAPPINGS에서 언어별 카운트 읽기
-    let id_mappings = positions.iter()
+    let id_mappings = positions
+        .iter()
         .find(|r| r.tag_id == tags::HWPTAG_ID_MAPPINGS)
         .ok_or_else(|| "ID_MAPPINGS not found".to_string())?;
     let idm_data_off = id_mappings.data_offset;
@@ -719,14 +778,17 @@ pub fn surgical_insert_font_all_langs(
         let off = idm_data_off + 4 + lang * 4;
         if off + 4 <= raw_stream.len() && 4 + lang * 4 + 4 <= idm_data_size {
             lang_counts[lang] = u32::from_le_bytes([
-                raw_stream[off], raw_stream[off + 1],
-                raw_stream[off + 2], raw_stream[off + 3],
+                raw_stream[off],
+                raw_stream[off + 1],
+                raw_stream[off + 2],
+                raw_stream[off + 3],
             ]);
         }
     }
 
     // FACE_NAME 레코드 목록
-    let face_recs: Vec<&RecordPos> = positions.iter()
+    let face_recs: Vec<&RecordPos> = positions
+        .iter()
         .filter(|r| r.tag_id == tags::HWPTAG_FACE_NAME)
         .collect();
 
@@ -743,9 +805,15 @@ pub fn surgical_insert_font_all_langs(
             last.header_offset + last.total_bytes
         } else {
             // FACE_NAME이 없으면 BIN_DATA 뒤 또는 ID_MAPPINGS 뒤
-            positions.iter().rev()
+            positions
+                .iter()
+                .rev()
                 .find(|r| r.tag_id == tags::HWPTAG_BIN_DATA)
-                .or_else(|| positions.iter().find(|r| r.tag_id == tags::HWPTAG_ID_MAPPINGS))
+                .or_else(|| {
+                    positions
+                        .iter()
+                        .find(|r| r.tag_id == tags::HWPTAG_ID_MAPPINGS)
+                })
                 .map(|r| r.header_offset + r.total_bytes)
                 .unwrap_or(raw_stream.len())
         };
@@ -760,14 +828,19 @@ pub fn surgical_insert_font_all_langs(
 
     // ID_MAPPINGS 재스캔 후 7개 언어 카운트 각각 +1
     let positions = scan_records(raw_stream);
-    if let Some(idm) = positions.iter().find(|r| r.tag_id == tags::HWPTAG_ID_MAPPINGS) {
+    if let Some(idm) = positions
+        .iter()
+        .find(|r| r.tag_id == tags::HWPTAG_ID_MAPPINGS)
+    {
         for lang in 0..7usize {
             let field_off = 4 + lang * 4;
             let abs = idm.data_offset + field_off;
             if abs + 4 <= raw_stream.len() && field_off + 4 <= idm.data_size as usize {
                 let cur = u32::from_le_bytes([
-                    raw_stream[abs], raw_stream[abs + 1],
-                    raw_stream[abs + 2], raw_stream[abs + 3],
+                    raw_stream[abs],
+                    raw_stream[abs + 1],
+                    raw_stream[abs + 2],
+                    raw_stream[abs + 3],
                 ]);
                 raw_stream[abs..abs + 4].copy_from_slice(&(cur + 1).to_le_bytes());
             }
@@ -780,10 +853,7 @@ pub fn surgical_insert_font_all_langs(
 /// DocInfo raw_stream에서 특정 tag_id의 모든 레코드를 제거한다.
 ///
 /// convert_to_editable()에서 DISTRIBUTE_DOC_DATA 제거 시 사용.
-pub fn surgical_remove_records(
-    raw_stream: &mut Vec<u8>,
-    tag_id: u16,
-) -> usize {
+pub fn surgical_remove_records(raw_stream: &mut Vec<u8>, tag_id: u16) -> usize {
     let positions = scan_records(raw_stream);
     let mut removed = 0;
 
@@ -815,14 +885,16 @@ pub fn surgical_update_caret(
 ) -> Result<(), String> {
     let positions = scan_records(raw_stream);
 
-    let doc_props_pos = positions.iter()
+    let doc_props_pos = positions
+        .iter()
         .find(|r| r.tag_id == tags::HWPTAG_DOCUMENT_PROPERTIES)
         .ok_or_else(|| "DOCUMENT_PROPERTIES 레코드를 찾을 수 없음".to_string())?;
 
     let data_off = doc_props_pos.data_offset;
     if doc_props_pos.data_size < 26 {
         return Err(format!(
-            "DOCUMENT_PROPERTIES 데이터 크기 부족: {} < 26", doc_props_pos.data_size
+            "DOCUMENT_PROPERTIES 데이터 크기 부족: {} < 26",
+            doc_props_pos.data_size
         ));
     }
 
@@ -833,7 +905,6 @@ pub fn surgical_update_caret(
 
     Ok(())
 }
-
 
 #[cfg(test)]
 mod tests;

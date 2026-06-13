@@ -3,9 +3,6 @@
 //! HWP 레코드 내부의 바이너리 필드를 순차적으로 쓰기 위한 버퍼 기반 라이터.
 //! `ByteReader`의 역방향으로, 리틀 엔디안과 UTF-16LE 문자열을 지원한다.
 
-use byteorder::{LittleEndian, WriteBytesExt};
-use std::io;
-
 /// 바이트 라이터 (버퍼 기반)
 pub struct ByteWriter {
     buf: Vec<u8>,
@@ -23,68 +20,65 @@ impl ByteWriter {
     }
 
     /// u8 쓰기
-    pub fn write_u8(&mut self, v: u8) -> io::Result<()> {
-        self.buf.write_u8(v)
+    pub fn write_u8(&mut self, v: u8) {
+        self.buf.push(v);
     }
 
     /// u16 쓰기 (LE)
-    pub fn write_u16(&mut self, v: u16) -> io::Result<()> {
-        self.buf.write_u16::<LittleEndian>(v)
+    pub fn write_u16(&mut self, v: u16) {
+        self.buf.extend_from_slice(&v.to_le_bytes());
     }
 
     /// u32 쓰기 (LE)
-    pub fn write_u32(&mut self, v: u32) -> io::Result<()> {
-        self.buf.write_u32::<LittleEndian>(v)
+    pub fn write_u32(&mut self, v: u32) {
+        self.buf.extend_from_slice(&v.to_le_bytes());
     }
 
     /// i8 쓰기
-    pub fn write_i8(&mut self, v: i8) -> io::Result<()> {
-        self.buf.write_i8(v)
+    pub fn write_i8(&mut self, v: i8) {
+        self.buf.push(v as u8);
     }
 
     /// i16 쓰기 (LE)
-    pub fn write_i16(&mut self, v: i16) -> io::Result<()> {
-        self.buf.write_i16::<LittleEndian>(v)
+    pub fn write_i16(&mut self, v: i16) {
+        self.buf.extend_from_slice(&v.to_le_bytes());
     }
 
     /// i32 쓰기 (LE)
-    pub fn write_i32(&mut self, v: i32) -> io::Result<()> {
-        self.buf.write_i32::<LittleEndian>(v)
+    pub fn write_i32(&mut self, v: i32) {
+        self.buf.extend_from_slice(&v.to_le_bytes());
     }
 
     /// f64 쓰기 (LE)
-    pub fn write_f64(&mut self, v: f64) -> io::Result<()> {
-        self.buf.write_f64::<LittleEndian>(v)
+    pub fn write_f64(&mut self, v: f64) {
+        self.buf.extend_from_slice(&v.to_le_bytes());
     }
 
     /// 바이트 슬라이스 쓰기
-    pub fn write_bytes(&mut self, data: &[u8]) -> io::Result<()> {
+    pub fn write_bytes(&mut self, data: &[u8]) {
         self.buf.extend_from_slice(data);
-        Ok(())
     }
 
     /// HWP 문자열 쓰기 (u16 글자수 + UTF-16LE 바이트)
     ///
     /// `ByteReader::read_hwp_string()`의 역방향.
     /// 형식: [u16 글자수] + [UTF-16LE 바이트 * 글자수]
-    pub fn write_hwp_string(&mut self, s: &str) -> io::Result<()> {
+    pub fn write_hwp_string(&mut self, s: &str) {
         let utf16: Vec<u16> = s.encode_utf16().collect();
-        self.write_u16(utf16.len() as u16)?;
+        self.write_u16(utf16.len() as u16);
         for code_unit in &utf16 {
-            self.write_u16(*code_unit)?;
+            self.write_u16(*code_unit);
         }
-        Ok(())
     }
 
     /// ColorRef 쓰기 (4바이트, 0x00BBGGRR 형식)
-    pub fn write_color_ref(&mut self, color: u32) -> io::Result<()> {
+    pub fn write_color_ref(&mut self, color: u32) {
         self.write_u32(color)
     }
 
     /// 0으로 채운 패딩 쓰기
-    pub fn write_zeros(&mut self, count: usize) -> io::Result<()> {
+    pub fn write_zeros(&mut self, count: usize) {
         self.buf.extend(std::iter::repeat(0u8).take(count));
-        Ok(())
     }
 
     /// 내부 버퍼를 소유권 이전하여 반환
@@ -106,35 +100,35 @@ mod tests {
     #[test]
     fn test_write_u8() {
         let mut w = ByteWriter::new();
-        w.write_u8(0x42).unwrap();
+        w.write_u8(0x42);
         assert_eq!(w.into_bytes(), [0x42]);
     }
 
     #[test]
     fn test_write_u16_le() {
         let mut w = ByteWriter::new();
-        w.write_u16(0x1234).unwrap();
+        w.write_u16(0x1234);
         assert_eq!(w.into_bytes(), [0x34, 0x12]);
     }
 
     #[test]
     fn test_write_u32_le() {
         let mut w = ByteWriter::new();
-        w.write_u32(0x12345678).unwrap();
+        w.write_u32(0x12345678);
         assert_eq!(w.into_bytes(), [0x78, 0x56, 0x34, 0x12]);
     }
 
     #[test]
     fn test_write_i8() {
         let mut w = ByteWriter::new();
-        w.write_i8(-1).unwrap();
+        w.write_i8(-1);
         assert_eq!(w.into_bytes(), [0xFF]);
     }
 
     #[test]
     fn test_write_i16_negative() {
         let mut w = ByteWriter::new();
-        w.write_i16(-100).unwrap();
+        w.write_i16(-100);
         let bytes = w.into_bytes();
         let mut reader = ByteReader::new(&bytes);
         assert_eq!(reader.read_i16().unwrap(), -100);
@@ -143,7 +137,7 @@ mod tests {
     #[test]
     fn test_write_i32_negative() {
         let mut w = ByteWriter::new();
-        w.write_i32(-7200).unwrap();
+        w.write_i32(-7200);
         let bytes = w.into_bytes();
         let mut reader = ByteReader::new(&bytes);
         assert_eq!(reader.read_i32().unwrap(), -7200);
@@ -152,7 +146,7 @@ mod tests {
     #[test]
     fn test_write_bytes() {
         let mut w = ByteWriter::new();
-        w.write_bytes(&[0x01, 0x02, 0x03]).unwrap();
+        w.write_bytes(&[0x01, 0x02, 0x03]);
         assert_eq!(w.into_bytes(), [0x01, 0x02, 0x03]);
     }
 
@@ -160,7 +154,7 @@ mod tests {
     fn test_write_hwp_string_korean() {
         // "한글" → u16 글자수(2) + UTF-16LE
         let mut w = ByteWriter::new();
-        w.write_hwp_string("한글").unwrap();
+        w.write_hwp_string("한글");
         let bytes = w.into_bytes();
 
         let mut reader = ByteReader::new(&bytes);
@@ -170,7 +164,7 @@ mod tests {
     #[test]
     fn test_write_hwp_string_ascii() {
         let mut w = ByteWriter::new();
-        w.write_hwp_string("ABC").unwrap();
+        w.write_hwp_string("ABC");
         let bytes = w.into_bytes();
 
         let mut reader = ByteReader::new(&bytes);
@@ -180,7 +174,7 @@ mod tests {
     #[test]
     fn test_write_hwp_string_empty() {
         let mut w = ByteWriter::new();
-        w.write_hwp_string("").unwrap();
+        w.write_hwp_string("");
         let bytes = w.into_bytes();
 
         let mut reader = ByteReader::new(&bytes);
@@ -191,7 +185,7 @@ mod tests {
     fn test_write_hwp_string_mixed() {
         // 한글 + ASCII 혼합
         let mut w = ByteWriter::new();
-        w.write_hwp_string("Hello 세계!").unwrap();
+        w.write_hwp_string("Hello 세계!");
         let bytes = w.into_bytes();
 
         let mut reader = ByteReader::new(&bytes);
@@ -201,7 +195,7 @@ mod tests {
     #[test]
     fn test_write_color_ref() {
         let mut w = ByteWriter::new();
-        w.write_color_ref(0x00FF8040).unwrap();
+        w.write_color_ref(0x00FF8040);
         let bytes = w.into_bytes();
 
         let mut reader = ByteReader::new(&bytes);
@@ -211,7 +205,7 @@ mod tests {
     #[test]
     fn test_write_zeros() {
         let mut w = ByteWriter::new();
-        w.write_zeros(5).unwrap();
+        w.write_zeros(5);
         assert_eq!(w.into_bytes(), [0, 0, 0, 0, 0]);
     }
 
@@ -219,18 +213,18 @@ mod tests {
     fn test_position() {
         let mut w = ByteWriter::new();
         assert_eq!(w.position(), 0);
-        w.write_u16(0x1234).unwrap();
+        w.write_u16(0x1234);
         assert_eq!(w.position(), 2);
-        w.write_u32(0).unwrap();
+        w.write_u32(0);
         assert_eq!(w.position(), 6);
     }
 
     #[test]
     fn test_sequential_writes_roundtrip() {
         let mut w = ByteWriter::new();
-        w.write_u8(42).unwrap();
-        w.write_u16(1000).unwrap();
-        w.write_i32(-500).unwrap();
+        w.write_u8(42);
+        w.write_u16(1000);
+        w.write_i32(-500);
         let bytes = w.into_bytes();
 
         let mut reader = ByteReader::new(&bytes);
