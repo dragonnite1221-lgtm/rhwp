@@ -16,7 +16,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 | 포맷 | 파서 위치 | 출력 IR |
 |------|----------|---------|
 | HWPX (ZIP+XML) | `src/parser/hwpx/` | `Document` |
-| HWP5 (OLE 복합) | `src/parser/hwp5/` | `Document` |
+| HWP5 (OLE 복합) | `src/parser/` 루트 (`body_text.rs`, `doc_info.rs`, `record.rs`, `control/` 등) | `Document` |
 | HWP3 (고전 바이너리) | `src/parser/hwp3/` | `Document` |
 
 > 역사적으로 `Document` 모델은 HWP5 형식의 구조를 기반으로 설계되었으며, HWPX는 같은 의미의 XML 포맷이다. HWP3는 고전 포맷이지만 동일한 `Document` IR로 변환한다.

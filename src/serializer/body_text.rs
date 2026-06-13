@@ -54,10 +54,18 @@ pub fn serialize_paragraph_list(
 /// 단일 문단을 레코드로 직렬화 (MSB를 위치 기반으로 강제 설정)
 ///
 /// is_last: 이 문단이 현재 스코프(섹션/셀/텍스트박스 등)의 마지막 문단인지 여부
-fn serialize_paragraph_with_msb(para: &Paragraph, base_level: u16, is_last: bool, records: &mut Vec<Record>) {
+fn serialize_paragraph_with_msb(
+    para: &Paragraph,
+    base_level: u16,
+    is_last: bool,
+    records: &mut Vec<Record>,
+) {
     // HWP는 모든 문단에 최소 1개의 PARA_CHAR_SHAPE 엔트리 필요
     // char_shapes가 비어있으면 기본 엔트리(위치 0, char_shape_id 0)를 사용
-    let default_char_shape = [CharShapeRef { start_pos: 0, char_shape_id: 0 }];
+    let default_char_shape = [CharShapeRef {
+        start_pos: 0,
+        char_shape_id: 0,
+    }];
     let effective_char_shapes: &[CharShapeRef] = if para.char_shapes.is_empty() {
         &default_char_shape
     } else {
@@ -91,7 +99,13 @@ fn serialize_paragraph_with_msb(para: &Paragraph, base_level: u16, is_last: bool
         tag_id: tags::HWPTAG_PARA_HEADER,
         level: base_level,
         size: 0,
-        data: serialize_para_header_with_mask(para, effective_char_shapes.len(), is_last, actual_control_mask, actual_char_count),
+        data: serialize_para_header_with_mask(
+            para,
+            effective_char_shapes.len(),
+            is_last,
+            actual_control_mask,
+            actual_char_count,
+        ),
     });
 
     // PARA_TEXT
@@ -139,7 +153,9 @@ fn serialize_paragraph_with_msb(para: &Paragraph, base_level: u16, is_last: bool
 
     // CTRL_HEADER (컨트롤별) + CTRL_DATA (있으면)
     for (ctrl_idx, ctrl) in para.controls.iter().enumerate() {
-        let ctrl_data_record = para.ctrl_data_records.get(ctrl_idx)
+        let ctrl_data_record = para
+            .ctrl_data_records
+            .get(ctrl_idx)
             .and_then(|opt| opt.as_ref())
             .map(|v| v.as_slice());
         super::control::serialize_control(ctrl, base_level + 1, ctrl_data_record, records);
@@ -181,15 +197,21 @@ fn compute_control_mask(para: &Paragraph) -> u32 {
 ///
 /// 레이아웃: char_count(u32) + control_mask(u32) + para_shape_id(u16) + style_id(u8) + break_type(u8)
 /// + numCharShapes(u16) + numRangeTags(u16) + numLineSegs(u16) + instanceId(u32) + [추가 바이트]
-fn serialize_para_header_with_mask(para: &Paragraph, num_char_shapes: usize, is_last: bool, control_mask: u32, char_count: u32) -> Vec<u8> {
+fn serialize_para_header_with_mask(
+    para: &Paragraph,
+    num_char_shapes: usize,
+    is_last: bool,
+    control_mask: u32,
+    char_count: u32,
+) -> Vec<u8> {
     let mut w = ByteWriter::new();
 
     // MSB는 위치 기반으로 결정: 현재 스코프의 마지막 문단만 MSB=1
     let char_count_raw = char_count | if is_last { 0x80000000 } else { 0 };
-    w.write_u32(char_count_raw).unwrap();
-    w.write_u32(control_mask).unwrap();
-    w.write_u16(para.para_shape_id).unwrap();
-    w.write_u8(para.style_id).unwrap();
+    w.write_u32(char_count_raw);
+    w.write_u32(control_mask);
+    w.write_u16(para.para_shape_id);
+    w.write_u8(para.style_id);
 
     let break_val: u8 = if para.raw_break_type != 0 {
         para.raw_break_type
@@ -202,22 +224,22 @@ fn serialize_para_header_with_mask(para: &Paragraph, num_char_shapes: usize, is_
             ColumnBreakType::None => 0x00,
         }
     };
-    w.write_u8(break_val).unwrap();
+    w.write_u8(break_val);
 
     // count 필드는 실제 데이터 기반으로 항상 재생성 (편집 후 불일치 방지)
-    w.write_u16(num_char_shapes as u16).unwrap();
-    w.write_u16(para.range_tags.len() as u16).unwrap();
-    w.write_u16(para.line_segs.len() as u16).unwrap();
+    w.write_u16(num_char_shapes as u16);
+    w.write_u16(para.range_tags.len() as u16);
+    w.write_u16(para.line_segs.len() as u16);
 
     // instanceId + 추가 바이트: raw_header_extra에서 복원
     // raw_header_extra[0..5] = numCharShapes(2) + numRangeTags(2) + numLineSegs(2) → 건너뜀
     // raw_header_extra[6..] = instanceId(4) + 나머지
     if para.raw_header_extra.len() >= 10 {
         let extra = &para.raw_header_extra[6..];
-        w.write_bytes(extra).unwrap();
+        w.write_bytes(extra);
     } else {
         // 새 문단 (raw_header_extra 없음): instanceId(4)만 기록
-        w.write_u32(0).unwrap();
+        w.write_u32(0);
     }
 
     w.into_bytes()
@@ -276,7 +298,9 @@ fn serialize_para_text(para: &Paragraph) -> Vec<u8> {
     let mut trailing_orphan_ends: Vec<u32> = Vec::new();
 
     for fr in &para.field_ranges {
-        let ctrl_id = if let Some(crate::model::control::Control::Field(f)) = para.controls.get(fr.control_idx) {
+        let ctrl_id = if let Some(crate::model::control::Control::Field(f)) =
+            para.controls.get(fr.control_idx)
+        {
             f.ctrl_id
         } else {
             0
@@ -286,7 +310,10 @@ fn serialize_para_text(para: &Paragraph) -> Vec<u8> {
         } else {
             // trailing FIELD_END: control_idx가 남은 컨트롤에 포함되는지 판별은
             // 메인 루프 후에 수행 (ctrl_idx 확정 후)
-            trailing_end_after_ctrl.entry(fr.control_idx).or_default().push(ctrl_id);
+            trailing_end_after_ctrl
+                .entry(fr.control_idx)
+                .or_default()
+                .push(ctrl_id);
         }
     }
 
@@ -323,7 +350,9 @@ fn serialize_para_text(para: &Paragraph) -> Vec<u8> {
                         code_units.push(cu);
                     }
                 } else {
-                    for _ in 0..7 { code_units.push(0); }
+                    for _ in 0..7 {
+                        code_units.push(0);
+                    }
                 }
                 tab_idx += 1;
                 prev_end = offset + 8;
@@ -339,7 +368,9 @@ fn serialize_para_text(para: &Paragraph) -> Vec<u8> {
             c => {
                 let mut buf = [0u16; 2];
                 let encoded = c.encode_utf16(&mut buf);
-                for cu in encoded.iter() { code_units.push(*cu); }
+                for cu in encoded.iter() {
+                    code_units.push(*cu);
+                }
                 prev_end = offset + encoded.len() as u32;
             }
         }
@@ -386,8 +417,8 @@ fn serialize_para_text(para: &Paragraph) -> Vec<u8> {
 fn serialize_para_char_shape(char_shapes: &[CharShapeRef]) -> Vec<u8> {
     let mut w = ByteWriter::new();
     for cs in char_shapes {
-        w.write_u32(cs.start_pos).unwrap();
-        w.write_u32(cs.char_shape_id).unwrap();
+        w.write_u32(cs.start_pos);
+        w.write_u32(cs.char_shape_id);
     }
     w.into_bytes()
 }
@@ -398,15 +429,15 @@ fn serialize_para_char_shape(char_shapes: &[CharShapeRef]) -> Vec<u8> {
 fn serialize_para_line_seg(line_segs: &[LineSeg]) -> Vec<u8> {
     let mut w = ByteWriter::new();
     for seg in line_segs {
-        w.write_u32(seg.text_start).unwrap();
-        w.write_i32(seg.vertical_pos).unwrap();
-        w.write_i32(seg.line_height).unwrap();
-        w.write_i32(seg.text_height).unwrap();
-        w.write_i32(seg.baseline_distance).unwrap();
-        w.write_i32(seg.line_spacing).unwrap();
-        w.write_i32(seg.column_start).unwrap();
-        w.write_i32(seg.segment_width).unwrap();
-        w.write_u32(seg.tag).unwrap();
+        w.write_u32(seg.text_start);
+        w.write_i32(seg.vertical_pos);
+        w.write_i32(seg.line_height);
+        w.write_i32(seg.text_height);
+        w.write_i32(seg.baseline_distance);
+        w.write_i32(seg.line_spacing);
+        w.write_i32(seg.column_start);
+        w.write_i32(seg.segment_width);
+        w.write_u32(seg.tag);
     }
     w.into_bytes()
 }
@@ -417,9 +448,9 @@ fn serialize_para_line_seg(line_segs: &[LineSeg]) -> Vec<u8> {
 fn serialize_para_range_tag(range_tags: &[RangeTag]) -> Vec<u8> {
     let mut w = ByteWriter::new();
     for rt in range_tags {
-        w.write_u32(rt.start).unwrap();
-        w.write_u32(rt.end).unwrap();
-        w.write_u32(rt.tag).unwrap();
+        w.write_u32(rt.start);
+        w.write_u32(rt.end);
+        w.write_u32(rt.tag);
     }
     w.into_bytes()
 }

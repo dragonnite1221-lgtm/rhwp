@@ -35,28 +35,28 @@ pub fn serialize_common_obj_attr(common: &CommonObjAttr) -> Vec<u8> {
     } else {
         pack_common_attr_bits(common)
     };
-    w.write_u32(attr).unwrap();
+    w.write_u32(attr);
 
-    w.write_u32(common.vertical_offset).unwrap();
-    w.write_u32(common.horizontal_offset).unwrap();
-    w.write_u32(common.width).unwrap();
-    w.write_u32(common.height).unwrap();
-    w.write_i32(common.z_order).unwrap();
+    w.write_u32(common.vertical_offset);
+    w.write_u32(common.horizontal_offset);
+    w.write_u32(common.width);
+    w.write_u32(common.height);
+    w.write_i32(common.z_order);
 
-    w.write_i16(common.margin.left).unwrap();
-    w.write_i16(common.margin.right).unwrap();
-    w.write_i16(common.margin.top).unwrap();
-    w.write_i16(common.margin.bottom).unwrap();
+    w.write_i16(common.margin.left);
+    w.write_i16(common.margin.right);
+    w.write_i16(common.margin.top);
+    w.write_i16(common.margin.bottom);
 
-    w.write_u32(common.instance_id).unwrap();
-    w.write_i32(common.prevent_page_break).unwrap();
+    w.write_u32(common.instance_id);
+    w.write_i32(common.prevent_page_break);
 
     // description (HWP string)
-    w.write_hwp_string(&common.description).unwrap();
+    w.write_hwp_string(&common.description);
 
     // 라운드트립 보존: raw_extra 가 있으면 이어붙임
     if !common.raw_extra.is_empty() {
-        w.write_bytes(&common.raw_extra).unwrap();
+        w.write_bytes(&common.raw_extra);
     }
 
     w.into_bytes()
@@ -172,7 +172,12 @@ mod tests {
             width: 12000,
             height: 8000,
             z_order: 7,
-            margin: Padding { left: 100, right: 200, top: 300, bottom: 400 },
+            margin: Padding {
+                left: 100,
+                right: 200,
+                top: 300,
+                bottom: 400,
+            },
             instance_id: 0xCAFEBABE,
             prevent_page_break: 0,
             treat_as_char: false,
@@ -258,6 +263,10 @@ mod tests {
         let bytes = serialize_common_obj_attr(&make_sample());
         // attr(4) + vert_off(4) + horz_off(4) + w(4) + h(4) + z(4)
         //  + margin(8) + inst(4) + prev(4) + desc_len(2) = 42
-        assert!(bytes.len() >= 42, "예상 42바이트 이상, 실제={}", bytes.len());
+        assert!(
+            bytes.len() >= 42,
+            "예상 42바이트 이상, 실제={}",
+            bytes.len()
+        );
     }
 }

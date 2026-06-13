@@ -132,9 +132,10 @@ fn insert_section_def_control(section: &mut Section, report: &mut AdapterReport)
     if already_has_section_def {
         return;
     }
-    first_para
-        .controls
-        .insert(0, Control::SectionDef(Box::new(section.section_def.clone())));
+    first_para.controls.insert(
+        0,
+        Control::SectionDef(Box::new(section.section_def.clone())),
+    );
     report.section_def_controls_inserted += 1;
 }
 
@@ -211,6 +212,8 @@ fn adapt_cell_list_attr(cell: &mut Cell, report: &mut AdapterReport) {
 ///
 /// 호출자: `DocumentCore::export_hwp_with_adapter()` (Stage 5 에서 추가).
 pub fn convert_if_hwpx_source(doc: &mut Document, source_format: FileFormat) -> AdapterReport {
+    // HWP3 is accepted here only as a source-format boundary decision.
+    // Keep HWP3-specific parsing and behavior inside src/parser/hwp3/.
     if !matches!(source_format, FileFormat::Hwpx | FileFormat::Hwp3) {
         return AdapterReport::new().no_op("source_format != Hwpx/Hwp3");
     }
@@ -233,7 +236,10 @@ mod tests {
     fn hwp_source_no_op_via_filter() {
         let mut doc = Document::default();
         let report = convert_if_hwpx_source(&mut doc, FileFormat::Hwp);
-        assert_eq!(report.skipped_reason.as_deref(), Some("source_format != Hwpx/Hwp3"));
+        assert_eq!(
+            report.skipped_reason.as_deref(),
+            Some("source_format != Hwpx/Hwp3")
+        );
     }
 
     #[test]
@@ -300,7 +306,10 @@ mod tests {
 
         // 한컴 파서 해석 (parser/control.rs:371) 와 일치:
         let recovered_apply_inner_margin = (list_attr >> 16) & 0x01 != 0;
-        assert!(recovered_apply_inner_margin, "재파싱 시 apply_inner_margin 회복");
+        assert!(
+            recovered_apply_inner_margin,
+            "재파싱 시 apply_inner_margin 회복"
+        );
     }
 
     #[test]
