@@ -1,0 +1,20 @@
+name: File Size
+
+on:
+  push:
+    branches: [main, devel]
+  pull_request:
+    branches: [main, devel]
+  workflow_dispatch:
+
+jobs:
+  file-size:
+    name: 200-line Rust limit
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: File size gate
+        run: python3 scripts/check_file_size.py
