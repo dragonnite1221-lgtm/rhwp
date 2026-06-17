@@ -124,6 +124,39 @@ cargo build --release          # 릴리즈 빌드
 
 네이티브 빌드·테스트·SVG 내보내기는 **항상 로컬 cargo**를 사용한다.
 
+### 200줄 파일 크기 게이트
+
+모든 추적 대상 Rust 파일은 **200줄 이하**여야 한다. 기존 초과 파일은
+`scripts/file_size_baseline.txt`에 동결(freeze)되어 있으며, *새* 위반·베이스라인
+증가·낡은(stale) 베이스라인 항목은 허용하지 않는다. 베이스라인은 동작을 보존하는
+분할(split)로 점진적으로 줄여 나간다.
+
+```bash
+python3 scripts/check_file_size.py                  # 검사 (새/증가 위반 시 exit 1)
+python3 scripts/check_file_size.py --write-baseline # 분할 후 베이스라인 재생성
+```
+
+생성/데이터 테이블(폰트 메트릭, johab/PUA 맵)과 누적된 `wasm_api` 통합 테스트
+코퍼스는 게이트에서 제외된다(`EXCLUDE_FILE_SUBSTR`). 손으로 유지보수하는 소스가
+아니므로 리팩토링 대상이 아니다.
+
+**강제 지점:**
+
+- **CI**: `.github/workflows/file-size.yml`가 push/PR에서 게이트를 실행한다
+  (GitHub Actions 분이 남아 있을 때).
+- **로컬 pre-push 훅** (Actions 분 소진 중에는 이쪽이 실질적 강제 지점) — 최초 1회 활성화:
+
+  ```bash
+  git config core.hooksPath .githooks
+  ```
+
+  이후 `git push` 시 `.githooks/pre-push`가 게이트를 실행하여 새/증가 위반이 있으면
+  push를 차단한다.
+
+베이스라인 재생성은 파일을 **실제로 줄였을 때만** 한다. 새 위반을 덮으려고
+재생성하지 않는다 — 게이트가 무력화된다. 재생성한 `file_size_baseline.txt`는 위반을
+없앤 분할 커밋과 함께 커밋한다.
+
 ### Docker 빌드 (WASM 전용)
 
 ```bash

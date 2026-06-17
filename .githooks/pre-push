@@ -1,0 +1,6 @@
+#!/bin/sh
+# Pre-push 게이트: 200줄을 넘는 새 Rust 파일의 push를 차단한다.
+# 계정 전체 GitHub Actions 분(minutes)이 소진되어 CI가 돌지 않으므로
+# 이 로컬 훅이 실질적 강제 지점이다.
+# 최초 1회 활성화:  git config core.hooksPath .githooks
+exec python3 scripts/check_file_size.py
