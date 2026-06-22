@@ -131,7 +131,7 @@
 541 src/serializer/hwpx/table.rs
 606 src/serializer/mini_cfb.rs
 958 src/tools/font_metric_gen.rs
-4169 src/wasm_api/mod.rs
+2845 src/wasm_api/mod.rs
 435 src/wmf/converter/bitmap.rs
 811 src/wmf/converter/mod.rs
 504 src/wmf/converter/player.rs
