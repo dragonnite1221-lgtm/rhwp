@@ -56,9 +56,9 @@ impl Record {
                     .map_err(|e| RecordError::IoError(e.to_string()))?;
             }
 
-            // 데이터 읽기
+            // 데이터 읽기 (wasm32에서 pos+size u32 오버플로 방지: checked_add)
             let pos = cursor.position() as usize;
-            if pos + size as usize > data.len() {
+            if pos.checked_add(size as usize).map_or(true, |end| end > data.len()) {
                 return Err(RecordError::UnexpectedEof {
                     tag_id,
                     expected: size as usize,

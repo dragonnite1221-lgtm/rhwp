@@ -35,8 +35,12 @@ impl Hwp3OleInfo {
         }
         let signature = reader.read_u32::<LittleEndian>()?;
         
-        let mut storage_data = vec![0u8; (total_length - 4) as usize];
-        reader.read_exact(&mut storage_data)?;
+        // take+read_to_end: total_length(u32) 기반 선할당 폭탄 방어
+        let want = (total_length - 4) as usize;
+        let mut storage_data = Vec::new();
+        if (&mut reader).take(want as u64).read_to_end(&mut storage_data)? != want {
+            return Err(Hwp3OleError::IoError { source: io::Error::new(io::ErrorKind::UnexpectedEof, "선언된 OLE 길이가 남은 데이터를 초과") });
+        }
 
         // 0xF8995567 (한글 3.0 ~ 3.0a - ILockBytes)
         // 0xF8995568 (한글 3.0b 이상 - StgCreateDocfile)

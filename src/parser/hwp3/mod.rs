@@ -1983,9 +1983,9 @@ pub fn parse_hwp3(data: &[u8]) -> Result<Document, Hwp3Error> {
     
     let mut decompressed_data = Vec::new();
     let body_data = if doc_info.compressed != 0 {
-        use flate2::read::DeflateDecoder;
-        let mut decoder = DeflateDecoder::new(remaining_data);
-        decoder.read_to_end(&mut decompressed_data).map_err(|e| Hwp3Error::IoError { source: e })?;
+        use flate2::read::DeflateDecoder; // take(256MB+1)로 압축 폭탄 방어
+        DeflateDecoder::new(remaining_data).take(256u64 * 1024 * 1024 + 1).read_to_end(&mut decompressed_data).map_err(|e| Hwp3Error::IoError { source: e })?;
+        if decompressed_data.len() > 256 * 1024 * 1024 { return Err(Hwp3Error::IoError { source: io::Error::new(io::ErrorKind::InvalidData, "HWP3 압축 해제 한도 초과 (압축 폭탄 가능성)") }); }
         &decompressed_data[..]
     } else {
         remaining_data
