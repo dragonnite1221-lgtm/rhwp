@@ -178,8 +178,8 @@ pub fn detect_native_image(data: &[u8]) -> Option<(NativeImageKind, Vec<u8>)> {
 fn extract_dib_as_bmp(data: &[u8]) -> Option<Vec<u8>> {
     let scan_limit = data.len().min(4096);
     for i in 0..scan_limit.saturating_sub(40) {
-        // BITMAPINFOHEADER.biSize == 40
-        let bi_size = u32::from_le_bytes([data[i], data[i+1], data[i+2], data[i+3]]);
+        if i + 36 > data.len() { break; } // data[i+35]까지 접근: 인덱스 경계 명시 가드
+        let bi_size = u32::from_le_bytes([data[i], data[i+1], data[i+2], data[i+3]]); // biSize==40
         if bi_size != 40 { continue; }
         // 유효성: width/height가 현실적인 범위
         let w = i32::from_le_bytes([data[i+4], data[i+5], data[i+6], data[i+7]]);
