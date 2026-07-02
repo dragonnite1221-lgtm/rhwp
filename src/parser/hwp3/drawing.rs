@@ -342,7 +342,7 @@ impl Hwp3DrawingPolygon {
         let info1_len = reader.read_u32::<LittleEndian>()?;
         let point_count = reader.read_u32::<LittleEndian>()?;
         let info2_len = reader.read_u32::<LittleEndian>()?;
-        let mut points = Vec::with_capacity(point_count as usize);
+        let mut points = Vec::with_capacity((point_count as usize).min(4096)); // 선할당 폭탄 방어
         for _ in 0..point_count {
             points.push([
                 reader.read_i32::<LittleEndian>()?,
@@ -369,10 +369,8 @@ impl Hwp3DrawingTextBox {
     pub fn read<R: Read>(mut reader: R) -> Result<Self, io::Error> {
         let info1_len = reader.read_u32::<LittleEndian>()?;
         let info2_len = reader.read_u32::<LittleEndian>()?;
-        let mut paragraph_list_data = vec![0u8; info2_len as usize];
-        if info2_len > 0 {
-            reader.read_exact(&mut paragraph_list_data)?;
-        }
+        let mut paragraph_list_data = Vec::new(); // take: u32 길이 선할당 폭탄 방어
+        if (&mut reader).take(info2_len as u64).read_to_end(&mut paragraph_list_data)? != info2_len as usize { return Err(io::Error::new(io::ErrorKind::UnexpectedEof, "선언된 길이가 남은 데이터를 초과")); }
         Ok(Hwp3DrawingTextBox {
             info1_len,
             info2_len,
@@ -394,7 +392,7 @@ impl Hwp3DrawingCurve {
         let info1_len = reader.read_u32::<LittleEndian>()?;
         let point_count = reader.read_u32::<LittleEndian>()?;
         let info2_len = reader.read_u32::<LittleEndian>()?;
-        let mut points = Vec::with_capacity(point_count as usize);
+        let mut points = Vec::with_capacity((point_count as usize).min(4096)); // 선할당 폭탄 방어
         for _ in 0..point_count {
             points.push([
                 reader.read_i32::<LittleEndian>()?,
@@ -446,17 +444,15 @@ impl Hwp3DrawingExtendedPolygon {
         let info1_len = reader.read_u32::<LittleEndian>()?;
         let point_count = reader.read_u32::<LittleEndian>()?;
         let info2_len = reader.read_u32::<LittleEndian>()?;
-        let mut points = Vec::with_capacity(point_count as usize);
+        let mut points = Vec::with_capacity((point_count as usize).min(4096)); // 선할당 폭탄 방어
         for _ in 0..point_count {
             points.push([
                 reader.read_i32::<LittleEndian>()?,
                 reader.read_i32::<LittleEndian>()?,
             ]);
         }
-        let mut line_attrs = vec![0u8; point_count as usize];
-        if point_count > 0 {
-            reader.read_exact(&mut line_attrs)?;
-        }
+        let mut line_attrs = Vec::new(); // take: u32 길이 선할당 폭탄 방어
+        if (&mut reader).take(point_count as u64).read_to_end(&mut line_attrs)? != point_count as usize { return Err(io::Error::new(io::ErrorKind::UnexpectedEof, "선언된 길이가 남은 데이터를 초과")); }
         Ok(Hwp3DrawingExtendedPolygon {
             info1_len,
             point_count,
@@ -540,11 +536,11 @@ impl Hwp3DrawingObject {
             _ => {
                 // 알 수 없는 객체
                 let info1_len = reader.read_u32::<LittleEndian>()?;
-                let mut info1 = vec![0u8; info1_len as usize];
-                reader.read_exact(&mut info1)?;
+                let mut info1 = Vec::new(); // take: u32 길이 선할당 폭탄 방어
+                if (&mut reader).take(info1_len as u64).read_to_end(&mut info1)? != info1_len as usize { return Err(io::Error::new(io::ErrorKind::UnexpectedEof, "선언된 길이 초과")); }
                 let info2_len = reader.read_u32::<LittleEndian>()?;
-                let mut info2 = vec![0u8; info2_len as usize];
-                reader.read_exact(&mut info2)?;
+                let mut info2 = Vec::new(); // take: 선할당 폭탄 방어
+                if (&mut reader).take(info2_len as u64).read_to_end(&mut info2)? != info2_len as usize { return Err(io::Error::new(io::ErrorKind::UnexpectedEof, "선언된 길이 초과")); }
                 
                 let mut all_data = Vec::new();
                 all_data.extend(info1);

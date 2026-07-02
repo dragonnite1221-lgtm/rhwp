@@ -544,27 +544,23 @@ impl LenientCfbReader {
     }
 }
 
-/// zlib/deflate 압축 해제
-///
-/// HWP는 raw deflate (wbits=-15) 사용. 실패 시 표준 zlib도 시도.
-pub fn decompress_stream(data: &[u8]) -> Result<Vec<u8>, CfbError> {
-    // raw deflate (wbits=-15) 시도
-    use flate2::read::DeflateDecoder;
-    let mut decoder = DeflateDecoder::new(data);
-    let mut decompressed = Vec::new();
-    match decoder.read_to_end(&mut decompressed) {
-        Ok(_) => return Ok(decompressed),
-        Err(_) => {}
-    }
+/// 압축 스트림당 최대 해제 크기 (압축 폭탄 방어). 정상 스트림은 한참 못 미친다.
+pub const MAX_DECOMPRESSED_SIZE: usize = 256 * 1024 * 1024; // 256 MB
 
-    // 표준 zlib 시도
-    use flate2::read::ZlibDecoder;
-    let mut decoder = ZlibDecoder::new(data);
-    let mut decompressed = Vec::new();
-    match decoder.read_to_end(&mut decompressed) {
-        Ok(_) => Ok(decompressed),
-        Err(e) => Err(CfbError::DecompressError(e.to_string())),
+/// zlib/deflate 압축 해제 (raw deflate 우선, 실패 시 zlib).
+/// `Read::take`로 해제 크기를 [`MAX_DECOMPRESSED_SIZE`]로 제한(압축 폭탄 방어).
+pub fn decompress_stream(data: &[u8]) -> Result<Vec<u8>, CfbError> {
+    use flate2::read::{DeflateDecoder, ZlibDecoder};
+    let cap = (MAX_DECOMPRESSED_SIZE as u64).saturating_add(1);
+    let mut out = Vec::new();
+    if DeflateDecoder::new(data).take(cap).read_to_end(&mut out).is_err() {
+        out.clear();
+        ZlibDecoder::new(data).take(cap).read_to_end(&mut out).map_err(|e| CfbError::DecompressError(e.to_string()))?;
     }
+    if out.len() > MAX_DECOMPRESSED_SIZE {
+        return Err(CfbError::DecompressError(format!("압축 해제 크기 {} 바이트 한도 초과 (압축 폭탄 가능성)", MAX_DECOMPRESSED_SIZE)));
+    }
+    Ok(out)
 }
 
 #[cfg(test)]

@@ -410,8 +410,8 @@ impl Hwp3AdditionalInfoBlock {
             return Ok(Hwp3AdditionalInfoBlock { id, length: 0, data: Vec::new() });
         }
         let length = reader.read_u32::<LittleEndian>()?;
-        let mut data = vec![0u8; length as usize];
-        reader.read_exact(&mut data)?;
+        let mut data = Vec::new(); // take+read_to_end: u32 길이 선할당 폭탄 방어
+        if (&mut reader).take(length as u64).read_to_end(&mut data)? != length as usize { return Err(io::Error::new(io::ErrorKind::UnexpectedEof, "선언된 길이가 남은 데이터를 초과")); }
         Ok(Hwp3AdditionalInfoBlock { id, length, data })
     }
 }
