@@ -4,6 +4,7 @@
 // 전체 HWP 파싱 없이 썸네일만 빠르게 얻을 수 있다.
 
 import { resolveDocumentUrl } from './document-url-resolver.js';
+import { fetchPublicResource } from './secure-fetch.js';
 
 const THUMBNAIL_CACHE = new Map();
 const CACHE_MAX_SIZE = 100;
@@ -20,10 +21,10 @@ export async function extractThumbnailFromUrl(url) {
   }
 
   try {
-    const response = await fetch(resolveDocumentUrl(url));
-    if (!response.ok) return null;
-    const buffer = await response.arrayBuffer();
-    const data = new Uint8Array(buffer);
+    const { data } = await fetchPublicResource(resolveDocumentUrl(url), {
+      maxBytes: 32 * 1024 * 1024,
+      timeoutMs: 30_000,
+    });
 
     // HWP(CFB) 또는 HWPX(ZIP) 감지
     const isZip = data.length >= 4 && data[0] === 0x50 && data[1] === 0x4B;

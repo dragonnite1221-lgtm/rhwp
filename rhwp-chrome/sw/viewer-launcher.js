@@ -3,11 +3,16 @@
 // - URL 파라미터로 파일 경로 전달
 
 import { resolveDocumentUrl } from './document-url-resolver.js';
+import { createFetchGrant } from './fetch-grants.js';
 
-function buildViewerUrl(viewerBase, options = {}) {
+async function buildViewerUrl(viewerBase, options = {}) {
   const params = new URLSearchParams();
 
-  if (options.url) params.set('url', resolveDocumentUrl(options.url));
+  if (options.url) {
+    const url = resolveDocumentUrl(options.url);
+    params.set('url', url);
+    params.set('grant', await createFetchGrant(url));
+  }
   if (options.filename) params.set('filename', options.filename);
 
   const query = params.toString();
@@ -20,11 +25,11 @@ function buildViewerUrl(viewerBase, options = {}) {
  * @param {string} [options.url] - HWP 파일 URL
  * @param {string} [options.filename] - 표시용 파일명
  */
-export function openViewer(options = {}) {
+export async function openViewer(options = {}) {
   const viewerBase = chrome.runtime.getURL('viewer.html');
-  const fullUrl = buildViewerUrl(viewerBase, options);
+  const fullUrl = await buildViewerUrl(viewerBase, options);
 
-  chrome.tabs.create({ url: fullUrl });
+  await chrome.tabs.create({ url: fullUrl });
 }
 
 /**
@@ -41,10 +46,12 @@ export async function openViewerOrReuse(options = {}) {
   if (emptyTab) {
     // 기존 빈 탭에 파일 로드
     await chrome.tabs.update(emptyTab.id, {
-      url: buildViewerUrl(viewerBase, options),
+      url: await buildViewerUrl(viewerBase, options),
       active: true
     });
   } else {
-    openViewer(options);
+    await openViewer(options);
   }
 }
+
+export { buildViewerUrl };

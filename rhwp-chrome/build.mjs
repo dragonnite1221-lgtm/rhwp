@@ -74,6 +74,11 @@ copy(resolve(__dirname, 'sw'), resolve(DIST, 'sw'), {
   filter: (src) => !EXCLUDE_FROM_DIST.test(src),
   dereference: true,
 });
+// Source wrappers point to the canonical shared modules during development;
+// packaged extensions receive self-contained copies at the same import path.
+copy(resolve(ROOT, 'rhwp-shared', 'security'), resolve(DIST, 'security'), {
+  filter: (src) => !EXCLUDE_FROM_DIST.test(src),
+});
 copy(resolve(__dirname, 'options.html'), resolve(DIST, 'options.html'));
 copy(resolve(__dirname, 'options.js'), resolve(DIST, 'options.js'));
 

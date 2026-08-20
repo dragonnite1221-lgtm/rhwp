@@ -30,6 +30,7 @@ export function setupContextMenus() {
 
 function handleMenuClick(info) {
   if (info.menuItemId === MENU_ID && info.linkUrl) {
-    openViewer({ url: info.linkUrl });
+    void openViewer({ url: info.linkUrl })
+      .catch(err => console.error('[rhwp] 컨텍스트 메뉴 열기 실패:', err));
   }
 }

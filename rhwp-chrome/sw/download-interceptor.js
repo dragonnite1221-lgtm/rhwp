@@ -35,7 +35,7 @@ async function handleHwpDownload(item) {
       console.warn(`[rhwp] 대용량 파일: ${item.filename} (${(item.fileSize / 1024 / 1024).toFixed(1)}MB)`);
     }
 
-    openViewer({
+    await openViewer({
       url: item.url,
       filename: item.filename,
     });

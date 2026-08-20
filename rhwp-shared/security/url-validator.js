@@ -6,7 +6,7 @@
  * @param {string} urlString
  * @returns {{ valid: boolean, parsed?: URL, reason?: string }}
  */
-function validateProtocol(urlString) {
+export function validateProtocol(urlString) {
   if (!urlString || typeof urlString !== 'string') {
     return { valid: false, reason: 'URL이 비어있음' };
   }
@@ -31,13 +31,78 @@ function validateProtocol(urlString) {
  * @param {string} hostname
  * @returns {boolean} 내부 IP이면 true
  */
-function isPrivateHost(hostname) {
-  // PRIVATE_IP_PATTERNS 인라인 (constants.js 의존 제거)
-  const patterns = [
-    /^127\./, /^10\./, /^192\.168\./, /^172\.(1[6-9]|2\d|3[01])\./,
-    /^169\.254\./, /^0\./, /^\[::1\]/, /^localhost$/i, /\.local$/i,
-  ];
-  return patterns.some(re => re.test(hostname));
+export function isPrivateHost(hostname) {
+  if (typeof hostname !== 'string' || !hostname) return true;
+  const host = hostname.toLowerCase().replace(/^\[|\]$/g, '').replace(/\.$/, '');
+  if (!host.includes('.') && !host.includes(':')) return true;
+  if (/\.(?:local|localhost|internal|home|lan)$/.test(host)) return true;
+  return isNonPublicIpAddress(host);
+}
+
+/** Return true for IP literals that are private, reserved, or non-routable. */
+export function isNonPublicIpAddress(address) {
+  if (typeof address !== 'string' || !address) return true;
+  const value = address.toLowerCase().replace(/^\[|\]$/g, '');
+  if (value.includes(':')) {
+    if (value.startsWith('::ffff:')) {
+      return isNonPublicIpAddress(value.slice('::ffff:'.length));
+    }
+    if (value === '::' || value === '::1') return true;
+    if (/^(?:fc|fd|fe[89ab]|ff)/.test(value)) return true;
+    if (/^2001:db8(?::|$)/.test(value)) return true;
+    const first = Number.parseInt(value.split(':', 1)[0], 16);
+    return !Number.isInteger(first) || first < 0x2000 || first > 0x3fff;
+  }
+
+  const parts = value.split('.');
+  if (parts.length !== 4 || parts.some(part => !/^\d{1,3}$/.test(part))) {
+    return false;
+  }
+  const octets = parts.map(Number);
+  if (octets.some(part => part > 255)) return true;
+  const [a, b, c] = octets;
+  return a === 0
+    || a === 10
+    || a === 127
+    || (a === 100 && b >= 64 && b <= 127)
+    || (a === 169 && b === 254)
+    || (a === 172 && b >= 16 && b <= 31)
+    || (a === 192 && b === 168)
+    || (a === 192 && b === 0 && c === 0)
+    || (a === 192 && b === 0 && c === 2)
+    || (a === 192 && b === 88 && c === 99)
+    || (a === 198 && (b === 18 || b === 19))
+    || (a === 198 && b === 51 && c === 100)
+    || (a === 203 && b === 0 && c === 113)
+    || a >= 224;
+}
+
+export function isIpAddressLiteral(address) {
+  if (typeof address !== 'string' || !address) return false;
+  const value = address.toLowerCase().replace(/^\[|\]$/g, '');
+  if (value.includes(':')) {
+    if (!/^[0-9a-f:.]+$/.test(value)) return false;
+    if ((value.match(/::/g) || []).length > 1) return false;
+    const compressed = value.includes('::');
+    const parts = value.split(':').filter(Boolean);
+    let slots = 0;
+    for (const part of parts) {
+      if (part.includes('.')) {
+        const ipv4 = part.split('.');
+        if (ipv4.length !== 4 || ipv4.some(item => (
+          !/^\d{1,3}$/.test(item) || Number(item) > 255
+        ))) return false;
+        slots += 2;
+      } else {
+        if (!/^[0-9a-f]{1,4}$/.test(part)) return false;
+        slots += 1;
+      }
+    }
+    return compressed ? slots < 8 : slots === 8;
+  }
+  const parts = value.split('.');
+  return parts.length === 4
+    && parts.every(part => /^\d{1,3}$/.test(part) && Number(part) <= 255);
 }
 
 /**
@@ -45,7 +110,7 @@ function isPrivateHost(hostname) {
  * @param {URL} parsed
  * @returns {boolean}
  */
-function hasHwpExtension(parsed) {
+export function hasHwpExtension(parsed) {
   const pathname = parsed.pathname.toLowerCase();
   return pathname.endsWith('.hwp') || pathname.endsWith('.hwpx');
 }
@@ -56,7 +121,7 @@ function hasHwpExtension(parsed) {
  * @param {string[]} allowedDomains — ['.go.kr', '.or.kr', ...]
  * @returns {boolean}
  */
-function isAllowedDomain(hostname, allowedDomains) {
+export function isAllowedDomain(hostname, allowedDomains) {
   return allowedDomains.some(domain => hostname.endsWith(domain));
 }
 
@@ -66,7 +131,7 @@ function isAllowedDomain(hostname, allowedDomains) {
  * @param {URL} parsed
  * @returns {boolean}
  */
-function isDownloadEndpoint(parsed) {
+export function isDownloadEndpoint(parsed) {
   const pathname = parsed.pathname.toLowerCase();
   return /\.(do|action|jsp|aspx|php)$/i.test(pathname)
     || /download/i.test(pathname)
@@ -84,7 +149,7 @@ function isDownloadEndpoint(parsed) {
  * @param {string[]} allowedDomains
  * @returns {{ allowed: boolean, reason: string }}
  */
-function validateOpenHwpUrl(urlString, allowedDomains) {
+export function validateOpenHwpUrl(urlString, allowedDomains) {
   const result = validateProtocol(urlString);
   if (!result.valid) return { allowed: false, reason: result.reason };
   const parsed = result.parsed;
@@ -120,7 +185,7 @@ function validateOpenHwpUrl(urlString, allowedDomains) {
  * @param {boolean} allowHttp — 사용자 설정
  * @returns {{ allowed: boolean, reason: string, upgradedUrl?: string }}
  */
-function validateFetchUrl(urlString, allowedDomains, allowHttp) {
+export function validateFetchUrl(urlString, allowedDomains, allowHttp) {
   const result = validateProtocol(urlString);
   if (!result.valid) return { allowed: false, reason: result.reason };
   const parsed = result.parsed;
@@ -142,11 +207,30 @@ function validateFetchUrl(urlString, allowedDomains, allowHttp) {
   return { allowed: true, reason: '검증 통과' };
 }
 
-// 내보내기
-if (typeof module !== 'undefined' && module.exports) {
-  module.exports = {
-    validateProtocol, isPrivateHost, hasHwpExtension,
-    isAllowedDomain, isDownloadEndpoint,
-    validateOpenHwpUrl, validateFetchUrl,
-  };
+/** Validate a URL before any privileged extension fetch or navigation. */
+export function validatePublicUrl(urlString) {
+  const result = validateProtocol(urlString);
+  if (!result.valid) return { allowed: false, reason: result.reason };
+  const parsed = result.parsed;
+  if (!parsed.hostname || parsed.port.length > 5) {
+    return { allowed: false, reason: '호스트 또는 포트가 올바르지 않음' };
+  }
+  if (isPrivateHost(parsed.hostname)) {
+    return { allowed: false, reason: `비공개 또는 예약 호스트 차단: ${parsed.hostname}` };
+  }
+  return { allowed: true, reason: '공개 HTTP(S) URL', parsed };
+}
+
+/** Require every DNS answer to be a public, globally routable address. */
+export function validateResolvedAddresses(addresses) {
+  if (!Array.isArray(addresses) || addresses.length === 0) {
+    return { allowed: false, reason: 'DNS 공개 주소를 확인하지 못함' };
+  }
+  const blocked = addresses.find(address => (
+    !isIpAddressLiteral(address) || isNonPublicIpAddress(address)
+  ));
+  if (blocked) {
+    return { allowed: false, reason: `DNS가 비공개 또는 예약 주소를 반환함: ${blocked}` };
+  }
+  return { allowed: true, reason: 'DNS 공개 주소 확인' };
 }

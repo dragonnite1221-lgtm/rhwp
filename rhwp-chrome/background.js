@@ -23,7 +23,7 @@ chrome.runtime.onInstalled.addListener((details) => {
 
 // 확장 아이콘 클릭 → 빈 뷰어 탭 열기
 chrome.action.onClicked.addListener(() => {
-  openViewer();
+  void openViewer().catch(err => console.error('[rhwp] 뷰어 열기 실패:', err));
 });
 
 // 다운로드 가로채기

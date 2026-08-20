@@ -618,6 +618,7 @@ eventBus.on('equation-edit-request', () => {
 async function loadFromUrlParam(): Promise<void> {
   const params = new URLSearchParams(window.location.search);
   const fileUrl = params.get('url');
+  const fetchGrant = params.get('grant');
   if (!fileUrl) return;
 
   const fileName = params.get('filename') || fileUrl.split('/').pop()?.split('?')[0] || 'document.hwp';
@@ -629,20 +630,20 @@ async function loadFromUrlParam(): Promise<void> {
 
     let response: Response;
 
-    // Chrome 확장 환경: Service Worker를 통한 CORS 우회 fetch
+    // Chrome 확장 환경: capability로 승인된 Service Worker fetch만 사용한다.
     if (typeof chrome !== 'undefined' && chrome.runtime?.sendMessage) {
-      try {
-        response = await fetch(fileUrl);
-      } catch {
-        // 직접 fetch 실패 시 Service Worker 프록시
-        const result = await chrome.runtime.sendMessage({ type: 'fetch-file', url: fileUrl });
-        if (result.error) throw new Error(result.error);
-        const data = new Uint8Array(result.data);
-        assertRemoteDocumentBytes(data);
-        const docInfo = wasm.loadDocument(data, fileName);
-        await initializeDocument(docInfo, `${fileName} — ${docInfo.pageCount}페이지`);
-        return;
-      }
+      if (!fetchGrant) throw new Error('파일 접근 권한이 없거나 만료되었습니다.');
+      const result = await chrome.runtime.sendMessage({
+        type: 'fetch-file',
+        url: fileUrl,
+        grant: fetchGrant,
+      });
+      if (result.error) throw new Error(result.error);
+      const data = new Uint8Array(result.data);
+      assertRemoteDocumentBytes(data, result.contentType);
+      const docInfo = wasm.loadDocument(data, fileName);
+      await initializeDocument(docInfo, `${fileName} — ${docInfo.pageCount}페이지`);
+      return;
     } else {
       response = await fetch(fileUrl);
     }
