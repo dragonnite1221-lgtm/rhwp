@@ -26,6 +26,11 @@ import { TableObjectRenderer } from '@/engine/table-object-renderer';
 import { TableResizeRenderer } from '@/engine/table-resize-renderer';
 import { Ruler } from '@/view/ruler';
 import { initRhwpDev } from '@/core/rhwp-dev';
+import {
+  buildAllowedRpcOrigins,
+  postRpcResponse,
+  trustedRpcChannel,
+} from '@/postmessage-security';
 
 const wasm = new WasmBridge();
 const eventBus = new EventBus();
@@ -675,12 +680,19 @@ function showLoadError(error: unknown): void {
 }
 
 const initPromise = initialize();
+const allowedRpcOrigins = buildAllowedRpcOrigins(
+  import.meta.env.VITE_RHWP_ALLOWED_PARENT_ORIGINS,
+  window.location.origin,
+);
 
 // ── iframe 연동 API (postMessage) ──
 // 부모 페이지에서 postMessage로 에디터를 제어할 수 있다.
 // 요청: { type: 'rhwp-request', id, method, params }
 // 응답: { type: 'rhwp-response', id, result?, error? }
 window.addEventListener('message', async (e) => {
+  const channel = trustedRpcChannel(e, window, allowedRpcOrigins);
+  if (!channel) return;
+
   const msg = e.data;
   if (!msg || typeof msg !== 'object') return;
 
@@ -691,9 +703,17 @@ window.addEventListener('message', async (e) => {
       const bytes = new Uint8Array(msg.data);
       const docInfo = wasm.loadDocument(bytes, msg.fileName || 'document.hwp');
       await initializeDocument(docInfo, `${msg.fileName || 'document'} — ${docInfo.pageCount}페이지`);
-      e.source?.postMessage({ type: 'rhwp-response', id: msg.id, result: { pageCount: docInfo.pageCount } }, { targetOrigin: '*' });
+      postRpcResponse(channel, {
+        type: 'rhwp-response',
+        id: msg.id,
+        result: { pageCount: docInfo.pageCount },
+      });
     } catch (err: any) {
-      e.source?.postMessage({ type: 'rhwp-response', id: msg.id, error: err.message || String(err) }, { targetOrigin: '*' });
+      postRpcResponse(channel, {
+        type: 'rhwp-response',
+        id: msg.id,
+        error: err.message || String(err),
+      });
     }
     return;
   }
@@ -702,7 +722,7 @@ window.addEventListener('message', async (e) => {
   if (msg.type !== 'rhwp-request' || !msg.method) return;
   const { id, method, params } = msg;
   const reply = (result?: any, error?: string) => {
-    e.source?.postMessage({ type: 'rhwp-response', id, result, error }, { targetOrigin: '*' });
+    postRpcResponse(channel, { type: 'rhwp-response', id, result, error });
   };
 
   try {
