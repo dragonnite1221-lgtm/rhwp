@@ -75,6 +75,8 @@ copy(resolve(__dirname, 'sw'), resolve(DIST, 'sw'), {
   filter: (src) => !EXCLUDE_FROM_DIST.test(src),
   dereference: true,
 });
+copy(resolve(ROOT, 'rhwp-shared', 'sw', 'thumbnail-parser.js'),
+  resolve(DIST, 'sw', 'thumbnail-parser.js'));
 copy(resolve(__dirname, 'options.html'), resolve(DIST, 'options.html'));
 copy(resolve(__dirname, 'options.js'), resolve(DIST, 'options.js'));
 

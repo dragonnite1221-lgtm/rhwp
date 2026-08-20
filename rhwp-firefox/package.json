@@ -8,6 +8,7 @@
   "scripts": {
     "dev": "vite",
     "build": "node build.mjs",
+    "test": "node --test ../rhwp-shared/sw/thumbnail-parser.test.js",
     "clean": "rm -rf dist"
   },
   "devDependencies": {

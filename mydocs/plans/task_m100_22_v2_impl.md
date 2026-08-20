@@ -28,8 +28,17 @@
 
 - sector 지수, checked offset/length, FAT·miniFAT 순환 및 최대 단계 검증
 - 정상 썸네일 호환 테스트와 잘못된 입력 fuzz 성격 테스트
-- Rust/TypeScript/Chrome 전체 테스트, CodeGraph sync, 공통 2차 리뷰
-- 정확한 `gemini-3.7-flash` 단계 리뷰 후 PR 생성·필수 체크·병합
+- Chrome/Firefox 빌드 및 실제 샘플 호환 검증
+- 정확한 `gemini-3.7-flash` 단계 리뷰
+
+## Stage 5 — 교차 브라우저 경계와 패키지 위생
+
+- Firefox의 자동 프리패치·sender 미검증·무제한 privileged fetch 제거
+- Chrome과 동일한 capability, public-network, redirect, timeout, byte-limit 불변식 적용
+- Safari 중복 구현의 메시지·네트워크·파서 경계 점검 및 필요한 공용화
+- 고위험 npm audit 항목을 원인 패키지까지 추적해 호환 범위에서 제거
+- 전체 Rust/TypeScript/확장 테스트, CodeGraph sync, 공통 2차 리뷰
+- 정확한 `gemini-3.7-flash` 최종 리뷰 후 PR 생성·필수 체크·병합
 
 ## 변경 예상 파일
 
@@ -37,7 +46,7 @@
 - `rhwp-studio/src/main.ts` 및 메시지 채널 테스트
 - `rhwp-chrome/content-script.js`, `sw/message-router.js`, `sw/thumbnail-extractor.js`, URL/sender 검증 모듈과 테스트
 - CFB lenient parser 구현 및 테스트
-- `mydocs/working/task_m100_22_v2_stage{1..4}.md`
+- `mydocs/working/task_m100_22_v2_stage{1..5}.md`
 - `mydocs/report/task_m100_22_v2_report.md`
 
 ## 위험 통제

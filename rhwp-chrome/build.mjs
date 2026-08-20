@@ -74,6 +74,8 @@ copy(resolve(__dirname, 'sw'), resolve(DIST, 'sw'), {
   filter: (src) => !EXCLUDE_FROM_DIST.test(src),
   dereference: true,
 });
+copy(resolve(ROOT, 'rhwp-shared', 'sw', 'thumbnail-parser.js'),
+  resolve(DIST, 'sw', 'thumbnail-parser.js'));
 // Source wrappers point to the canonical shared modules during development;
 // packaged extensions receive self-contained copies at the same import path.
 copy(resolve(ROOT, 'rhwp-shared', 'security'), resolve(DIST, 'security'), {
