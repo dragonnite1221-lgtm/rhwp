@@ -38,8 +38,61 @@ on:
 
 env:
   CARGO_TERM_COLOR: always
+  RUST_MSRV: 1.88.0
+  RUST_TOOLCHAIN: 1.98.0
 
 jobs:
+  rust-msrv:
+    name: Rust 1.88 MSRV
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.0
+
+      - name: Install minimum Rust toolchain
+        uses: dtolnay/rust-toolchain@4360b52568e2003a75bf9bc1d59f33a8e3fc893c # pinned action
+        with:
+          toolchain: ${{ env.RUST_MSRV }}
+
+      - name: Check declared MSRV
+        # This library intentionally does not track Cargo.lock; resolve dependencies
+        # from a clean index so the declared MSRV is checked against publishable state.
+        run: cargo "+${RUST_MSRV}" check
+
+  web-security:
+    name: Web security boundaries
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.0
+
+      - name: Setup Node.js
+        uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6.0.0
+        with:
+          node-version: '22'
+
+      - name: Install extension test dependencies
+        run: |
+          npm ci --prefix rhwp-chrome
+          npm ci --prefix rhwp-firefox
+
+      - name: Test Chrome and Firefox security boundaries
+        run: |
+          npm test --prefix rhwp-chrome
+          npm test --prefix rhwp-firefox
+
+      - name: Test Safari security boundaries
+        run: node --test rhwp-shared/security/random-uuid.test.js rhwp-safari/src/background-security.test.js rhwp-safari/src/content-script-security.test.js
+
+      - name: Test Studio and editor RPC capabilities
+        run: |
+          node --test rhwp-studio/tests/postmessage-security.test.ts
+          npm test --prefix npm/editor
+
   build-and-test:
     name: Build & Test
     runs-on: ubuntu-latest
@@ -47,24 +100,25 @@ jobs:
       contents: read
 
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.0
 
       - name: Install Rust toolchain
-        uses: dtolnay/rust-toolchain@stable
+        uses: dtolnay/rust-toolchain@4360b52568e2003a75bf9bc1d59f33a8e3fc893c # pinned action
         with:
+          toolchain: ${{ env.RUST_TOOLCHAIN }}
           components: clippy, rustfmt
           targets: wasm32-unknown-unknown
 
       - name: Cache cargo registry & build
-        uses: actions/cache@v6
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.0.0
         with:
           path: |
             ~/.cargo/registry
             ~/.cargo/git
             target
-          key: ${{ runner.os }}-cargo-${{ hashFiles('**/Cargo.lock') }}
+          key: ${{ runner.os }}-${{ env.RUST_TOOLCHAIN }}-cargo-${{ hashFiles('**/Cargo.lock') }}
           restore-keys: |
-            ${{ runner.os }}-cargo-
+            ${{ runner.os }}-${{ env.RUST_TOOLCHAIN }}-cargo-
 
       - name: Build
         run: cargo build --verbose
@@ -92,6 +146,11 @@ jobs:
       - name: Clippy
         run: cargo clippy -- -D warnings
 
+      - name: Workflow security policy
+        run: |
+          python3 -m unittest scripts/check_workflow_security_test.py
+          python3 scripts/check_workflow_security.py
+
   wasm-build:
     name: WASM Build
     runs-on: ubuntu-latest
@@ -100,32 +159,33 @@ jobs:
     if: github.event_name == 'workflow_dispatch' || startsWith(github.ref, 'refs/tags/v')
 
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.0
 
       - name: Install Rust toolchain
-        uses: dtolnay/rust-toolchain@stable
+        uses: dtolnay/rust-toolchain@4360b52568e2003a75bf9bc1d59f33a8e3fc893c # pinned action
         with:
+          toolchain: ${{ env.RUST_TOOLCHAIN }}
           targets: wasm32-unknown-unknown
 
       - name: Install wasm-pack
-        run: curl https://rustwasm.github.io/wasm-pack/installer/init.sh -sSf | sh
+        run: bash .github/scripts/install-wasm-pack.sh
 
       - name: Cache cargo registry & build
-        uses: actions/cache@v6
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.0.0
         with:
           path: |
             ~/.cargo/registry
             ~/.cargo/git
             target
-          key: ${{ runner.os }}-wasm-${{ hashFiles('**/Cargo.lock') }}
+          key: ${{ runner.os }}-${{ env.RUST_TOOLCHAIN }}-wasm-${{ hashFiles('**/Cargo.lock') }}
           restore-keys: |
-            ${{ runner.os }}-wasm-
+            ${{ runner.os }}-${{ env.RUST_TOOLCHAIN }}-wasm-
 
       - name: Build WASM
         run: wasm-pack build --target web --release
 
       - name: Upload WASM artifacts
-        uses: actions/upload-artifact@v7
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.0
         with:
           name: rhwp-wasm-pkg
           path: pkg/

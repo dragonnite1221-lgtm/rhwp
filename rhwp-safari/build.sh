@@ -35,16 +35,19 @@ for jsfile in "$SRC"/background.js "$SRC"/content-script.js "$SRC"/options.js; d
 done
 
 echo "[4/6] Safari 전용 소스 적용..."
-cp "$SRC/background.js" "$DIST/background.js"
+"$ROOT/rhwp-chrome/node_modules/.bin/rolldown" "$SRC/background.js" \
+  --file "$DIST/background.js" --format iife --platform browser
 cp "$SRC/content-script.js" "$DIST/content-script.js"
 cp "$SRC/manifest.json" "$DIST/manifest.json"
 cp "$SRC/options.html" "$DIST/options.html"
 cp "$SRC/options.js" "$DIST/options.js"
-# Chrome 전용 파일 제거
-rm -rf "$DIST/sw"
+# 공용 보안 모듈은 background.js 한 파일에 번들되었으므로 기존 Xcode
+# 프로젝트의 리소스 목록을 바꾸지 않고도 동일 정책을 배포한다.
+rm -rf "$DIST/sw" "$DIST/security"
 rm -f "$DIST/dev-tools-inject.js"
 # viewer.html에서 dev-tools-inject.js 참조 제거
-sed -i '' '/<script src="\/dev-tools-inject.js"><\/script>/d' "$DIST/viewer.html"
+sed -i.bak '/<script src="\/dev-tools-inject.js"><\/script>/d' "$DIST/viewer.html"
+rm -f "$DIST/viewer.html.bak"
 # Safari 호환: dev-tools-inject.js 참조만 제거
 # viewer.html의 type="module", crossorigin, 절대 경로는 원본 유지
 

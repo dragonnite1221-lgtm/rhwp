@@ -1,18 +1,32 @@
 // rhwp 메시지 발신자 검증 모듈 — Chrome/Safari 공통
 'use strict';
 
-// browser vs chrome 호환
-const _browser = typeof browser !== 'undefined' ? browser : chrome;
+function runtimeApi() {
+  return globalThis.browser?.runtime || globalThis.chrome?.runtime || null;
+}
+
+function hasExpectedExtensionId(sender) {
+  const runtime = runtimeApi();
+  return !!runtime?.id && sender?.id === runtime.id;
+}
 
 /**
  * 메시지 발신자가 확장 내부 페이지(viewer.html 등)인지 확인한다.
  * @param {object} sender — runtime.onMessage의 sender 파라미터
  * @returns {boolean}
  */
-function isInternalPage(sender) {
-  if (!sender || !sender.url) return false;
-  const extensionBase = _browser.runtime.getURL('');
-  return sender.url.startsWith(extensionBase);
+export function isInternalPage(sender) {
+  const runtime = runtimeApi();
+  if (!runtime || !hasExpectedExtensionId(sender) || !sender?.url) return false;
+  const extensionBase = runtime.getURL('');
+  try {
+    const senderUrl = new URL(sender.url);
+    const baseUrl = new URL(extensionBase);
+    return senderUrl.protocol === baseUrl.protocol
+      && senderUrl.hostname === baseUrl.hostname;
+  } catch {
+    return false;
+  }
 }
 
 /**
@@ -20,8 +34,15 @@ function isInternalPage(sender) {
  * @param {object} sender
  * @returns {boolean}
  */
-function isContentScript(sender) {
-  return !!(sender && sender.tab && sender.tab.id != null);
+export function isContentScript(sender) {
+  if (!hasExpectedExtensionId(sender)) return false;
+  if (!Number.isInteger(sender?.tab?.id) || !Number.isInteger(sender?.frameId)) return false;
+  try {
+    const url = new URL(sender.url);
+    return url.protocol === 'https:' || url.protocol === 'http:';
+  } catch {
+    return false;
+  }
 }
 
 /**
@@ -30,7 +51,7 @@ function isContentScript(sender) {
  * @param {object} sender
  * @returns {{ allowed: boolean, reason: string }}
  */
-function validateSender(messageType, sender) {
+export function validateSender(messageType, sender) {
   switch (messageType) {
     case 'fetch-file':
       // 내부 페이지(viewer.html)만 허용
@@ -40,6 +61,8 @@ function validateSender(messageType, sender) {
       return { allowed: true, reason: '내부 페이지 확인' };
 
     case 'open-hwp':
+    case 'prepare-viewer':
+    case 'extract-thumbnail':
       // content script만 허용
       if (!isContentScript(sender)) {
         return { allowed: false, reason: `open-hwp: content script가 아닌 발신자 (tab=${sender?.tab?.id})` };
@@ -47,15 +70,12 @@ function validateSender(messageType, sender) {
       return { allowed: true, reason: 'content script 확인' };
 
     case 'get-settings':
-      // 민감하지 않은 설정 — 모두 허용
-      return { allowed: true, reason: '공개 설정' };
+      if (!isInternalPage(sender) && !isContentScript(sender)) {
+        return { allowed: false, reason: 'get-settings: 확장 발신자 확인 실패' };
+      }
+      return { allowed: true, reason: '확장 발신자 확인' };
 
     default:
       return { allowed: false, reason: `알 수 없는 메시지 유형: ${messageType}` };
   }
-}
-
-// 내보내기
-if (typeof module !== 'undefined' && module.exports) {
-  module.exports = { isInternalPage, isContentScript, validateSender };
 }

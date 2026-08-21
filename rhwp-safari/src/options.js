@@ -14,17 +14,14 @@ document.querySelectorAll('.tab-btn').forEach(btn => {
 // ─── 설정 ───
 
 const DEFAULT_DOMAINS = ['.go.kr', '.or.kr', '.ac.kr', '.mil.kr', '.korea.kr', '.sc.kr'];
-const TOGGLE_KEYS = ['allSitesEnabled', 'autoOpen', 'showBadges', 'hoverPreview', 'allowHttp', 'httpWarning', 'devMode', 'securityLog'];
+const TOGGLE_KEYS = ['allSitesEnabled', 'autoOpen', 'showBadges', 'hoverPreview', 'securityLog'];
 const DEFAULTS = {
   allowedDomains: DEFAULT_DOMAINS,
   allSitesEnabled: false,
   autoOpen: true,
   showBadges: true,
   hoverPreview: true,
-  allowHttp: true,
-  httpWarning: true,
   maxFileSize: 20,
-  devMode: false,
   securityLog: false,
 };
 

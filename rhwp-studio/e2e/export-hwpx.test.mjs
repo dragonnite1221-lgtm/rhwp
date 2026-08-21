@@ -36,7 +36,10 @@ runTest('issue-557 green: exportHwpx / exportHwpVerify 노출 정합성', async 
         }
       };
       window.addEventListener('message', handler);
-      window.postMessage({ type: 'rhwp-request', id, method, params }, '*');
+      window.postMessage(
+        { type: 'rhwp-request', id, method, params },
+        window.location.origin,
+      );
       setTimeout(() => resolve({ timeout: true, method }), 30000);
     });
   });

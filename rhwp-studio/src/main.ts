@@ -26,6 +26,13 @@ import { TableObjectRenderer } from '@/engine/table-object-renderer';
 import { TableResizeRenderer } from '@/engine/table-resize-renderer';
 import { Ruler } from '@/view/ruler';
 import { initRhwpDev } from '@/core/rhwp-dev';
+import {
+  buildAllowedRpcOrigins,
+  postRpcResponse,
+  readRpcToken,
+  trustedRpcChannel,
+} from '@/postmessage-security';
+import { takeDocumentTransfer } from '@/document-transfer-store';
 
 const wasm = new WasmBridge();
 const eventBus = new EventBus();
@@ -613,6 +620,7 @@ eventBus.on('equation-edit-request', () => {
 async function loadFromUrlParam(): Promise<void> {
   const params = new URLSearchParams(window.location.search);
   const fileUrl = params.get('url');
+  const fetchGrant = params.get('grant');
   if (!fileUrl) return;
 
   const fileName = params.get('filename') || fileUrl.split('/').pop()?.split('?')[0] || 'document.hwp';
@@ -624,20 +632,25 @@ async function loadFromUrlParam(): Promise<void> {
 
     let response: Response;
 
-    // Chrome 확장 환경: Service Worker를 통한 CORS 우회 fetch
+    // Chrome 확장 환경: capability로 승인된 Service Worker fetch만 사용한다.
     if (typeof chrome !== 'undefined' && chrome.runtime?.sendMessage) {
-      try {
-        response = await fetch(fileUrl);
-      } catch {
-        // 직접 fetch 실패 시 Service Worker 프록시
-        const result = await chrome.runtime.sendMessage({ type: 'fetch-file', url: fileUrl });
-        if (result.error) throw new Error(result.error);
-        const data = new Uint8Array(result.data);
-        assertRemoteDocumentBytes(data);
-        const docInfo = wasm.loadDocument(data, fileName);
-        await initializeDocument(docInfo, `${fileName} — ${docInfo.pageCount}페이지`);
-        return;
+      if (!fetchGrant) throw new Error('파일 접근 권한이 없거나 만료되었습니다.');
+      const result = await chrome.runtime.sendMessage({
+        type: 'fetch-file',
+        url: fileUrl,
+        grant: fetchGrant,
+      });
+      if (result.error) throw new Error(result.error);
+      if (typeof result.transferId !== 'string') {
+        throw new Error('확장 프로그램이 유효한 문서 전송 ID를 반환하지 않았습니다.');
       }
+      const transfer = await takeDocumentTransfer(result.transferId);
+      if (!transfer) throw new Error('문서 전송이 만료되었거나 이미 사용되었습니다.');
+      const data = new Uint8Array(transfer.data);
+      assertRemoteDocumentBytes(data, transfer.contentType);
+      const docInfo = wasm.loadDocument(data, fileName);
+      await initializeDocument(docInfo, `${fileName} — ${docInfo.pageCount}페이지`);
+      return;
     } else {
       response = await fetch(fileUrl);
     }
@@ -675,12 +688,27 @@ function showLoadError(error: unknown): void {
 }
 
 const initPromise = initialize();
+const allowedRpcOrigins = buildAllowedRpcOrigins(
+  import.meta.env.VITE_RHWP_ALLOWED_PARENT_ORIGINS,
+  window.location.origin,
+);
+const rpcToken = readRpcToken(window.location.hash);
+if (rpcToken) {
+  window.history.replaceState(
+    window.history.state,
+    '',
+    `${window.location.pathname}${window.location.search}`,
+  );
+}
 
 // ── iframe 연동 API (postMessage) ──
 // 부모 페이지에서 postMessage로 에디터를 제어할 수 있다.
 // 요청: { type: 'rhwp-request', id, method, params }
 // 응답: { type: 'rhwp-response', id, result?, error? }
 window.addEventListener('message', async (e) => {
+  const channel = trustedRpcChannel(e, window, allowedRpcOrigins, rpcToken);
+  if (!channel) return;
+
   const msg = e.data;
   if (!msg || typeof msg !== 'object') return;
 
@@ -691,9 +719,17 @@ window.addEventListener('message', async (e) => {
       const bytes = new Uint8Array(msg.data);
       const docInfo = wasm.loadDocument(bytes, msg.fileName || 'document.hwp');
       await initializeDocument(docInfo, `${msg.fileName || 'document'} — ${docInfo.pageCount}페이지`);
-      e.source?.postMessage({ type: 'rhwp-response', id: msg.id, result: { pageCount: docInfo.pageCount } }, { targetOrigin: '*' });
+      postRpcResponse(channel, {
+        type: 'rhwp-response',
+        id: msg.id,
+        result: { pageCount: docInfo.pageCount },
+      });
     } catch (err: any) {
-      e.source?.postMessage({ type: 'rhwp-response', id: msg.id, error: err.message || String(err) }, { targetOrigin: '*' });
+      postRpcResponse(channel, {
+        type: 'rhwp-response',
+        id: msg.id,
+        error: err.message || String(err),
+      });
     }
     return;
   }
@@ -702,7 +738,7 @@ window.addEventListener('message', async (e) => {
   if (msg.type !== 'rhwp-request' || !msg.method) return;
   const { id, method, params } = msg;
   const reply = (result?: any, error?: string) => {
-    e.source?.postMessage({ type: 'rhwp-response', id, result, error }, { targetOrigin: '*' });
+    postRpcResponse(channel, { type: 'rhwp-response', id, result, error });
   };
 
   try {

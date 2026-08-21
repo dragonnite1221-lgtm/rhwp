@@ -7,7 +7,7 @@
 // #207: 판정 로직은 rhwp-shared/sw/download-interceptor-common.js 와 공유.
 
 import { openViewer } from './viewer-launcher.js';
-import { shouldInterceptDownload } from './download-interceptor-common.js';
+import { refetchUrlForDownload, shouldInterceptDownload } from './download-interceptor-common.js';
 
 /**
  * 다운로드 인터셉터를 설정한다.
@@ -35,8 +35,8 @@ async function handleHwpDownload(item) {
       console.warn(`[rhwp] 대용량 파일: ${item.filename} (${(item.fileSize / 1024 / 1024).toFixed(1)}MB)`);
     }
 
-    openViewer({
-      url: item.url,
+    await openViewer({
+      url: refetchUrlForDownload(item),
       filename: item.filename,
     });
   } catch (err) {

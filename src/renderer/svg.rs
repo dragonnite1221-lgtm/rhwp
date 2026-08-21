@@ -2436,7 +2436,7 @@ pub(crate) fn pcx_bytes_to_png_bytes(data: &[u8]) -> Option<Vec<u8>> {
         }
         let mut palette = vec![0u8; 256 * 3];
         reader.read_palette(&mut palette).ok()?;
-        for (dst, &idx) in rgba.chunks_exact_mut(4).zip(indices.iter()) {
+        for (dst, &idx) in rgba.as_chunks_mut::<4>().0.iter_mut().zip(indices.iter()) {
             let p = idx as usize * 3;
             let r = palette[p];
             let g = palette[p + 1];
@@ -2453,7 +2453,7 @@ pub(crate) fn pcx_bytes_to_png_bytes(data: &[u8]) -> Option<Vec<u8>> {
         let mut rgb_row = vec![0u8; row_bytes_rgb];
         for y in 0..height as usize {
             reader.next_row_rgb(&mut rgb_row).ok()?;
-            for (x, src) in rgb_row.chunks_exact(3).enumerate() {
+            for (x, src) in rgb_row.as_chunks::<3>().0.iter().enumerate() {
                 let dst = &mut rgba[(y * width as usize + x) * 4..(y * width as usize + x) * 4 + 4];
                 dst[0] = src[0];
                 dst[1] = src[1];

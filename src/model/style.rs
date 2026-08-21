@@ -595,9 +595,7 @@ impl CharShapeMods {
         if let Some(v) = self.strikethrough { cs.strikethrough = v; }
         if let Some(id) = self.font_id {
             // 모든 언어에 동일한 글꼴 ID 적용
-            for fid in &mut cs.font_ids {
-                *fid = id;
-            }
+            cs.font_ids.fill(id);
         }
         if let Some(v) = self.base_size { cs.base_size = v; }
         if let Some(v) = self.text_color { cs.text_color = v; }

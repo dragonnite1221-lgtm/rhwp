@@ -8,7 +8,10 @@
 import { test } from 'node:test';
 import { strict as assert } from 'node:assert';
 
-import { shouldInterceptDownload } from './download-interceptor-common.js';
+import {
+  refetchUrlForDownload,
+  shouldInterceptDownload,
+} from './download-interceptor-common.js';
 
 // ─── HWP 감지 ──────────────────────────────────────────
 
@@ -52,6 +55,16 @@ test('finalUrl 감지 (redirect 후 hwp 확장자)', () => {
     }),
     true,
   );
+});
+
+test('redirect 다운로드는 브라우저가 검증한 finalUrl을 뷰어 재요청에 사용한다', () => {
+  const item = {
+    url: 'https://example.com/download?id=7',
+    finalUrl: 'https://cdn.example.com/files/document.hwp',
+  };
+  assert.equal(shouldInterceptDownload(item), true);
+  assert.equal(refetchUrlForDownload(item), item.finalUrl);
+  assert.equal(refetchUrlForDownload({ url: item.url }), item.url);
 });
 
 test('mime 감지 (haansoft)', () => {

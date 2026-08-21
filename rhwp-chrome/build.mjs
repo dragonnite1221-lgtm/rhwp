@@ -74,6 +74,19 @@ copy(resolve(__dirname, 'sw'), resolve(DIST, 'sw'), {
   filter: (src) => !EXCLUDE_FROM_DIST.test(src),
   dereference: true,
 });
+copy(resolve(ROOT, 'rhwp-shared', 'sw', 'thumbnail-parser.js'),
+  resolve(DIST, 'sw', 'thumbnail-parser.js'));
+copy(resolve(ROOT, 'rhwp-shared', 'sw', 'secure-fetch.js'),
+  resolve(DIST, 'sw', 'secure-fetch.js'));
+copy(resolve(ROOT, 'rhwp-shared', 'sw', 'fetch-grants.js'),
+  resolve(DIST, 'sw', 'fetch-grants.js'));
+copy(resolve(ROOT, 'rhwp-shared', 'sw', 'document-transfer-store.js'),
+  resolve(DIST, 'sw', 'document-transfer-store.js'));
+// Source wrappers point to the canonical shared modules during development;
+// packaged extensions receive self-contained copies at the same import path.
+copy(resolve(ROOT, 'rhwp-shared', 'security'), resolve(DIST, 'security'), {
+  filter: (src) => !EXCLUDE_FROM_DIST.test(src),
+});
 copy(resolve(__dirname, 'options.html'), resolve(DIST, 'options.html'));
 copy(resolve(__dirname, 'options.js'), resolve(DIST, 'options.js'));
 

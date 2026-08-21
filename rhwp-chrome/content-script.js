@@ -19,10 +19,6 @@
       processLinks();
       observeDynamicContent();
     }
-    // HWP 링크 썸네일 프리페치 (페이지 로드 후 유휴 시간에)
-    if (settings.hoverPreview) {
-      prefetchThumbnails();
-    }
   });
 
   // 확장 존재 알림
@@ -99,6 +95,7 @@
     badge.title = tooltip;
 
     badge.addEventListener('click', (e) => {
+      if (!e.isTrusted) return;
       e.preventDefault();
       e.stopPropagation();
       chrome.runtime.sendMessage({ type: 'open-hwp', url: anchor.href });
@@ -179,7 +176,8 @@
     card.appendChild(footer);
 
     // 카드 전체 클릭 시 HWP 열기
-    card.addEventListener('click', () => {
+    card.addEventListener('click', (event) => {
+      if (!event.isTrusted) return;
       chrome.runtime.sendMessage({ type: 'open-hwp', url: anchor.href });
       hideHoverCard();
     });
@@ -273,7 +271,8 @@
   function attachHoverEvents(anchor) {
     if (!settings.hoverPreview) return;
 
-    anchor.addEventListener('mouseenter', () => {
+    anchor.addEventListener('mouseenter', (event) => {
+      if (!event.isTrusted) return;
       clearTimeout(hoverTimeout); // 이전 디바운스 타이머 취소
       hideHoverCard(); // 이전 카드 제거
       hoverTimeout = setTimeout(() => showHoverCard(anchor), 300);
@@ -281,48 +280,6 @@
     anchor.addEventListener('mouseleave', () => {
       hoverTimeout = setTimeout(() => hideHoverCard(), 200);
     });
-  }
-
-  // ─── 썸네일 프리페치 ───
-
-  const PREFETCH_CONCURRENCY = 3; // 동시 fetch 최대 수
-  let prefetchQueue = [];
-  let prefetchActive = 0;
-
-  function prefetchThumbnails() {
-    // 페이지 로드 후 1초 대기 (렌더링 우선)
-    setTimeout(() => {
-      const anchors = document.querySelectorAll('a[href]');
-      for (const anchor of anchors) {
-        if (!isHwpLink(anchor)) continue;
-        if (anchor.getAttribute('data-hwp-thumbnail')) continue; // 사전 지정된 것은 제외
-        if (thumbnailCache.has(anchor.href)) continue; // 이미 캐시됨
-        prefetchQueue.push(anchor.href);
-      }
-      // 중복 제거
-      prefetchQueue = [...new Set(prefetchQueue)];
-      drainPrefetchQueue();
-    }, 1000);
-  }
-
-  function drainPrefetchQueue() {
-    while (prefetchActive < PREFETCH_CONCURRENCY && prefetchQueue.length > 0) {
-      const url = prefetchQueue.shift();
-      if (thumbnailCache.has(url)) continue;
-      prefetchActive++;
-      chrome.runtime.sendMessage(
-        { type: 'extract-thumbnail', url },
-        (response) => {
-          prefetchActive--;
-          if (response && response.dataUri) {
-            thumbnailCache.set(url, response);
-          } else {
-            thumbnailCache.set(url, null);
-          }
-          drainPrefetchQueue();
-        }
-      );
-    }
   }
 
   // ─── 유틸리티 ───

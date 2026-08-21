@@ -19,14 +19,14 @@ HWP/HWPX 파일 → Parser → IR(Model) → Paginator → Layout → SVG/Canvas
 ### 2.1 필수 도구
 
 ```bash
-# Rust (1.75+)
+# Rust (1.88+)
 curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh
 
 # Docker (WASM 빌드용)
 # → Docker Desktop 또는 Docker Engine 설치
 
 # Node.js (rhwp-studio 웹 에디터)
-# → Node.js 18+ 설치
+# → Node.js 22.12+ 설치
 ```
 
 ### 2.2 빌드 확인

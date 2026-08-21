@@ -8,7 +8,7 @@
 // Chrome 과 동일한 DEXT5 블랙리스트 / MIME 힌트 / finalUrl 검사 자동 적용.
 
 import { openViewer } from './viewer-launcher.js';
-import { shouldInterceptDownload } from './download-interceptor-common.js';
+import { refetchUrlForDownload, shouldInterceptDownload } from './download-interceptor-common.js';
 
 const handled = new Set();     // 이미 처리된 downloadId
 
@@ -58,8 +58,8 @@ async function handleHwpDownload(item) {
       );
     }
 
-    openViewer({
-      url: item.url,
+    await openViewer({
+      url: refetchUrlForDownload(item),
       filename: item.filename,
     });
   } catch (err) {
