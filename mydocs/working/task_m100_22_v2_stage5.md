@@ -63,13 +63,13 @@
 
 ## Verification
 
-- Chrome: 60 security tests passed, production build passed, `npm audit` found
+- Chrome: 61 security tests passed, production build passed, `npm audit` found
   zero vulnerabilities.
-- Firefox: 60 security tests passed, production build passed, `npm audit` found
+- Firefox: 61 security tests passed, production build passed, `npm audit` found
   zero vulnerabilities.
 - Safari: 9 sender/target/grant/signature/manifest/trusted-event tests passed;
   shell syntax passed; the production Rolldown command produced a self-contained
-  45,689-byte non-module IIFE background bundle that passed syntax validation.
+  45,744-byte non-module IIFE background bundle that passed syntax validation.
 - Studio: TypeScript and production build passed, `npm audit` found zero
   vulnerabilities, and the headless-browser postMessage E2E passed forged-origin
   rejection, same-origin request/response, a real cross-origin `@rhwp/editor`

@@ -33,7 +33,7 @@
   SHA-256 검증을 통과했다.
 - Studio production build 및 실제 headless Chrome postMessage E2E를
   통과했다.
-- Chrome 60개, Firefox 60개, Safari 9개 보안 회귀 테스트를 통과했다.
+- Chrome 61개, Firefox 61개, Safari 9개 보안 회귀 테스트를 통과했다.
 - Chrome/Firefox/Studio production build와 VS Code extension production
   compile이 통과했다. 네 npm audit 모두 통과했고 보고된 취약점은 0개다.
 - 공용 파서는 500개 deterministic malformed corpus와 실제 저장소 HWP/HWPX

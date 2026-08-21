@@ -165,3 +165,21 @@ test('browser connection verification uses the response socket IP', async () => 
   });
   await assert.rejects(privateResult, /실제 연결 주소 차단/);
 });
+
+test('a pre-response fetch failure aborts connection verification cleanup', async () => {
+  let verifierAborted = false;
+  await assert.rejects(
+    fetchPublicResource('https://example.com/a.hwp', {
+      dnsResolver: publicDns,
+      connectedAddressVerifier: (_url, signal) => new Promise((resolve, reject) => {
+        signal.addEventListener('abort', () => {
+          verifierAborted = true;
+          reject(new Error('verification aborted'));
+        }, { once: true });
+      }),
+      fetchImpl: async () => { throw new Error('network failed before response'); },
+    }),
+    /network failed before response/,
+  );
+  assert.equal(verifierAborted, true);
+});

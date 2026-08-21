@@ -216,6 +216,7 @@ export async function fetchPublicResource(url, options = {}) {
     };
   } finally {
     clearTimeout(timeout);
+    if (!controller.signal.aborted) controller.abort();
   }
 }
 
