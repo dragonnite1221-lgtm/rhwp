@@ -38,6 +38,9 @@
 - Chrome and Firefox use Vite 8.2.2. Studio's direct build dependencies were
   updated to their compatible current versions; all three npm trees now audit
   clean.
+- The fork's remote Dependabot inventory exposed a remaining high-severity
+  `fast-uri` advisory in `rhwp-vscode`. Its lockfile now resolves 3.1.5; the
+  VS Code extension compiles successfully and its npm audit also reports zero.
 
 ## Verification
 
@@ -52,6 +55,8 @@
   vulnerabilities, and the headless-browser postMessage E2E passed forged-origin
   rejection, same-origin request/response, exact byte-view preservation,
   one-time consumption, invalid-ID rejection, and bounded-backlog assertions.
+- VS Code extension: production Webpack compile passed and `npm audit` found
+  zero vulnerabilities.
 - Rust: `cargo test` passed the 1,230-test main suite (2 ignored) and every
   subsequently executed integration suite. `cargo clippy --all-targets
   --all-features -- -D warnings` remains red on 84 pre-existing warnings in

@@ -26,8 +26,8 @@
 - Studio production build 및 실제 headless Chrome postMessage E2E를
   통과했다.
 - Chrome 27개, Firefox 27개, Safari 7개 보안 회귀 테스트를 통과했다.
-- Chrome/Firefox/Studio production build와 세 npm audit가 모두 통과했고
-  보고된 취약점은 0개다.
+- Chrome/Firefox/Studio production build와 VS Code extension production
+  compile이 통과했다. 네 npm audit 모두 통과했고 보고된 취약점은 0개다.
 - 공용 파서는 500개 deterministic malformed corpus와 실제 저장소 HWP/HWPX
   샘플을 모두 검증했다.
 - `cargo test`는 1,230개 main test(2 ignored) 및 모든 후속 integration
