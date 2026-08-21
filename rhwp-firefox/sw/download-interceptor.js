@@ -58,7 +58,7 @@ async function handleHwpDownload(item) {
       );
     }
 
-    openViewer({
+    await openViewer({
       url: item.url,
       filename: item.filename,
     });

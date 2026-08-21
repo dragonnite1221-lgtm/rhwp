@@ -26,7 +26,7 @@ browser.runtime.onInstalled.addListener((details) => {
 
 // 확장 아이콘 클릭 → 빈 뷰어 탭 열기
 browser.action.onClicked.addListener(() => {
-  openViewer();
+  openViewer().catch((err) => console.error('[rhwp] 뷰어 탭 생성 오류:', err));
 });
 
 // 다운로드 가로채기

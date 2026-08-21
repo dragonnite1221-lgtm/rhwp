@@ -76,6 +76,10 @@ copy(resolve(__dirname, 'sw'), resolve(DIST, 'sw'), {
 });
 copy(resolve(ROOT, 'rhwp-shared', 'sw', 'thumbnail-parser.js'),
   resolve(DIST, 'sw', 'thumbnail-parser.js'));
+copy(resolve(ROOT, 'rhwp-shared', 'sw', 'secure-fetch.js'),
+  resolve(DIST, 'sw', 'secure-fetch.js'));
+copy(resolve(ROOT, 'rhwp-shared', 'sw', 'fetch-grants.js'),
+  resolve(DIST, 'sw', 'fetch-grants.js'));
 // Source wrappers point to the canonical shared modules during development;
 // packaged extensions receive self-contained copies at the same import path.
 copy(resolve(ROOT, 'rhwp-shared', 'security'), resolve(DIST, 'security'), {

@@ -3,7 +3,8 @@ import { resolve, extname, join } from 'path';
 import { readFileSync, readFile } from 'fs';
 import { VitePWA } from 'vite-plugin-pwa';
 
-const pkg = JSON.parse(readFileSync(resolve(__dirname, 'package.json'), 'utf-8'));
+const configDir = import.meta.dirname;
+const pkg = JSON.parse(readFileSync(resolve(configDir, 'package.json'), 'utf-8'));
 
 export default defineConfig({
   define: {
@@ -11,8 +12,8 @@ export default defineConfig({
   },
   resolve: {
     alias: {
-      '@': resolve(__dirname, 'src'),
-      '@wasm': resolve(__dirname, '..', 'pkg'),
+      '@': resolve(configDir, 'src'),
+      '@wasm': resolve(configDir, '..', 'pkg'),
     },
   },
   server: {
@@ -20,7 +21,7 @@ export default defineConfig({
     port: 7700,
     fs: {
       // [Task #741 후속] 외부 file path 그림 영역 영역 samples/ dir 영역 영역 fetch 가능 영역.
-      allow: [__dirname, resolve(__dirname, '..', 'pkg'), resolve(__dirname, '..', 'samples')],
+      allow: [configDir, resolve(configDir, '..', 'pkg'), resolve(configDir, '..', 'samples')],
     },
   },
   plugins: [
@@ -29,7 +30,7 @@ export default defineConfig({
     {
       name: 'serve-samples-dir',
       configureServer(server) {
-        const samplesDir = resolve(__dirname, '..', 'samples');
+        const samplesDir = resolve(configDir, '..', 'samples');
         server.middlewares.use('/samples', (req, res, next) => {
           if (!req.url) return next();
           // URL decode + sanitize (path traversal 차단)

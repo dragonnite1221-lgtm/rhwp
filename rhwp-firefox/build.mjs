@@ -77,6 +77,13 @@ copy(resolve(__dirname, 'sw'), resolve(DIST, 'sw'), {
 });
 copy(resolve(ROOT, 'rhwp-shared', 'sw', 'thumbnail-parser.js'),
   resolve(DIST, 'sw', 'thumbnail-parser.js'));
+copy(resolve(ROOT, 'rhwp-shared', 'sw', 'secure-fetch.js'),
+  resolve(DIST, 'sw', 'secure-fetch.js'));
+copy(resolve(ROOT, 'rhwp-shared', 'sw', 'fetch-grants.js'),
+  resolve(DIST, 'sw', 'fetch-grants.js'));
+copy(resolve(ROOT, 'rhwp-shared', 'security'), resolve(DIST, 'security'), {
+  filter: (src) => !EXCLUDE_FROM_DIST.test(src),
+});
 copy(resolve(__dirname, 'options.html'), resolve(DIST, 'options.html'));
 copy(resolve(__dirname, 'options.js'), resolve(DIST, 'options.js'));
 

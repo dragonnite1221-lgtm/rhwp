@@ -2,33 +2,35 @@ import { defineConfig } from 'vite';
 import { resolve } from 'path';
 import { readFileSync } from 'fs';
 
+const configDir = import.meta.dirname;
+
 // rhwp-studio를 Firefox 확장용으로 빌드
 // 산출물: rhwp-firefox/dist/ → viewer.html + JS/CSS + WASM + 폰트
 
 // rhwp-studio 의 package.json 버전을 __APP_VERSION__ 으로 주입
 // (rhwp-studio/vite.config.ts 와 동일 패턴 — about-dialog 가 ReferenceError 나지 않도록)
 const studioPkg = JSON.parse(
-  readFileSync(resolve(__dirname, '..', 'rhwp-studio', 'package.json'), 'utf-8'),
+  readFileSync(resolve(configDir, '..', 'rhwp-studio', 'package.json'), 'utf-8'),
 );
 
 export default defineConfig({
-  root: resolve(__dirname, '..', 'rhwp-studio'),
+  root: resolve(configDir, '..', 'rhwp-studio'),
   publicDir: false, // public/ 폴더 제외 (samples, images 등 불필요)
   define: {
     __APP_VERSION__: JSON.stringify(studioPkg.version),
   },
   resolve: {
     alias: {
-      '@': resolve(__dirname, '..', 'rhwp-studio', 'src'),
-      '@wasm': resolve(__dirname, '..', 'pkg'),
+      '@': resolve(configDir, '..', 'rhwp-studio', 'src'),
+      '@wasm': resolve(configDir, '..', 'pkg'),
     },
   },
   build: {
-    outDir: resolve(__dirname, 'dist'),
+    outDir: resolve(configDir, 'dist'),
     emptyDir: true,
     rollupOptions: {
       input: {
-        viewer: resolve(__dirname, '..', 'rhwp-studio', 'index.html'),
+        viewer: resolve(configDir, '..', 'rhwp-studio', 'index.html'),
       },
     },
     // WASM inline 방지 — 별도 파일로 유지

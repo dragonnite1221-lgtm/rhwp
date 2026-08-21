@@ -79,6 +79,7 @@
     badge.title = browser.i18n.getMessage('badgeTooltip') || 'rhwp로 열기';
 
     badge.addEventListener('click', (e) => {
+      if (!e.isTrusted) return;
       e.preventDefault();
       e.stopPropagation();
       openHwpViewer(anchor.href, extractFilename(anchor));
@@ -239,7 +240,8 @@
     card.addEventListener('mouseleave', () => {
       hoverTimeout = setTimeout(() => hideHoverCard(), 150);
     });
-    card.addEventListener('click', () => {
+    card.addEventListener('click', (event) => {
+      if (!event.isTrusted) return;
       hideHoverCard();
       browser.runtime.sendMessage({
         type: 'open-hwp',
@@ -260,7 +262,8 @@
 
   function attachHoverEvents(anchor) {
     if (!settings.hoverPreview) return;
-    anchor.addEventListener('mouseenter', () => {
+    anchor.addEventListener('mouseenter', (event) => {
+      if (!event.isTrusted) return;
       clearTimeout(hoverTimeout);
       hoverTimeout = setTimeout(() => showHoverCard(anchor), 250);
     });
@@ -369,7 +372,8 @@
 
   function interceptHwpClick(anchor) {
     if (!settings.autoOpen) return;
-    anchor.addEventListener('click', () => {
+    anchor.addEventListener('click', (event) => {
+      if (!event.isTrusted) return;
       browser.runtime.sendMessage({
         type: 'open-hwp',
         url: anchor.href,

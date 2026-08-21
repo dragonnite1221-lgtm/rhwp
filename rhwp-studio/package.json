@@ -15,12 +15,12 @@
   },
   "devDependencies": {
     "@babel/core": "^7.29.7",
-    "@types/chrome": "^0.1.40",
-    "puppeteer-core": "^24.42.0",
+    "@types/chrome": "^0.1.43",
+    "puppeteer-core": "^25.8.0",
     "typescript": "^6.0.3",
-    "vite": "^8.1.4",
-    "vite-plugin-pwa": "^1.2.0",
-    "workbox-window": "^7.4.0"
+    "vite": "^8.2.2",
+    "vite-plugin-pwa": "^1.3.0",
+    "workbox-window": "^7.4.1"
   },
   "overrides": {
     "serialize-javascript": "7.0.5"

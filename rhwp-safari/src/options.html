@@ -289,7 +289,7 @@
         </div>
         <div class="row">
           <div class="row-left"><div class="row-label">최대 파일 크기</div></div>
-          <div><input type="number" id="maxFileSize" class="num-input" min="1" max="100"> MB</div>
+          <div><input type="number" id="maxFileSize" class="num-input" min="1" max="64"> MB</div>
         </div>
       </div>
     </div>
@@ -299,10 +299,10 @@
       <div class="card">
         <div class="row">
           <div class="row-left">
-            <div class="row-label">개발자 도구</div>
-            <div class="row-desc">rhwpDev + localhost 접근 허용</div>
+            <div class="row-label">네트워크 보안</div>
+            <div class="row-desc">SSRF 방지를 위해 사설·로컬 주소는 예외 없이 차단</div>
           </div>
-          <label class="toggle"><input type="checkbox" id="devMode"><span class="slider"></span></label>
+          <span>사설·로컬 네트워크는 항상 차단됩니다.</span>
         </div>
         <div class="row">
           <div class="row-left"><div class="row-label">보안 로그 기록</div></div>
