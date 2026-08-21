@@ -78,3 +78,9 @@ The fix was re-reviewed as separate store, Chrome adapter, Firefox/Safari,
 Studio/E2E, and documentation lanes; every valid exact-model response was
 `NO_ISSUES`. A second malformed combined-lane response was likewise discarded
 and replaced by the smaller store and Chrome reviews rather than counted.
+
+The server-wide `codex_second_review_gate.py` was also invoked against the
+pre-edit snapshot. It returned `blocked` because its independent fallback model
+provider was unavailable (`fallback_model_unavailable`), not because it emitted
+a code finding. This infrastructure result is kept distinct from the completed
+direct `gemini-3.7-flash` reviews above.

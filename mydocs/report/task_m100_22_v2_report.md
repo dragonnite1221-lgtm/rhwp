@@ -40,6 +40,10 @@
   승인으로 세지 않았다.
 - CodeGraph index를 최종 변경에 맞게 동기화했고 `git diff --check`를
   통과했다.
+- 서버 공통 second-review gate도 사전 snapshot으로 실행했으나 독립 fallback
+  provider가 unavailable 상태라 `blocked`를 반환했다. 코드 finding은
+  없었으며, 이 인프라 결과를 실제 `gemini-3.7-flash` 호출 성공과 분리해
+  기록한다.
 
 ## 알려진 검증 경계
 
@@ -58,6 +62,7 @@
 
 ## 병합 조건
 
-공통 second-review gate, 원격 PR 필수 체크, PR diff 상태를 다시 확인한
-후에만 병합한다. 이 문서는 실제 병합이 완료되기 전에는 병합 완료를
-주장하지 않는다.
+직접 `gemini-3.7-flash` 재검토는 완료됐다. 공통 gate의 provider 장애는
+코드 승인으로 간주하지 않고 위와 같이 남기며, 원격 PR 필수 체크와 PR
+diff 상태를 다시 확인한 후에만 병합한다. 이 문서는 실제 병합이 완료되기
+전에는 병합 완료를 주장하지 않는다.
