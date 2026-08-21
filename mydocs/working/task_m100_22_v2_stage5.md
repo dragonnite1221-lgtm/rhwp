@@ -18,6 +18,11 @@
   implementation.
 - `rhwp-shared/sw/fetch-grants.js` issues exact-URL, five-minute capabilities in
   extension session storage. Viewer fetches require a matching unexpired grant.
+- Fetched bytes cross the background/viewer boundary through an extension-origin
+  IndexedDB record, not a runtime message. Messages carry only a random one-time
+  transfer ID; records expire after two minutes and the pending backlog is capped
+  at two. This avoids Chrome's JSON message serialization corrupting
+  `ArrayBuffer` responses or forcing a large base64/number-array expansion.
 - Firefox no longer queues automatic thumbnail prefetches. Privileged document
   and thumbnail paths require a browser-trusted event, validated extension
   sender/tab/frame metadata, and a same-origin target or the exact GitHub
@@ -36,16 +41,17 @@
 
 ## Verification
 
-- Chrome: 26 security tests passed, production build passed, `npm audit` found
+- Chrome: 27 security tests passed, production build passed, `npm audit` found
   zero vulnerabilities.
-- Firefox: 26 security tests passed, production build passed, `npm audit` found
+- Firefox: 27 security tests passed, production build passed, `npm audit` found
   zero vulnerabilities.
-- Safari: 6 sender/target/grant/signature/manifest/trusted-event tests passed;
+- Safari: 7 sender/target/grant/signature/manifest/trusted-event tests passed;
   shell syntax passed; the production Rolldown command produced a self-contained
   36,816-byte background bundle that loaded under mocked Safari extension APIs.
 - Studio: TypeScript and production build passed, `npm audit` found zero
   vulnerabilities, and the headless-browser postMessage E2E passed forged-origin
-  rejection plus same-origin request/response assertions.
+  rejection, same-origin request/response, exact byte-view preservation,
+  one-time consumption, invalid-ID rejection, and bounded-backlog assertions.
 - Rust: `cargo test` passed the 1,230-test main suite (2 ignored) and every
   subsequently executed integration suite. `cargo clippy --all-targets
   --all-features -- -D warnings` remains red on 84 pre-existing warnings in
@@ -61,9 +67,14 @@ verification boundary and is not represented as completed.
 
 ## Review gate
 
-The full staged diff was split into shared/Chrome, Firefox, Safari,
+The original full staged diff was split into shared/Chrome, Firefox, Safari,
 dependency/configuration/documentation, and generated-lockfile lanes. The exact
 `gemini-3.7-flash` endpoint returned `NO_ISSUES` for all five lanes. Generated
 lockfiles were also independently validated by clean installs already present in
-the worktree, successful builds, and zero-vulnerability npm audits. The shared
-second-review gate runs once more against the complete branch before PR creation.
+the worktree, successful builds, and zero-vulnerability npm audits. A whole-branch
+rerun returned a malformed truncated response for the combined shared/Chrome
+lane; it was rejected as approval and exposed the binary-message boundary above.
+The fix was re-reviewed as separate store, Chrome adapter, Firefox/Safari,
+Studio/E2E, and documentation lanes; every valid exact-model response was
+`NO_ISSUES`. A second malformed combined-lane response was likewise discarded
+and replaced by the smaller store and Chrome reviews rather than counted.

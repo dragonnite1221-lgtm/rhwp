@@ -83,3 +83,9 @@ test('Safari manifest uses a module service worker and HTTP(S)-only host access'
   assert.deepEqual(manifest.host_permissions, ['http://*/*', 'https://*/*']);
   assert.doesNotMatch(JSON.stringify(manifest), /<all_urls>/);
 });
+
+test('Safari fetch responses use the shared one-time binary transfer store', async () => {
+  const source = await readFile(new URL('./background.js', import.meta.url), 'utf8');
+  assert.match(source, /storeDocumentTransfer\(result\.data, result\.contentType\)/);
+  assert.doesNotMatch(source, /return \{ data: result\.data\.buffer/);
+});

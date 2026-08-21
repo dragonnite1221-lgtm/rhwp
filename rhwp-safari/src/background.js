@@ -7,6 +7,7 @@ import { fetchPublicResource } from './sw/secure-fetch.js';
 import { extractThumbnail } from './sw/thumbnail-parser.js';
 import { validatePublicUrl } from './security/url-validator.js';
 import { validateSender } from './security/sender-validator.js';
+import { storeDocumentTransfer } from './sw/document-transfer-store.js';
 
 const DEFAULT_ALLOWED_DOMAINS = ['.go.kr', '.or.kr', '.ac.kr', '.mil.kr', '.korea.kr', '.sc.kr'];
 const MAX_DOCUMENT_BYTES = 64 * 1024 * 1024;
@@ -172,7 +173,8 @@ async function fetchDocument(message) {
       await logSecurity('signature-blocked', message.url, '매직 넘버 불일치');
       return { error: 'HWP 파일이 아닙니다' };
     }
-    return { data: result.data.buffer, contentType: result.contentType };
+    const transferId = await storeDocumentTransfer(result.data, result.contentType);
+    return { transferId, contentType: result.contentType };
   } catch (error) {
     return { error: error.message };
   }

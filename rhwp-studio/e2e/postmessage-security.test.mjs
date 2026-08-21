@@ -51,4 +51,33 @@ runTest('postMessage RPC origin and source boundary', async ({ page }) => {
   }));
   assert(valid.timeout !== true, 'same-origin RPC returned before timeout');
   assert(valid.result === true, `same-origin ready result is true (${valid.result})`);
+
+  const transfer = await page.evaluate(async () => {
+    const store = await import('/src/document-transfer-store.ts');
+    const source = new Uint8Array([99, 1, 2, 3, 88]).subarray(1, 4);
+    const transferId = await store.storeDocumentTransfer(source, 'application/x-hwp');
+    const first = await store.takeDocumentTransfer(transferId);
+    const second = await store.takeDocumentTransfer(transferId);
+    const pending = [];
+    for (const value of [4, 5, 6]) {
+      pending.push(await store.storeDocumentTransfer(new Uint8Array([value]), null));
+    }
+    const cappedOldest = await store.takeDocumentTransfer(pending[0]);
+    const cappedMiddle = await store.takeDocumentTransfer(pending[1]);
+    const cappedNewest = await store.takeDocumentTransfer(pending[2]);
+    return {
+      bytes: first ? Array.from(new Uint8Array(first.data)) : null,
+      contentType: first?.contentType,
+      second,
+      invalid: await store.takeDocumentTransfer('../forged'),
+      capped: [cappedOldest, cappedMiddle, cappedNewest].map(item => (
+        item ? Array.from(new Uint8Array(item.data))[0] : null
+      )),
+    };
+  });
+  assert(JSON.stringify(transfer.bytes) === '[1,2,3]', 'binary transfer preserves exact view bytes');
+  assert(transfer.contentType === 'application/x-hwp', 'binary transfer preserves content type');
+  assert(transfer.second === null, 'binary transfer is one-time');
+  assert(transfer.invalid === null, 'invalid binary transfer IDs fail closed');
+  assert(JSON.stringify(transfer.capped) === '[null,5,6]', 'binary transfer backlog is bounded');
 }, { skipLoadApp: true });

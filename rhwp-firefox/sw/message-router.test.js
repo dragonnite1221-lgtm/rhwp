@@ -1,4 +1,5 @@
 import assert from 'node:assert/strict';
+import { readFile } from 'node:fs/promises';
 import { test } from 'node:test';
 
 let listener;
@@ -50,4 +51,10 @@ test('Firefox router returns a Promise and fails unknown messages closed', async
   const response = listener({ type: 'unknown' }, contentSender);
   assert.equal(typeof response?.then, 'function');
   assert.match((await response).error, /알 수 없는 메시지 유형/);
+});
+
+test('Firefox fetch responses use the shared one-time binary transfer store', async () => {
+  const source = await readFile(new URL('./message-router.js', import.meta.url), 'utf8');
+  assert.match(source, /storeDocumentTransfer\(result\.data, result\.contentType\)/);
+  assert.doesNotMatch(source, /return \{ data: result\.data\.buffer/);
 });

@@ -5,6 +5,7 @@ import { validateFetchGrant } from './fetch-grants.js';
 import { resolveDocumentUrl } from './document-url-resolver.js';
 import { validatePublicUrl } from '../security/url-validator.js';
 import { validateSender } from '../security/sender-validator.js';
+import { storeDocumentTransfer } from './document-transfer-store.js';
 
 const MAX_DOCUMENT_BYTES = 64 * 1024 * 1024;
 
@@ -72,7 +73,8 @@ const messageHandlers = {
         maxBytes: MAX_DOCUMENT_BYTES,
         timeoutMs: 60_000,
       });
-      return { data: result.data.buffer, contentType: result.contentType };
+      const transferId = await storeDocumentTransfer(result.data, result.contentType);
+      return { transferId, contentType: result.contentType };
     } catch (err) {
       return { error: err.message };
     }

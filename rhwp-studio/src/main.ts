@@ -31,6 +31,7 @@ import {
   postRpcResponse,
   trustedRpcChannel,
 } from '@/postmessage-security';
+import { takeDocumentTransfer } from '@/document-transfer-store';
 
 const wasm = new WasmBridge();
 const eventBus = new EventBus();
@@ -639,8 +640,13 @@ async function loadFromUrlParam(): Promise<void> {
         grant: fetchGrant,
       });
       if (result.error) throw new Error(result.error);
-      const data = new Uint8Array(result.data);
-      assertRemoteDocumentBytes(data, result.contentType);
+      if (typeof result.transferId !== 'string') {
+        throw new Error('확장 프로그램이 유효한 문서 전송 ID를 반환하지 않았습니다.');
+      }
+      const transfer = await takeDocumentTransfer(result.transferId);
+      if (!transfer) throw new Error('문서 전송이 만료되었거나 이미 사용되었습니다.');
+      const data = new Uint8Array(transfer.data);
+      assertRemoteDocumentBytes(data, transfer.contentType);
       const docInfo = wasm.loadDocument(data, fileName);
       await initializeDocument(docInfo, `${fileName} — ${docInfo.pageCount}페이지`);
       return;

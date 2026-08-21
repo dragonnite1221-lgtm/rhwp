@@ -15,6 +15,9 @@
    검사하고 malformed 입력에서 닫힌다.
 5. Firefox와 Safari에도 같은 capability 및 public-network 불변식을
    적용하고 자동 prefetch, private/local 우회, 무제한 fetch를 제거했다.
+6. 브라우저 background가 받은 문서 bytes는 JSON 메시지로 보내지 않고
+   extension-origin IndexedDB의 2분·1회용 record로 전달한다. pending record는
+   최대 2개라 중단된 뷰어가 저장소를 무제한 점유하지 못한다.
 
 ## 검증 요약
 
@@ -22,15 +25,19 @@
   SHA-256 검증을 통과했다.
 - Studio production build 및 실제 headless Chrome postMessage E2E를
   통과했다.
-- Chrome 26개, Firefox 26개, Safari 6개 보안 회귀 테스트를 통과했다.
+- Chrome 27개, Firefox 27개, Safari 7개 보안 회귀 테스트를 통과했다.
 - Chrome/Firefox/Studio production build와 세 npm audit가 모두 통과했고
   보고된 취약점은 0개다.
 - 공용 파서는 500개 deterministic malformed corpus와 실제 저장소 HWP/HWPX
   샘플을 모두 검증했다.
 - `cargo test`는 1,230개 main test(2 ignored) 및 모든 후속 integration
   suite를 통과했다.
-- 각 단계와 최종 Stage 5의 다섯 staged-diff lane을 실제
-  `gemini-3.7-flash`로 검토했고 모두 `NO_ISSUES`를 받았다.
+- 각 단계와 Stage 5의 다섯 staged-diff lane을 실제 `gemini-3.7-flash`로
+  검토했다. 전체 브랜치 재검토에서 잘린 응답 하나는 승인으로 폐기했고,
+  그 과정에서 찾은 binary-message 경계를 수정·실브라우저 검증한 뒤
+  store, Chrome, Firefox/Safari, Studio/E2E, 문서 lane으로 재검토해 모든
+  유효 응답에서 `NO_ISSUES`를 확인했다. 재차 잘린 combined-lane 응답도
+  승인으로 세지 않았다.
 - CodeGraph index를 최종 변경에 맞게 동기화했고 `git diff --check`를
   통과했다.
 
