@@ -17,7 +17,10 @@
   streamed actual-byte ceilings. Chrome, Firefox, and Safari package that same
   implementation.
 - `rhwp-shared/sw/fetch-grants.js` issues exact-URL, five-minute capabilities in
-  extension session storage. Viewer fetches require a matching unexpired grant.
+  extension session storage. Safari 15 falls back to local storage with only a
+  SHA-256 URL digest and TTL metadata, so worker suspension does not break the
+  launch and the document URL is not persisted. Viewer fetches still require a
+  matching unexpired grant.
 - Fetched bytes cross the background/viewer boundary through an extension-origin
   IndexedDB record, not a runtime message. Messages carry only a random one-time
   transfer ID; records expire after two minutes and the pending backlog is capped
@@ -33,6 +36,15 @@
   bounded fetch, and thumbnail parser. Its former local/private-network bypass
   was removed; preferences state that private and local destinations are always
   blocked and cap document size at 64 MiB.
+- Safari's iOS overlay asks the validated background sender path to prepare the
+  grant-bearing internal viewer URL instead of constructing an ungranted iframe.
+- Public `@rhwp/editor` embeds use a 256-bit fragment capability bound to the
+  direct parent `WindowProxy` and exact response origin. This preserves arbitrary
+  consumer origins without restoring wildcard RPC trust; the Studio scrubs the
+  capability from its visible location after startup.
+- The workflow policy scans both `.yml` and `.yaml`, detects single-line and
+  multiline network-to-shell pipelines, and runs synthetic bypass tests. CI now
+  executes the browser-extension, Safari, Studio, and npm editor security suites.
 - Safari's build bundles the shared module graph into one background resource,
   preserving the existing Xcode project resource list.
 - Chrome and Firefox use Vite 8.2.2. Studio's direct build dependencies were
@@ -44,17 +56,18 @@
 
 ## Verification
 
-- Chrome: 27 security tests passed, production build passed, `npm audit` found
+- Chrome: 28 security tests passed, production build passed, `npm audit` found
   zero vulnerabilities.
-- Firefox: 27 security tests passed, production build passed, `npm audit` found
+- Firefox: 28 security tests passed, production build passed, `npm audit` found
   zero vulnerabilities.
-- Safari: 7 sender/target/grant/signature/manifest/trusted-event tests passed;
+- Safari: 9 sender/target/grant/signature/manifest/trusted-event tests passed;
   shell syntax passed; the production Rolldown command produced a self-contained
   36,816-byte background bundle that loaded under mocked Safari extension APIs.
 - Studio: TypeScript and production build passed, `npm audit` found zero
   vulnerabilities, and the headless-browser postMessage E2E passed forged-origin
-  rejection, same-origin request/response, exact byte-view preservation,
-  one-time consumption, invalid-ID rejection, and bounded-backlog assertions.
+  rejection, same-origin request/response, a real cross-origin `@rhwp/editor`
+  capability handshake, exact byte-view preservation, one-time consumption,
+  invalid-ID rejection, and bounded-backlog assertions.
 - VS Code extension: production Webpack compile passed and `npm audit` found
   zero vulnerabilities.
 - Rust 1.98: `cargo test` passed the 1,230-test main suite (2 ignored) and every
@@ -89,6 +102,13 @@ The fix was re-reviewed as separate store, Chrome adapter, Firefox/Safari,
 Studio/E2E, and documentation lanes; every valid exact-model response was
 `NO_ISSUES`. A second malformed combined-lane response was likewise discarded
 and replaced by the smaller store and Chrome reviews rather than counted.
+
+The PR review then reported six actionable compatibility/policy gaps: Safari 15
+grant storage, the iOS overlay grant, public iframe consumers, `.yaml` coverage,
+multiline network-to-shell detection, and fragment comparison. All six were
+fixed with regression tests. The extension/Safari, Studio/editor, and workflow
+policy remediation diffs were independently re-reviewed by the exact
+`gemini-3.7-flash` endpoint and each returned `NO_ISSUES`.
 
 The server-wide `codex_second_review_gate.py` was also invoked against the
 pre-edit snapshot. It returned `blocked` because its independent fallback model

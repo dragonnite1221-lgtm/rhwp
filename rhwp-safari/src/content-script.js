@@ -427,7 +427,9 @@
     const isIOS = /iPhone|iPad|iPod/.test(navigator.userAgent);
 
     if (isIOS) {
-      openViewerOverlay(url, filename);
+      openViewerOverlay(url, filename).catch(() => {
+        showToast('문서를 열 수 없습니다', '확장 프로그램의 파일 접근 권한을 다시 확인해 주세요.');
+      });
     } else {
       // macOS: 기존 방식 (새 탭)
       browser.runtime.sendMessage({
@@ -443,7 +445,18 @@
     }
   }
 
-  function openViewerOverlay(url, filename) {
+  async function openViewerOverlay(url, filename) {
+    const prepared = await browser.runtime.sendMessage({
+      type: 'prepare-viewer',
+      url,
+      filename,
+    });
+    if (!prepared?.ok || typeof prepared.viewerUrl !== 'string') {
+      const msg = getBlockedMessage(prepared?.reason || prepared?.error || 'url-blocked');
+      showToast(msg.title, msg.guide);
+      return;
+    }
+
     // 기존 오버레이 제거
     const existing = document.getElementById('rhwp-viewer-overlay');
     if (existing) existing.remove();
@@ -479,14 +492,8 @@
     overlay.appendChild(topBar);
 
     // iframe (확장의 viewer.html 로드)
-    const viewerUrl = browser.runtime.getURL('viewer.html');
-    const params = new URLSearchParams();
-    params.set('url', url);
-    if (filename) params.set('filename', filename);
-    const fullUrl = viewerUrl + '?' + params.toString();
-
     const iframe = document.createElement('iframe');
-    iframe.src = fullUrl;
+    iframe.src = prepared.viewerUrl;
     iframe.style.cssText = `
       flex: 1; border: none; width: 100%;
       background: white;

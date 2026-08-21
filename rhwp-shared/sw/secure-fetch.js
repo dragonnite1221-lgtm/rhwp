@@ -40,6 +40,11 @@ async function assertPublicDestination(url, dnsResolver, signal) {
   const validation = validatePublicUrl(url);
   if (!validation.allowed) throw new Error(validation.reason);
 
+  // URL fragments are client-side identifiers and are never sent on the wire.
+  // Strip them before DNS/fetch/final-URL comparison so an approved fragment
+  // cannot create a false redirect mismatch.
+  validation.parsed.hash = '';
+
   const hostname = validation.parsed.hostname.replace(/^\[|\]$/g, '');
   const addresses = isIpAddressLiteral(hostname)
     ? [hostname]

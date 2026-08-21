@@ -1,4 +1,38 @@
 import { runTest, assert } from './helpers.mjs';
+import { createServer } from 'node:http';
+import { readFile } from 'node:fs/promises';
+
+async function startCrossOriginEditorHost(studioUrl) {
+  const editorSource = await readFile(new URL('../../npm/editor/index.js', import.meta.url), 'utf8');
+  const server = createServer((request, response) => {
+    if (request.url === '/editor.js') {
+      response.writeHead(200, { 'content-type': 'text/javascript; charset=utf-8' });
+      response.end(editorSource);
+      return;
+    }
+    response.writeHead(200, { 'content-type': 'text/html; charset=utf-8' });
+    response.end(`<!doctype html>
+      <div id="editor" style="width:800px;height:600px"></div>
+      <script type="module">
+        import { createEditor } from '/editor.js';
+        try {
+          window.__editor = await createEditor('#editor', { studioUrl: ${JSON.stringify(studioUrl)} });
+          window.__rpcReady = true;
+        } catch (error) {
+          window.__rpcError = error.message || String(error);
+        }
+      </script>`);
+  });
+  await new Promise((resolve, reject) => {
+    server.once('error', reject);
+    server.listen(0, '127.0.0.1', resolve);
+  });
+  const address = server.address();
+  return {
+    url: `http://127.0.0.1:${address.port}`,
+    close: () => new Promise(resolve => server.close(resolve)),
+  };
+}
 
 runTest('postMessage RPC origin and source boundary', async ({ page }) => {
   const studioUrl = process.env.VITE_URL || 'http://127.0.0.1:7700';
@@ -80,4 +114,24 @@ runTest('postMessage RPC origin and source boundary', async ({ page }) => {
   assert(transfer.second === null, 'binary transfer is one-time');
   assert(transfer.invalid === null, 'invalid binary transfer IDs fail closed');
   assert(JSON.stringify(transfer.capped) === '[null,5,6]', 'binary transfer backlog is bounded');
+
+  const parentHost = await startCrossOriginEditorHost(studioUrl);
+  try {
+    await page.goto(parentHost.url, { waitUntil: 'domcontentloaded', timeout: 30000 });
+    await page.waitForFunction(
+      () => window.__rpcReady === true || typeof window.__rpcError === 'string',
+      { timeout: 60000 },
+    );
+    const embedded = await page.evaluate(() => ({
+      ready: window.__rpcReady === true,
+      error: window.__rpcError || null,
+      iframeSrc: document.querySelector('iframe')?.src || '',
+    }));
+    assert(embedded.ready, `cross-origin @rhwp/editor ready handshake succeeds (${embedded.error})`);
+    const token = new URLSearchParams(new URL(embedded.iframeSrc).hash.slice(1))
+      .get('rhwp-rpc-token');
+    assert(/^[0-9a-f]{64}$/.test(token || ''), 'cross-origin iframe carries a 256-bit capability');
+  } finally {
+    await parentHost.close();
+  }
 }, { skipLoadApp: true });

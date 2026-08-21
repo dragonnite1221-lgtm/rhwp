@@ -13,6 +13,12 @@ const DEFAULT_STUDIO_URL = 'https://edwardkim.github.io/rhwp/';
 
 let requestId = 0;
 
+function createRpcToken() {
+  const bytes = new Uint8Array(32);
+  globalThis.crypto.getRandomValues(bytes);
+  return Array.from(bytes, byte => byte.toString(16).padStart(2, '0')).join('');
+}
+
 /**
  * HWP 에디터를 생성하여 지정된 컨테이너에 마운트합니다.
  *
@@ -36,11 +42,18 @@ export async function createEditor(container, options = {}) {
     throw new Error(`Container not found: ${container}`);
   }
 
-  const studioUrl = options.studioUrl || DEFAULT_STUDIO_URL;
+  const studioUrl = new URL(options.studioUrl || DEFAULT_STUDIO_URL, window.location.href);
+  if (studioUrl.protocol !== 'http:' && studioUrl.protocol !== 'https:') {
+    throw new Error(`Unsupported studio URL protocol: ${studioUrl.protocol}`);
+  }
+  const rpcToken = createRpcToken();
+  const fragment = new URLSearchParams(studioUrl.hash.replace(/^#/, ''));
+  fragment.set('rhwp-rpc-token', rpcToken);
+  studioUrl.hash = fragment.toString();
 
   // iframe 생성
   const iframe = document.createElement('iframe');
-  iframe.src = studioUrl;
+  iframe.src = studioUrl.href;
   iframe.style.width = options.width || '100%';
   iframe.style.height = options.height || '100%';
   iframe.style.border = 'none';
@@ -53,7 +66,7 @@ export async function createEditor(container, options = {}) {
   });
 
   // WASM 초기화 대기 (ready 메서드로 확인)
-  const editor = new RhwpEditor(iframe);
+  const editor = new RhwpEditor(iframe, studioUrl.origin, rpcToken);
   await editor._waitReady();
   return editor;
 }
@@ -64,16 +77,21 @@ export async function createEditor(container, options = {}) {
  * iframe 내부의 rhwp-studio와 postMessage로 통신합니다.
  */
 class RhwpEditor {
-  constructor(iframe) {
+  constructor(iframe, studioOrigin, rpcToken) {
     this._iframe = iframe;
+    this._studioOrigin = studioOrigin;
+    this._rpcToken = rpcToken;
     this._pending = new Map();
 
     // 응답 수신 리스너
-    window.addEventListener('message', (e) => {
+    this._messageListener = (e) => {
+      if (e.source !== this._iframe.contentWindow || e.origin !== this._studioOrigin) return;
+      if (e.data?.rpcToken !== this._rpcToken) return;
       if (e.data?.type === 'rhwp-response' && e.data.id != null) {
         const resolver = this._pending.get(e.data.id);
         if (resolver) {
           this._pending.delete(e.data.id);
+          clearTimeout(resolver.timeoutId);
           if (e.data.error) {
             resolver.reject(new Error(e.data.error));
           } else {
@@ -81,7 +99,8 @@ class RhwpEditor {
           }
         }
       }
-    });
+    };
+    window.addEventListener('message', this._messageListener);
   }
 
   /**
@@ -91,18 +110,17 @@ class RhwpEditor {
   _request(method, params = {}) {
     return new Promise((resolve, reject) => {
       const id = ++requestId;
-      this._pending.set(id, { resolve, reject });
-      this._iframe.contentWindow.postMessage(
-        { type: 'rhwp-request', id, method, params },
-        '*'
-      );
-      // 10초 타임아웃
-      setTimeout(() => {
+      const timeoutId = setTimeout(() => {
         if (this._pending.has(id)) {
           this._pending.delete(id);
           reject(new Error(`Request timeout: ${method}`));
         }
       }, 10000);
+      this._pending.set(id, { resolve, reject, timeoutId });
+      this._iframe.contentWindow.postMessage(
+        { type: 'rhwp-request', id, method, params, rpcToken: this._rpcToken },
+        this._studioOrigin
+      );
     });
   }
 
@@ -197,6 +215,11 @@ class RhwpEditor {
    * 에디터를 제거합니다.
    */
   destroy() {
+    window.removeEventListener('message', this._messageListener);
+    for (const { reject, timeoutId } of this._pending.values()) {
+      clearTimeout(timeoutId);
+      reject(new Error('Editor destroyed'));
+    }
     this._iframe.remove();
     this._pending.clear();
   }

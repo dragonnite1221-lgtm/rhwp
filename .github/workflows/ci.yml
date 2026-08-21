@@ -41,6 +41,38 @@ env:
   RUST_TOOLCHAIN: 1.98.0
 
 jobs:
+  web-security:
+    name: Web security boundaries
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.0
+
+      - name: Setup Node.js
+        uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6.0.0
+        with:
+          node-version: '22'
+
+      - name: Install extension test dependencies
+        run: |
+          npm ci --prefix rhwp-chrome
+          npm ci --prefix rhwp-firefox
+
+      - name: Test Chrome and Firefox security boundaries
+        run: |
+          npm test --prefix rhwp-chrome
+          npm test --prefix rhwp-firefox
+
+      - name: Test Safari security boundaries
+        run: node --test rhwp-safari/src/background-security.test.js rhwp-safari/src/content-script-security.test.js
+
+      - name: Test Studio and editor RPC capabilities
+        run: |
+          node --test rhwp-studio/tests/postmessage-security.test.ts
+          npm test --prefix npm/editor
+
   build-and-test:
     name: Build & Test
     runs-on: ubuntu-latest
@@ -95,7 +127,9 @@ jobs:
         run: cargo clippy -- -D warnings
 
       - name: Workflow security policy
-        run: python3 scripts/check_workflow_security.py
+        run: |
+          python3 -m unittest scripts/check_workflow_security_test.py
+          python3 scripts/check_workflow_security.py
 
   wasm-build:
     name: WASM Build

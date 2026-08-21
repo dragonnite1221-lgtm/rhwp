@@ -2,7 +2,7 @@ import assert from 'node:assert/strict';
 import { readFile } from 'node:fs/promises';
 import { test } from 'node:test';
 
-const session = new Map();
+const local = new Map();
 const createdTabs = [];
 let messageListener;
 
@@ -14,16 +14,24 @@ globalThis.browser = {
     onInstalled: { addListener() {} },
   },
   storage: {
-    session: {
-      async set(entries) {
-        for (const [key, value] of Object.entries(entries)) session.set(key, value);
-      },
-      async get(key) { return session.has(key) ? { [key]: session.get(key) } : {}; },
-      async remove(key) { session.delete(key); },
-    },
+    // Safari 15 has no storage.session. The local fallback is TTL-bounded and
+    // survives background worker suspension between grant creation and fetch.
     local: {
-      async get(defaults) { return defaults; },
-      async set() {},
+      async set(entries) {
+        for (const [key, value] of Object.entries(entries)) local.set(key, value);
+      },
+      async get(query) {
+        if (query === null) return Object.fromEntries(local);
+        if (typeof query === 'string') {
+          return local.has(query) ? { [query]: local.get(query) } : {};
+        }
+        const result = { ...(query || {}) };
+        for (const key of Object.keys(result)) {
+          if (local.has(key)) result[key] = local.get(key);
+        }
+        return result;
+      },
+      async remove(key) { local.delete(key); },
     },
   },
   tabs: { async create(options) { createdTabs.push(options); } },
@@ -42,6 +50,7 @@ const {
   validateMessage,
   verifyHwpSignature,
 } = await import('./background.js');
+const { validateFetchGrant } = await import('./sw/fetch-grants.js');
 
 const sender = {
   id: 'trusted',
@@ -64,7 +73,25 @@ test('Safari viewer grants only public canonical URLs', async () => {
   assert.equal((await openViewer({ url: 'https://example.com/a.hwp', explicit: true })).ok, true);
   const opened = new URL(createdTabs.at(-1).url);
   assert.equal(opened.searchParams.get('url'), 'https://example.com/a.hwp');
-  assert.ok(opened.searchParams.get('grant'));
+  const token = opened.searchParams.get('grant');
+  assert.ok(token);
+  const stored = local.get(`fetch-grant:${token}`);
+  assert.match(stored.urlDigest, /^[0-9a-f]{64}$/);
+  assert.equal('url' in stored, false);
+  assert.equal(await validateFetchGrant(token, 'https://example.com/a.hwp'), true);
+});
+
+test('Safari iOS overlay preparation returns a grant-bearing internal viewer URL', async () => {
+  const result = await messageListener({
+    type: 'prepare-viewer',
+    url: 'https://example.com/overlay.hwp',
+    filename: 'overlay.hwp',
+  }, sender);
+  assert.equal(result.ok, true);
+  const prepared = new URL(result.viewerUrl);
+  assert.equal(prepared.protocol, 'safari-web-extension:');
+  assert.equal(prepared.searchParams.get('url'), 'https://example.com/overlay.hwp');
+  assert.ok(prepared.searchParams.get('grant'));
 });
 
 test('Safari HWP/HWPX signatures and Promise message replies are strict', async () => {

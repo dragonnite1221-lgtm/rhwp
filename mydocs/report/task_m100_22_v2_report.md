@@ -18,6 +18,12 @@
 6. 브라우저 background가 받은 문서 bytes는 JSON 메시지로 보내지 않고
    extension-origin IndexedDB의 2분·1회용 record로 전달한다. pending record는
    최대 2개라 중단된 뷰어가 저장소를 무제한 점유하지 못한다.
+7. Safari 15에서는 session storage 대신 URL 원문을 남기지 않는 SHA-256
+   digest+TTL local grant fallback을 사용하고, iOS overlay도 background가
+   발급한 grant-bearing viewer URL만 사용한다.
+8. 공개 `@rhwp/editor` iframe은 256-bit fragment capability, direct parent
+   `WindowProxy`, 정확한 응답 origin을 함께 인증해 임의 소비자 origin 호환성과
+   RPC 경계를 동시에 보존한다.
 
 ## 검증 요약
 
@@ -25,7 +31,7 @@
   SHA-256 검증을 통과했다.
 - Studio production build 및 실제 headless Chrome postMessage E2E를
   통과했다.
-- Chrome 27개, Firefox 27개, Safari 7개 보안 회귀 테스트를 통과했다.
+- Chrome 28개, Firefox 28개, Safari 9개 보안 회귀 테스트를 통과했다.
 - Chrome/Firefox/Studio production build와 VS Code extension production
   compile이 통과했다. 네 npm audit 모두 통과했고 보고된 취약점은 0개다.
 - 공용 파서는 500개 deterministic malformed corpus와 실제 저장소 HWP/HWPX
@@ -40,6 +46,13 @@
   store, Chrome, Firefox/Safari, Studio/E2E, 문서 lane으로 재검토해 모든
   유효 응답에서 `NO_ISSUES`를 확인했다. 재차 잘린 combined-lane 응답도
   승인으로 세지 않았다.
+- 원격 PR 리뷰의 6개 지적(Safari 15 저장소, iOS overlay grant, 공개 iframe
+  호환성, `.yaml` 누락, multiline pipe 우회, fragment 오탐)을 모두 테스트와
+  함께 수정했다. extension/Safari, Studio/editor, workflow policy 세 lane을
+  `gemini-3.7-flash`로 다시 검토해 각각 `NO_ISSUES`를 확인했다.
+- 실제 headless Chrome에서 서로 다른 origin의 소비자 페이지가 기본
+  `@rhwp/editor`로 Studio capability handshake를 완료했다. CI에도 Web security
+  boundary job을 추가해 이 계층의 단위 회귀를 상시 실행한다.
 - CodeGraph index를 최종 변경에 맞게 동기화했고 `git diff --check`를
   통과했다.
 - 서버 공통 second-review gate도 사전 snapshot으로 실행했으나 독립 fallback

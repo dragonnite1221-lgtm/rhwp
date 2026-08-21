@@ -61,6 +61,7 @@ export function validateSender(messageType, sender) {
       return { allowed: true, reason: '내부 페이지 확인' };
 
     case 'open-hwp':
+    case 'prepare-viewer':
     case 'extract-thumbnail':
       // content script만 허용
       if (!isContentScript(sender)) {

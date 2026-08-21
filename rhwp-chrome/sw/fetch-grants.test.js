@@ -37,6 +37,12 @@ test('missing and expired grants fail closed', async () => {
   values.set(key, { ...values.get(key), expiresAt: Date.now() - 1 });
   assert.equal(await validateFetchGrant(token, 'https://example.com/expired.hwp'), false);
   assert.equal(values.has(key), false);
+
+  const corrupt = await createFetchGrant('https://example.com/corrupt.hwp');
+  const [corruptKey] = [...values.keys()].filter(item => item.endsWith(corrupt));
+  values.set(corruptKey, { ...values.get(corruptKey), expiresAt: undefined });
+  assert.equal(await validateFetchGrant(corrupt, 'https://example.com/corrupt.hwp'), false);
+  assert.equal(values.has(corruptKey), false);
 });
 
 test('viewer URL carries a grant bound to the resolved document URL', async () => {

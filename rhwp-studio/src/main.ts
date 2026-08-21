@@ -29,6 +29,7 @@ import { initRhwpDev } from '@/core/rhwp-dev';
 import {
   buildAllowedRpcOrigins,
   postRpcResponse,
+  readRpcToken,
   trustedRpcChannel,
 } from '@/postmessage-security';
 import { takeDocumentTransfer } from '@/document-transfer-store';
@@ -691,13 +692,21 @@ const allowedRpcOrigins = buildAllowedRpcOrigins(
   import.meta.env.VITE_RHWP_ALLOWED_PARENT_ORIGINS,
   window.location.origin,
 );
+const rpcToken = readRpcToken(window.location.hash);
+if (rpcToken) {
+  window.history.replaceState(
+    window.history.state,
+    '',
+    `${window.location.pathname}${window.location.search}`,
+  );
+}
 
 // ── iframe 연동 API (postMessage) ──
 // 부모 페이지에서 postMessage로 에디터를 제어할 수 있다.
 // 요청: { type: 'rhwp-request', id, method, params }
 // 응답: { type: 'rhwp-response', id, result?, error? }
 window.addEventListener('message', async (e) => {
-  const channel = trustedRpcChannel(e, window, allowedRpcOrigins);
+  const channel = trustedRpcChannel(e, window, allowedRpcOrigins, rpcToken);
   if (!channel) return;
 
   const msg = e.data;

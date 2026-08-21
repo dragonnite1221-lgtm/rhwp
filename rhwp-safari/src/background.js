@@ -107,7 +107,7 @@ async function logSecurity(type, url, reason) {
   } catch { /* logging must not affect policy */ }
 }
 
-async function openViewer(options = {}) {
+async function prepareViewer(options = {}) {
   const viewerBase = browser.runtime.getURL('viewer.html');
   const params = new URLSearchParams();
   if (options.url) {
@@ -134,7 +134,13 @@ async function openViewer(options = {}) {
   }
   if (options.filename) params.set('filename', sanitizeFilename(options.filename));
   const query = params.toString();
-  await browser.tabs.create({ url: query ? `${viewerBase}?${query}` : viewerBase });
+  return { ok: true, viewerUrl: query ? `${viewerBase}?${query}` : viewerBase };
+}
+
+async function openViewer(options = {}) {
+  const prepared = await prepareViewer(options);
+  if (!prepared.ok) return prepared;
+  await browser.tabs.create({ url: prepared.viewerUrl });
   return { ok: true };
 }
 
@@ -206,6 +212,11 @@ const messageHandlers = {
     if (!validation.allowed) return { error: validation.reason };
     return openViewer({ url: message.url, filename: message.filename, explicit: true });
   },
+  'prepare-viewer': async (message, sender) => {
+    const validation = validateContentTarget(message.url, sender.url);
+    if (!validation.allowed) return { error: validation.reason };
+    return prepareViewer({ url: message.url, filename: message.filename, explicit: true });
+  },
   'fetch-file': fetchDocument,
   'extract-thumbnail': async (message, sender) => {
     const validation = validateContentTarget(message.url, sender.url);
@@ -270,4 +281,4 @@ browser.action.onClicked.addListener(() => {
   openViewer().catch(error => console.error('[rhwp] 뷰어 탭 생성 실패:', error));
 });
 
-export { openViewer, validateContentTarget, validateMessage, verifyHwpSignature };
+export { openViewer, prepareViewer, validateContentTarget, validateMessage, verifyHwpSignature };

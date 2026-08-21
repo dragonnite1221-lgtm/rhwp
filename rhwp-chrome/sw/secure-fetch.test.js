@@ -80,6 +80,22 @@ test('returns bounded bytes for an approved public response', async () => {
   assert.equal(result.finalUrl, 'https://example.com/a.hwp');
 });
 
+test('strips URL fragments before fetch and final-response comparison', async () => {
+  let fetchedUrl;
+  const result = await fetchPublicResource('https://example.com/a.hwp#section-2', {
+    maxBytes: 16,
+    dnsResolver: publicDns,
+    fetchImpl: async (url) => {
+      fetchedUrl = url;
+      return new Response(new Uint8Array([4]), {
+        headers: { 'content-type': 'application/octet-stream' },
+      });
+    },
+  });
+  assert.equal(fetchedUrl, 'https://example.com/a.hwp');
+  assert.equal(result.finalUrl, 'https://example.com/a.hwp');
+});
+
 test('public IP literals are classified locally without a DNS query', async () => {
   let dnsCalls = 0;
   const result = await fetchPublicResource('https://93.184.216.34/a.hwp', {

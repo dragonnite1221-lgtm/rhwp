@@ -28,6 +28,7 @@ test('privileged fetch is restricted to the extension origin', () => {
 
 test('content-script actions require extension id, tab, frame, and web URL', () => {
   assert.equal(validateSender('open-hwp', contentSender).allowed, true);
+  assert.equal(validateSender('prepare-viewer', contentSender).allowed, true);
   assert.equal(validateSender('extract-thumbnail', contentSender).allowed, true);
   assert.equal(validateSender('open-hwp', { ...contentSender, id: 'attacker' }).allowed, false);
   assert.equal(validateSender('open-hwp', { ...contentSender, frameId: undefined }).allowed, false);
