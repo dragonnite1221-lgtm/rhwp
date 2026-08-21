@@ -86,7 +86,7 @@ jobs:
           npm test --prefix rhwp-firefox
 
       - name: Test Safari security boundaries
-        run: node --test rhwp-safari/src/background-security.test.js rhwp-safari/src/content-script-security.test.js
+        run: node --test rhwp-shared/security/random-uuid.test.js rhwp-safari/src/background-security.test.js rhwp-safari/src/content-script-security.test.js
 
       - name: Test Studio and editor RPC capabilities
         run: |

@@ -44,8 +44,19 @@ export function isNonPublicIpAddress(address) {
   if (typeof address !== 'string' || !address) return true;
   const value = address.toLowerCase().replace(/^\[|\]$/g, '');
   if (value.includes(':')) {
-    if (value.startsWith('::ffff:')) {
-      return isNonPublicIpAddress(value.slice('::ffff:'.length));
+    const mapped = value.match(/^(?:::ffff:|0:0:0:0:0:ffff:)(.+)$/);
+    if (mapped) {
+      if (mapped[1].includes('.')) return isNonPublicIpAddress(mapped[1]);
+      const words = mapped[1].split(':');
+      if (words.length !== 2 || words.some(word => !/^[0-9a-f]{1,4}$/.test(word))) return true;
+      const high = Number.parseInt(words[0], 16);
+      const low = Number.parseInt(words[1], 16);
+      return isNonPublicIpAddress([
+        high >>> 8,
+        high & 0xff,
+        low >>> 8,
+        low & 0xff,
+      ].join('.'));
     }
     if (value === '::' || value === '::1') return true;
     if (/^(?:fc|fd|fe[89ab]|ff)/.test(value)) return true;
@@ -219,6 +230,20 @@ export function validatePublicUrl(urlString) {
     return { allowed: false, reason: `비공개 또는 예약 호스트 차단: ${parsed.hostname}` };
   }
   return { allowed: true, reason: '공개 HTTP(S) URL', parsed };
+}
+
+/**
+ * Privileged extension fetches require HTTPS. A public DNS answer can rebind
+ * between validation and browser connection; TLS hostname verification keeps
+ * the browser from sending the HTTP request to an unrelated private service.
+ */
+export function validatePublicHttpsUrl(urlString) {
+  const result = validatePublicUrl(urlString);
+  if (!result.allowed) return result;
+  if (result.parsed.protocol !== 'https:') {
+    return { allowed: false, reason: '권한 있는 네트워크 요청은 HTTPS만 허용' };
+  }
+  return result;
 }
 
 /** Require every DNS answer to be a public, globally routable address. */

@@ -1,3 +1,5 @@
+import { secureRandomUuid } from '../security/random-uuid.js';
+
 const DB_NAME = 'rhwp-document-transfers';
 const DB_VERSION = 2;
 const STORE_NAME = 'transfers';
@@ -77,7 +79,7 @@ function planTransferAdmission(
 }
 
 export async function storeDocumentTransfer(data, contentType = null) {
-  const id = crypto.randomUUID();
+  const id = secureRandomUuid();
   const transferData = exactArrayBuffer(data);
   const database = await openTransferDatabase();
   try {

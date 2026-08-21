@@ -1,3 +1,6 @@
+import { secureRandomUuid } from '../security/random-uuid.js';
+import { validatePublicHttpsUrl } from '../security/url-validator.js';
+
 const GRANT_PREFIX = 'fetch-grant:';
 const GRANT_TTL_MS = 5 * 60 * 1000;
 const GRANT_RENEWAL_TTL_MS = 7 * 24 * 60 * 60 * 1000;
@@ -36,8 +39,10 @@ async function pruneExpiredGrants(storage, now) {
 }
 
 export async function createFetchGrant(url) {
-  const canonicalUrl = new URL(url).href;
-  const token = crypto.randomUUID();
+  const validation = validatePublicHttpsUrl(url);
+  if (!validation.allowed) throw new Error(validation.reason);
+  const canonicalUrl = validation.parsed.href;
+  const token = secureRandomUuid();
   const storage = grantStorage();
   const now = Date.now();
   await pruneExpiredGrants(storage, now);

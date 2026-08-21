@@ -153,10 +153,6 @@ async function fetchDocument(message) {
   if (!await validateFetchGrant(message.grant, message.url)) {
     return { error: '만료되었거나 일치하지 않는 파일 접근 권한' };
   }
-  const { allowHttp } = await browser.storage.local.get({ allowHttp: true });
-  if (!allowHttp && new URL(message.url).protocol === 'http:') {
-    return { error: 'HTTP 차단 (설정에서 비허용)' };
-  }
   try {
     const result = await fetchPublicResource(message.url, {
       maxBytes: Math.min(MAX_DOCUMENT_BYTES, await documentByteLimit()),
@@ -219,8 +215,6 @@ const messageHandlers = {
     autoOpen: true,
     showBadges: true,
     hoverPreview: true,
-    allowHttp: true,
-    httpWarning: true,
     allowedDomains: DEFAULT_ALLOWED_DOMAINS,
     allSitesEnabled: false,
   }),
@@ -259,8 +253,6 @@ browser.runtime.onInstalled.addListener((details) => {
       autoOpen: true,
       showBadges: true,
       hoverPreview: true,
-      allowHttp: true,
-      httpWarning: true,
       securityLog: false,
       allowedDomains: DEFAULT_ALLOWED_DOMAINS,
       allSitesEnabled: false,

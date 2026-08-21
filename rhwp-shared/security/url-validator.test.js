@@ -3,6 +3,7 @@ import assert from 'node:assert/strict';
 
 import {
   isNonPublicIpAddress,
+  validatePublicHttpsUrl,
   validatePublicUrl,
   validateResolvedAddresses,
 } from './url-validator.js';
@@ -30,6 +31,11 @@ test('accepts syntactically public HTTP(S) URLs', () => {
   assert.equal(validatePublicUrl('http://203.0.114.10/document.hwp').allowed, true);
 });
 
+test('privileged fetch validation requires HTTPS', () => {
+  assert.equal(validatePublicHttpsUrl('https://example.com/document.hwp').allowed, true);
+  assert.equal(validatePublicHttpsUrl('http://93.184.216.34/document.hwp').allowed, false);
+});
+
 test('DNS answers fail closed if any address is non-public', () => {
   assert.equal(validateResolvedAddresses([]).allowed, false);
   assert.equal(validateResolvedAddresses(['not-an-address']).allowed, false);
@@ -47,8 +53,13 @@ test('IP classifier covers carrier, documentation, and mapped ranges', () => {
     '203.0.113.1',
     '224.0.0.1',
     '::ffff:127.0.0.1',
+    '::ffff:7f00:1',
+    '0:0:0:0:0:ffff:7f00:1',
     '2001:db8::1',
   ]) {
     assert.equal(isNonPublicIpAddress(address), true, address);
   }
+  assert.equal(isNonPublicIpAddress('::ffff:5db8:d822'), false);
+  assert.equal(isNonPublicIpAddress('0:0:0:0:0:ffff:5db8:d822'), false);
+  assert.equal(validateResolvedAddresses(['::ffff:5db8:d822']).allowed, true);
 });

@@ -19,6 +19,12 @@ test('rejects literal and DNS-resolved private hosts before fetch', async () => 
     /차단/,
   );
   await assert.rejects(
+    fetchPublicResource('http://93.184.216.34/a.hwp', {
+      fetchImpl, dnsResolver: publicDns, connectedAddressVerifier: publicConnection,
+    }),
+    /HTTPS만 허용/,
+  );
+  await assert.rejects(
     fetchPublicResource('https://example.com/a.hwp', {
       fetchImpl,
       dnsResolver: async () => ['169.254.169.254'],

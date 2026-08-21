@@ -46,7 +46,8 @@ cp "$SRC/options.js" "$DIST/options.js"
 rm -rf "$DIST/sw" "$DIST/security"
 rm -f "$DIST/dev-tools-inject.js"
 # viewer.html에서 dev-tools-inject.js 참조 제거
-sed -i '' '/<script src="\/dev-tools-inject.js"><\/script>/d' "$DIST/viewer.html"
+sed -i.bak '/<script src="\/dev-tools-inject.js"><\/script>/d' "$DIST/viewer.html"
+rm -f "$DIST/viewer.html.bak"
 # Safari 호환: dev-tools-inject.js 참조만 제거
 # viewer.html의 type="module", crossorigin, 절대 경로는 원본 유지
 

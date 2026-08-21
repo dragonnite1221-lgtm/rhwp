@@ -1,6 +1,6 @@
 import {
   isIpAddressLiteral,
-  validatePublicUrl,
+  validatePublicHttpsUrl,
   validateResolvedAddresses,
 } from '../security/url-validator.js';
 
@@ -54,7 +54,7 @@ async function defaultDnsResolver(hostname, signal) {
 }
 
 async function assertPublicDestination(url, dnsResolver, signal) {
-  const validation = validatePublicUrl(url);
+  const validation = validatePublicHttpsUrl(url);
   if (!validation.allowed) throw new Error(validation.reason);
 
   // URL fragments are client-side identifiers and are never sent on the wire.
@@ -170,7 +170,7 @@ async function readBoundedBody(response, maxBytes) {
 }
 
 /**
- * Fetch a public HTTP(S) resource with DNS, redirect, timeout, and byte limits.
+ * Fetch a public HTTPS resource with DNS, redirect, timeout, and byte limits.
  * Redirects are rejected because browser manual redirects expose neither the
  * status nor Location header needed to validate the next destination safely.
  */
