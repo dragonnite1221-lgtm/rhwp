@@ -51,95 +51,154 @@ h1 { color: #333; }
 const pasteArea = document.getElementById('paste-area');
 const results = document.getElementById('results');
 const btnRead = document.getElementById('btn-read');
+const activeObjectUrls = new Set();
+
+function resetResults() {
+    for (const url of activeObjectUrls) URL.revokeObjectURL(url);
+    activeObjectUrls.clear();
+    results.replaceChildren();
+}
+
+function appendText(parent, tagName, text, className) {
+    const element = document.createElement(tagName);
+    if (className) element.className = className;
+    element.textContent = text;
+    parent.append(element);
+    return element;
+}
+
+function appendFormatBox(parent, text) {
+    const box = document.createElement('div');
+    box.className = 'format-box';
+    const pre = document.createElement('pre');
+    pre.textContent = text;
+    box.append(pre);
+    parent.append(box);
+}
+
+function appendResult(parent, type, detail) {
+    const result = document.createElement('div');
+    result.className = 'result';
+    const badge = document.createElement('span');
+    badge.className = 'type-badge';
+    badge.textContent = type;
+    result.append(badge, document.createTextNode(` (${detail})`));
+    parent.append(result);
+    return result;
+}
+
+function appendError(parent, message) {
+    const error = appendText(parent, 'p', message);
+    error.style.color = 'red';
+}
+
+function errorMessage(error) {
+    return error instanceof Error ? error.message : String(error);
+}
+
+function appendHtmlInspection(parent, data) {
+    appendText(parent, 'h2', 'HTML 렌더링 결과');
+    const rendered = document.createElement('div');
+    rendered.className = 'rendered';
+    const frame = document.createElement('iframe');
+    frame.setAttribute('sandbox', '');
+    frame.referrerPolicy = 'no-referrer';
+    frame.srcdoc = data;
+    frame.style.cssText = 'width:100%;height:300px;border:1px solid #ccc;';
+    rendered.append(frame);
+    parent.append(rendered);
+
+    const hasTable = /<table[\s>]/i.test(data);
+    const hasImg = /<img[\s>]/i.test(data);
+    const generator = data.match(/name=["']?Generator["']?\s+content=["']([^"']+)/i);
+    const sourceApp = data.match(/SourceApp[^"]*"([^"]+)"/i);
+    const hwpPatterns = [
+        [/hwp/i, 'hwp 문자열'],
+        [/한[글컴]/i, '한글/한컴 문자열'],
+        [/Hancom/i, 'Hancom 문자열'],
+        [/mso-/i, 'MSO 스타일 (MS Office)'],
+        [/class="xl/i, 'Excel 클래스'],
+        [/StartFragment/i, 'StartFragment 마커'],
+        [/EndFragment/i, 'EndFragment 마커'],
+    ];
+    const detectedPatterns = hwpPatterns
+        .filter(([pattern]) => pattern.test(data))
+        .map(([, description]) => `  [O] ${description}`);
+    const inspection = [
+        `표(table) 포함: ${hasTable ? 'YES' : 'NO'}`,
+        `이미지(img) 포함: ${hasImg ? 'YES' : 'NO'}`,
+        `Generator 메타: ${generator ? generator[1] : '없음'}`,
+        `SourceApp: ${sourceApp ? sourceApp[1] : '없음'}`,
+        '',
+        '--- 출처 패턴 ---',
+        ...detectedPatterns,
+    ].join('\n');
+    appendText(parent, 'h2', '감지 결과');
+    appendFormatBox(parent, inspection);
+}
 
 // Ctrl+V 이벤트로 클립보드 데이터 캡처
 pasteArea.addEventListener('paste', (e) => {
     e.preventDefault();
     const dt = e.clipboardData;
     console.dir(dt);
-    if (!dt) { results.innerHTML = '<p>clipboardData 없음</p>'; return; }
+    resetResults();
+    if (!dt) {
+        appendText(results, 'p', 'clipboardData 없음');
+        return;
+    }
 
-    let html = '';
-    html += '<h2>ClipboardEvent.clipboardData</h2>';
-    html += `<p>사용 가능한 타입: <b>${[...dt.types].join(', ')}</b></p>`;
+    appendText(results, 'h2', 'ClipboardEvent.clipboardData');
+    const availableTypes = document.createElement('p');
+    availableTypes.append('사용 가능한 타입: ');
+    const typeList = document.createElement('b');
+    typeList.textContent = [...dt.types].join(', ');
+    availableTypes.append(typeList);
+    results.append(availableTypes);
 
     for (const type of dt.types) {
         const data = dt.getData(type);
-        html += `<div class="result">`;
-        html += `<span class="type-badge">${type}</span> (${data.length} chars)`;
-        html += `<div class="format-box"><pre>${escapeHtml(data)}</pre></div>`;
+        const result = appendResult(results, type, `${data.length} chars`);
+        appendFormatBox(result, data);
 
         if (type === 'text/html') {
-            html += `<h2>HTML 렌더링 결과</h2>`;
-            html += `<div class="rendered"><iframe sandbox srcdoc="${escapeHtml(data)}" style="width:100%;height:300px;border:1px solid #ccc;"></iframe></div>`;
-
-            // 표 감지
-            const hasTable = /<table[\s>]/i.test(data);
-            const hasImg = /<img[\s>]/i.test(data);
-            const generator = data.match(/name=["']?Generator["']?\s+content=["']([^"']+)/i);
-            const sourceApp = data.match(/SourceApp[^"]*"([^"]+)"/i);
-
-            html += `<h2>감지 결과</h2>`;
-            html += `<div class="format-box">`;
-            html += `<pre>`;
-            html += `표(table) 포함: ${hasTable ? 'YES' : 'NO'}\n`;
-            html += `이미지(img) 포함: ${hasImg ? 'YES' : 'NO'}\n`;
-            html += `Generator 메타: ${generator ? generator[1] : '없음'}\n`;
-            html += `SourceApp: ${sourceApp ? sourceApp[1] : '없음'}\n`;
-
-            // HWP 특징 패턴 확인
-            const hwpPatterns = [
-                [/hwp/i, 'hwp 문자열'],
-                [/한[글컴]/i, '한글/한컴 문자열'],
-                [/Hancom/i, 'Hancom 문자열'],
-                [/mso-/i, 'MSO 스타일 (MS Office)'],
-                [/class="xl/i, 'Excel 클래스'],
-                [/StartFragment/i, 'StartFragment 마커'],
-                [/EndFragment/i, 'EndFragment 마커'],
-            ];
-            html += `\n--- 출처 패턴 ---\n`;
-            for (const [pat, desc] of hwpPatterns) {
-                if (pat.test(data)) {
-                    html += `  [O] ${desc}\n`;
-                }
-            }
-            html += `</pre></div>`;
+            appendHtmlInspection(result, data);
         }
-        html += `</div>`;
     }
-
-    results.innerHTML = html;
 });
 
 // Clipboard API로 직접 읽기
 btnRead.addEventListener('click', async () => {
+    resetResults();
     try {
         const items = await navigator.clipboard.read();
-        let html = '<h2>Clipboard API 결과</h2>';
-        html += `<p>ClipboardItem 개수: ${items.length}</p>`;
+        appendText(results, 'h2', 'Clipboard API 결과');
+        appendText(results, 'p', `ClipboardItem 개수: ${items.length}`);
 
         for (let i = 0; i < items.length; i++) {
             const item = items[i];
-            html += `<p>Item[${i}] 타입: <b>${item.types.join(', ')}</b></p>`;
+            appendText(results, 'p', `Item[${i}] 타입: ${item.types.join(', ')}`);
 
             for (const type of item.types) {
                 try {
                     const blob = await item.getType(type);
                     if (type.startsWith('text/')) {
                         const text = await blob.text();
-                        html += `<div class="result">`;
-                        html += `<span class="type-badge">${type}</span> (${text.length} chars, blob size: ${blob.size})`;
-                        html += `<div class="format-box"><pre>${escapeHtml(text)}</pre></div>`;
-                        html += `</div>`;
+                        const result = appendResult(results, type, `${text.length} chars, blob size: ${blob.size}`);
+                        appendFormatBox(result, text);
                     } else if (type.startsWith('image/')) {
                         const url = URL.createObjectURL(blob);
-                        html += `<div class="result">`;
-                        html += `<span class="type-badge">${type}</span> (blob size: ${blob.size})`;
-                        html += `<div class="rendered"><img src="${url}" style="max-width:100%"/></div>`;
-                        html += `</div>`;
+                        activeObjectUrls.add(url);
+                        const result = appendResult(results, type, `blob size: ${blob.size}`);
+                        const rendered = document.createElement('div');
+                        rendered.className = 'rendered';
+                        const image = document.createElement('img');
+                        image.src = url;
+                        image.style.maxWidth = '100%';
+                        rendered.append(image);
+                        result.append(rendered);
                     } else {
-                        html += `<div class="result">`;
-                        html += `<span class="type-badge">${type}</span> (blob size: ${blob.size})`;
+                        const result = appendResult(results, type, `blob size: ${blob.size}`);
                         // 바이너리 hexdump (처음 200바이트)
                         const arr = new Uint8Array(await blob.arrayBuffer());
                         const hexLines = [];
@@ -150,23 +209,17 @@ btnRead.addEventListener('click', async () => {
                                 .map(b => b >= 32 && b < 127 ? String.fromCharCode(b) : '.').join('');
                             hexLines.push(`${j.toString(16).padStart(4, '0')}  ${hex.padEnd(48)}  ${ascii}`);
                         }
-                        html += `<div class="format-box"><pre>${hexLines.join('\n')}</pre></div>`;
-                        html += `</div>`;
+                        appendFormatBox(result, hexLines.join('\n'));
                     }
                 } catch (err) {
-                    html += `<p style="color:red">${type} 읽기 실패: ${err.message}</p>`;
+                    appendError(results, `${type} 읽기 실패: ${errorMessage(err)}`);
                 }
             }
         }
-        results.innerHTML = html;
     } catch (err) {
-        results.innerHTML = `<p style="color:red">Clipboard API 오류: ${err.message}</p>`;
+        appendError(results, `Clipboard API 오류: ${errorMessage(err)}`);
     }
 });
-
-function escapeHtml(str) {
-    return str.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
-}
 </script>
 </body>
 </html>
