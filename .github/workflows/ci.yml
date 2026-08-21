@@ -57,7 +57,7 @@ jobs:
           toolchain: ${{ env.RUST_MSRV }}
 
       - name: Check declared MSRV
-        run: cargo check --locked
+        run: cargo "+${RUST_MSRV}" check --locked
 
   web-security:
     name: Web security boundaries

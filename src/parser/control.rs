@@ -385,7 +385,6 @@ fn parse_cell(records: &[Record]) -> Cell {
 
 /// 셀의 raw_list_extra에서 필드 이름을 추출한다.
 /// 구조: raw_list_extra[14..16] = name_len (u16), [16..16+name_len*2] = UTF-16LE 문자열
-#[allow(clippy::chunks_exact_to_as_chunks)] // Keep compatibility with the declared MSRV.
 fn parse_cell_field_name(extra: &[u8]) -> Option<String> {
     if extra.len() < 18 {
         return None;
@@ -395,8 +394,8 @@ fn parse_cell_field_name(extra: &[u8]) -> Option<String> {
         return None;
     }
     let wchars: Vec<u16> = extra[17..17 + name_len * 2]
-        .chunks_exact(2)
-        .map(|c| u16::from_le_bytes([c[0], c[1]]))
+        .as_chunks::<2>().0.iter()
+        .map(|c| u16::from_le_bytes(*c))
         .collect();
     let name = String::from_utf16_lossy(&wchars);
     if name.is_empty() { None } else { Some(name) }
@@ -842,10 +841,9 @@ fn parse_form_control(ctrl_data: &[u8], child_records: &[Record]) -> Control {
 }
 
 /// UTF-16LE 바이트를 String으로 디코딩
-#[allow(clippy::chunks_exact_to_as_chunks)] // Keep compatibility with the declared MSRV.
 fn decode_utf16le(data: &[u8]) -> String {
-    let u16s: Vec<u16> = data.chunks_exact(2)
-        .map(|c| u16::from_le_bytes([c[0], c[1]]))
+    let u16s: Vec<u16> = data.as_chunks::<2>().0.iter()
+        .map(|c| u16::from_le_bytes(*c))
         .collect();
     String::from_utf16_lossy(&u16s)
 }
