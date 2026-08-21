@@ -59,13 +59,14 @@ const sender = {
   frameId: 0,
 };
 
-test('Safari sender and target checks fail forged and cross-origin messages closed', () => {
+test('Safari rejects forged senders but accepts user-selected public targets', () => {
   assert.equal(validateMessage({ type: 'open-hwp', url: 'https://example.com/a.hwp' }, {
     ...sender,
     id: 'forged',
   }).allowed, false);
   assert.equal(validateContentTarget('https://example.com/a.hwp', sender.url).allowed, true);
-  assert.equal(validateContentTarget('https://attacker.test/a.hwp', sender.url).allowed, false);
+  assert.equal(validateContentTarget('https://cdn.example.net/a.hwp', sender.url).allowed, true);
+  assert.equal(validateContentTarget('http://127.0.0.1/a.hwp', sender.url).allowed, false);
 });
 
 test('Safari viewer grants only public canonical URLs', async () => {
@@ -103,10 +104,10 @@ test('Safari HWP/HWPX signatures and Promise message replies are strict', async 
   assert.match((await result).error, /알 수 없는 메시지 유형/);
 });
 
-test('Safari manifest uses a module service worker and HTTP(S)-only host access', async () => {
+test('Safari manifest uses a non-persistent script event page and HTTP(S)-only host access', async () => {
   const manifest = JSON.parse(await readFile(new URL('./manifest.json', import.meta.url), 'utf8'));
-  assert.equal(manifest.background.service_worker, 'background.js');
-  assert.equal(manifest.background.type, 'module');
+  assert.deepEqual(manifest.background.scripts, ['background.js']);
+  assert.equal(manifest.background.persistent, false);
   assert.deepEqual(manifest.host_permissions, ['http://*/*', 'https://*/*']);
   assert.doesNotMatch(JSON.stringify(manifest), /<all_urls>/);
 });

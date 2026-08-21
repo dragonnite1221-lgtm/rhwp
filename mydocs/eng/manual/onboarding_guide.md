@@ -26,7 +26,7 @@ curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh
 # → Install Docker Desktop or Docker Engine
 
 # Node.js (rhwp-studio web editor)
-# → Install Node.js 18+
+# → Install Node.js 22.12+
 ```
 
 ### 2.2 Build Verification

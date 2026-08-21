@@ -2,7 +2,7 @@ const DB_NAME = 'rhwp-document-transfers';
 const DB_VERSION = 2;
 const STORE_NAME = 'transfers';
 const TRANSFER_TTL_MS = 2 * 60 * 1000;
-const MAX_PENDING_TRANSFERS = 2;
+const MAX_PENDING_TRANSFER_BYTES = 128 * 1024 * 1024;
 
 function requestResult(request) {
   return new Promise((resolve, reject) => {
@@ -51,19 +51,49 @@ function validTransferId(id) {
     && /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(id);
 }
 
+function planTransferAdmission(
+  records,
+  newByteLength,
+  now = Date.now(),
+  maxBytes = MAX_PENDING_TRANSFER_BYTES,
+) {
+  if (!Number.isSafeInteger(newByteLength) || newByteLength < 0) {
+    throw new Error('문서 전송 크기가 올바르지 않음');
+  }
+  const expiredIds = [];
+  let activeBytes = 0;
+  for (const record of records) {
+    if (!record || record.expiresAt <= now || !(record.data instanceof ArrayBuffer)) {
+      if (record?.id) expiredIds.push(record.id);
+      continue;
+    }
+    activeBytes += record.data.byteLength;
+  }
+  return {
+    expiredIds,
+    activeBytes,
+    allowed: activeBytes + newByteLength <= maxBytes,
+  };
+}
+
 export async function storeDocumentTransfer(data, contentType = null) {
   const id = crypto.randomUUID();
+  const transferData = exactArrayBuffer(data);
   const database = await openTransferDatabase();
   try {
     const transaction = database.transaction(STORE_NAME, 'readwrite');
     const store = transaction.objectStore(STORE_NAME);
     const now = Date.now();
-    const existingIds = await requestResult(store.index('createdAt').getAllKeys());
-    const deleteCount = Math.max(0, existingIds.length - (MAX_PENDING_TRANSFERS - 1));
-    for (const existingId of existingIds.slice(0, deleteCount)) store.delete(existingId);
+    const existing = await requestResult(store.index('createdAt').getAll());
+    const admission = planTransferAdmission(existing, transferData.byteLength, now);
+    for (const expiredId of admission.expiredIds) store.delete(expiredId);
+    if (!admission.allowed) {
+      await transactionDone(transaction);
+      throw new Error('대기 중인 문서 전송 용량 초과');
+    }
     store.put({
       id,
-      data: exactArrayBuffer(data),
+      data: transferData,
       contentType: typeof contentType === 'string' ? contentType : null,
       createdAt: now,
       expiresAt: now + TRANSFER_TTL_MS,
@@ -93,4 +123,4 @@ export async function takeDocumentTransfer(id) {
   }
 }
 
-export { MAX_PENDING_TRANSFERS, TRANSFER_TTL_MS };
+export { MAX_PENDING_TRANSFER_BYTES, TRANSFER_TTL_MS, planTransferAdmission };

@@ -4,6 +4,23 @@ import {
   validateResolvedAddresses,
 } from '../security/url-validator.js';
 
+const networkUrlLocks = new Map();
+
+async function withNetworkUrlLock(url, callback) {
+  const previous = networkUrlLocks.get(url) || Promise.resolve();
+  let release;
+  const gate = new Promise(resolve => { release = resolve; });
+  const tail = previous.then(() => gate);
+  networkUrlLocks.set(url, tail);
+  await previous;
+  try {
+    return await callback();
+  } finally {
+    release();
+    if (networkUrlLocks.get(url) === tail) networkUrlLocks.delete(url);
+  }
+}
+
 async function resolveDnsRecord(hostname, type, signal) {
   const endpoint = new URL('https://cloudflare-dns.com/dns-query');
   endpoint.searchParams.set('name', hostname);
@@ -54,6 +71,70 @@ async function assertPublicDestination(url, dnsResolver, signal) {
   return validation.parsed;
 }
 
+function webRequestApi() {
+  return globalThis.browser?.webRequest || globalThis.chrome?.webRequest || null;
+}
+
+function extensionBaseUrl() {
+  const runtime = globalThis.browser?.runtime || globalThis.chrome?.runtime;
+  return runtime?.getURL ? runtime.getURL('') : null;
+}
+
+function sameExtensionOrigin(value, extensionBase) {
+  if (!value || !extensionBase) return false;
+  try {
+    const actual = new URL(value);
+    const expected = new URL(extensionBase);
+    return actual.protocol === expected.protocol && actual.hostname === expected.hostname;
+  } catch {
+    return false;
+  }
+}
+
+function sameNetworkUrl(left, right) {
+  try {
+    const first = new URL(left);
+    const second = new URL(right);
+    first.hash = '';
+    second.hash = '';
+    return first.href === second.href;
+  } catch {
+    return false;
+  }
+}
+
+/** Verify the IP address of the actual browser connection before reading its body. */
+function verifyConnectedAddress(
+  url,
+  signal,
+  api = webRequestApi(),
+  extensionBase = extensionBaseUrl(),
+) {
+  if (!api?.onResponseStarted?.addListener || !api.onResponseStarted.removeListener) {
+    return Promise.reject(new Error('실제 연결 주소 검증 API를 사용할 수 없음'));
+  }
+  return new Promise((resolve, reject) => {
+    const cleanup = () => {
+      api.onResponseStarted.removeListener(listener);
+      signal.removeEventListener('abort', onAbort);
+    };
+    const onAbort = () => {
+      cleanup();
+      reject(signal.reason || new Error('요청 중단'));
+    };
+    const listener = (details) => {
+      if (!sameNetworkUrl(details?.url, url)) return;
+      if (!sameExtensionOrigin(details.initiator || details.originUrl, extensionBase)) return;
+      const validation = validateResolvedAddresses([details.ip]);
+      cleanup();
+      if (validation.allowed) resolve(details.ip);
+      else reject(new Error(`실제 연결 주소 차단: ${validation.reason}`));
+    };
+    signal.addEventListener('abort', onAbort, { once: true });
+    api.onResponseStarted.addListener(listener, { urls: ['<all_urls>'] });
+  });
+}
+
 async function readBoundedBody(response, maxBytes) {
   const contentLength = response.headers.get('content-length');
   if (contentLength && (!/^\d+$/.test(contentLength) || Number(contentLength) > maxBytes)) {
@@ -99,6 +180,7 @@ export async function fetchPublicResource(url, options = {}) {
     timeoutMs = 30_000,
     fetchImpl = globalThis.fetch,
     dnsResolver = defaultDnsResolver,
+    connectedAddressVerifier = verifyConnectedAddress,
   } = options;
   if (!Number.isSafeInteger(maxBytes) || maxBytes <= 0) {
     throw new Error('maxBytes는 양의 안전한 정수여야 함');
@@ -108,12 +190,17 @@ export async function fetchPublicResource(url, options = {}) {
   const timeout = setTimeout(() => controller.abort(new Error('요청 시간 제한 초과')), timeoutMs);
   try {
     const parsed = await assertPublicDestination(url, dnsResolver, controller.signal);
-    const response = await fetchImpl(parsed.href, {
-      cache: 'no-store',
-      credentials: 'omit',
-      redirect: 'error',
-      referrerPolicy: 'no-referrer',
-      signal: controller.signal,
+    const response = await withNetworkUrlLock(parsed.href, async () => {
+      const connectionVerification = connectedAddressVerifier(parsed.href, controller.signal);
+      const responseRequest = fetchImpl(parsed.href, {
+        cache: 'no-store',
+        credentials: 'omit',
+        redirect: 'error',
+        referrerPolicy: 'no-referrer',
+        signal: controller.signal,
+      });
+      const [verifiedResponse] = await Promise.all([responseRequest, connectionVerification]);
+      return verifiedResponse;
     });
     if (!response.ok) {
       throw new Error(`HTTP ${response.status}: ${response.statusText}`);
@@ -132,4 +219,4 @@ export async function fetchPublicResource(url, options = {}) {
   }
 }
 
-export { assertPublicDestination, readBoundedBody };
+export { assertPublicDestination, readBoundedBody, verifyConnectedAddress };

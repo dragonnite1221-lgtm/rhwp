@@ -16,23 +16,25 @@
   resolution, redirect rejection, request timeout, declared-size checks, and
   streamed actual-byte ceilings. Chrome, Firefox, and Safari package that same
   implementation.
-- `rhwp-shared/sw/fetch-grants.js` issues exact-URL, five-minute capabilities in
-  extension session storage. Safari 15 falls back to local storage with only a
-  SHA-256 URL digest and TTL metadata, so worker suspension does not break the
-  launch and the document URL is not persisted. Viewer fetches still require a
-  matching unexpired grant.
+- `rhwp-shared/sw/fetch-grants.js` issues exact-URL capabilities backed by local
+  storage containing only a SHA-256 URL digest and bounded expiry metadata. A
+  five-minute active lease can be renewed by the same unguessable viewer-URL
+  capability for up to seven days, so refresh and browser tab restore work
+  without persisting the document URL indefinitely.
 - Fetched bytes cross the background/viewer boundary through an extension-origin
   IndexedDB record, not a runtime message. Messages carry only a random one-time
-  transfer ID; records expire after two minutes and the pending backlog is capped
-  at two. This avoids Chrome's JSON message serialization corrupting
+  transfer ID; records expire after two minutes. Active records are never evicted
+  before consumption; an atomic 128 MiB byte-accounting gate rejects new work
+  when capacity is exhausted. This avoids Chrome's JSON message serialization corrupting
   `ArrayBuffer` responses or forcing a large base64/number-array expansion.
 - Firefox no longer queues automatic thumbnail prefetches. Privileged document
-  and thumbnail paths require a browser-trusted event, validated extension
-  sender/tab/frame metadata, and a same-origin target or the exact GitHub
-  blob-to-raw adapter.
+  and thumbnail paths require a browser-trusted event and validated extension
+  sender/tab/frame metadata. User-selected public CDN/object-store targets are
+  accepted after the same public-network checks as same-origin targets.
 - Firefox host permissions were narrowed from `<all_urls>` to HTTP(S), and its
   background listener returns Promises so policy failures propagate closed.
-- Safari now uses a module service worker with the shared validators, grant,
+- Safari now uses its supported non-persistent background script event page,
+  bundling the shared validators, grant,
   bounded fetch, and thumbnail parser. Its former local/private-network bypass
   was removed; preferences state that private and local destinations are always
   blocked and cap document size at 64 MiB.
@@ -47,6 +49,11 @@
   executes the browser-extension, Safari, Studio, and npm editor security suites.
 - Safari's build bundles the shared module graph into one background resource,
   preserving the existing Xcode project resource list.
+- The privileged fetch path observes `webRequest.onResponseStarted` and verifies
+  the actual connected socket IP before reading any response body. Requests for
+  the same canonical URL are serialized, and the event must originate from the
+  extension, closing the DNS-rebinding gap between the DoH precheck and browser
+  connection while retaining cross-origin user-selected documents.
 - Chrome and Firefox use Vite 8.2.2. Studio's direct build dependencies were
   updated to their compatible current versions; all three npm trees now audit
   clean.
@@ -56,18 +63,18 @@
 
 ## Verification
 
-- Chrome: 55 security tests passed, production build passed, `npm audit` found
+- Chrome: 60 security tests passed, production build passed, `npm audit` found
   zero vulnerabilities.
-- Firefox: 55 security tests passed, production build passed, `npm audit` found
+- Firefox: 60 security tests passed, production build passed, `npm audit` found
   zero vulnerabilities.
 - Safari: 9 sender/target/grant/signature/manifest/trusted-event tests passed;
   shell syntax passed; the production Rolldown command produced a self-contained
-  36,816-byte background bundle that loaded under mocked Safari extension APIs.
+  45,689-byte non-module IIFE background bundle that passed syntax validation.
 - Studio: TypeScript and production build passed, `npm audit` found zero
   vulnerabilities, and the headless-browser postMessage E2E passed forged-origin
   rejection, same-origin request/response, a real cross-origin `@rhwp/editor`
   capability handshake, exact byte-view preservation, one-time consumption,
-  invalid-ID rejection, and bounded-backlog assertions.
+  invalid-ID rejection, and concurrent active-transfer retention assertions.
 - VS Code extension: production Webpack compile passed and `npm audit` found
   zero vulnerabilities.
 - Rust 1.98: `cargo test` passed the 1,230-test main suite (2 ignored) and every
@@ -78,10 +85,11 @@
   jobs now pin Rust 1.98.0 and include it in cache keys so a future stable release
   cannot silently change the gate.
 - The actual dependency/lockfile minimum was measured: 1.75 cannot read lockfile
-  v4, 1.85 is rejected by current `image`/`zip`, and Rust 1.88 `cargo check
-  --locked` passes. `Cargo.toml`, Korean/English onboarding docs, and a dedicated
-  CI MSRV job now declare and continuously enforce 1.88. The Clippy refactors use
-  the compatible `chunks_exact` form with a narrow lint allowance.
+  v4, 1.85 is rejected by current `image`/`zip`, and a pristine Rust 1.88
+  checkout resolves and passes `cargo check`. `Cargo.toml`, Korean/English
+  onboarding docs, and a dedicated CI MSRV job now declare and continuously
+  enforce 1.88. The root lockfile is intentionally untracked for this library,
+  so the MSRV gate tests the publishable dependency-resolution state.
 - The broader `cargo clippy --all-targets --all-features -- -D warnings` audit
   still exposes pre-existing test-only warnings outside the CI target set; those
   are recorded separately rather than hidden by weakening the production gate.
@@ -108,13 +116,21 @@ Studio/E2E, and documentation lanes; every valid exact-model response was
 `NO_ISSUES`. A second malformed combined-lane response was likewise discarded
 and replaced by the smaller store and Chrome reviews rather than counted.
 
-The PR review then reported eight actionable compatibility/policy gaps: Safari 15
+The PR review first reported eight actionable compatibility/policy gaps: Safari 15
 grant storage, the iOS overlay grant, public iframe consumers, `.yaml` coverage,
 multiline network-to-shell detection, fragment comparison, redirected download
 reuse, and the stale Rust 1.75 requirement. All eight were fixed with regression
 tests and explicit compatibility gates. The extension/Safari, Studio/editor,
 workflow policy, download final-URL, and Rust MSRV remediation diffs were independently re-reviewed by the exact
 `gemini-3.7-flash` endpoint and each returned `NO_ISSUES`.
+
+A later review reported six more gaps: cross-origin document compatibility,
+DNS rebinding between precheck and fetch, premature transfer eviction, viewer
+grant refresh/restore, the Vite 8 Node floor, and Safari's background manifest
+format. These were addressed with actual socket-IP verification, lifecycle-aware
+byte admission, bounded renewable capabilities, Node 22.12 engines/docs, and a
+Safari-compatible non-module event-page bundle. Each remediation lane is tested
+and re-reviewed before merge.
 
 The server-wide `codex_second_review_gate.py` was also invoked against the
 pre-edit snapshot. It returned `blocked` because its independent fallback model

@@ -8,7 +8,7 @@ globalThis.browser = {
     getURL: path => `moz-extension://trusted/${path}`,
   },
   storage: {
-    session: {
+    local: {
       async set(entries) {
         for (const [key, value] of Object.entries(entries)) values.set(key, value);
       },
@@ -32,9 +32,21 @@ test('Firefox grants bind one canonical URL and expire closed', async () => {
 
   const expired = await createFetchGrant('https://example.com/expired.hwp');
   const key = [...values.keys()].find(item => item.endsWith(expired));
-  values.set(key, { ...values.get(key), expiresAt: Date.now() - 1 });
+  values.set(key, { ...values.get(key), expiresAt: Date.now() - 1, renewUntil: Date.now() - 1 });
   assert.equal(await validateFetchGrant(expired, 'https://example.com/expired.hwp'), false);
   assert.equal(values.has(key), false);
+});
+
+test('Firefox restores an exact-URL grant inside the renewal window', async () => {
+  const token = await createFetchGrant('https://example.com/restored.hwp');
+  const key = [...values.keys()].find(item => item.endsWith(token));
+  values.set(key, {
+    ...values.get(key),
+    expiresAt: Date.now() - 1,
+    renewUntil: Date.now() + 60_000,
+  });
+  assert.equal(await validateFetchGrant(token, 'https://example.com/restored.hwp'), true);
+  assert.ok(values.get(key).expiresAt > Date.now());
 });
 
 test('Firefox viewer URL contains a grant for the resolved document URL', async () => {

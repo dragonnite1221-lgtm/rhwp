@@ -43,6 +43,7 @@
     "downloads",
     "contextMenus",
     "clipboardWrite",
+    "webRequest",
     "storage"
   ],
   "host_permissions": [

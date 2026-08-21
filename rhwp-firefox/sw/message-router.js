@@ -26,22 +26,14 @@ function validateMessage(message, sender) {
   return { allowed: true, reason: '메시지와 발신자 확인' };
 }
 
-function validateContentTarget(url, senderUrl) {
+function validateContentTarget(url) {
   const validation = validatePublicUrl(url);
   if (!validation.allowed) return validation;
   try {
     const resolved = resolveDocumentUrl(url);
-    const senderOrigin = new URL(senderUrl).origin;
-    const targetOrigin = new URL(resolved).origin;
-    const githubAdapter = senderOrigin === 'https://github.com'
-      && targetOrigin === 'https://raw.githubusercontent.com'
-      && resolved !== url;
-    if (senderOrigin !== targetOrigin && !githubAdapter) {
-      return { allowed: false, reason: '교차 출처 문서 요청 차단' };
-    }
-    return { allowed: true, reason: '동일 출처 또는 승인된 provider adapter' };
+    return validatePublicUrl(resolved);
   } catch {
-    return { allowed: false, reason: '문서 URL 출처 확인 실패' };
+    return { allowed: false, reason: '문서 URL 확인 실패' };
   }
 }
 
@@ -58,7 +50,7 @@ export function setupMessageRouter() {
 
 const messageHandlers = {
   'open-hwp': async (message, sender) => {
-    const validation = validateContentTarget(message.url, sender.url);
+    const validation = validateContentTarget(message.url);
     if (!validation.allowed) return { error: validation.reason };
     await openViewer({ url: message.url, filename: message.filename });
     return { ok: true };
@@ -82,7 +74,7 @@ const messageHandlers = {
 
   'extract-thumbnail': async (message, sender) => {
     try {
-      const validation = validateContentTarget(message.url, sender.url);
+      const validation = validateContentTarget(message.url);
       if (!validation.allowed) return { error: validation.reason };
       const result = await extractThumbnailFromUrl(message.url);
       return result || { error: 'PrvImage not found' };

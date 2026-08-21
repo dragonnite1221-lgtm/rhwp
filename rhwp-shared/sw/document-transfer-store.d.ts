@@ -11,4 +11,4 @@ export function storeDocumentTransfer(
 export function takeDocumentTransfer(id: string): Promise<DocumentTransfer | null>;
 
 export const TRANSFER_TTL_MS: number;
-export const MAX_PENDING_TRANSFERS: number;
+export const MAX_PENDING_TRANSFER_BYTES: number;

@@ -27,12 +27,15 @@ const contentSender = {
   frameId: 0,
 };
 
-test('Firefox content-script targets remain same-origin', () => {
+test('Firefox accepts cross-origin public document targets', () => {
   assert.equal(validateContentTarget(
     'https://example.com/files/a.hwp', contentSender.url,
   ).allowed, true);
   assert.equal(validateContentTarget(
     'https://cdn.attacker.test/a.hwp', contentSender.url,
+  ).allowed, true);
+  assert.equal(validateContentTarget(
+    'http://127.0.0.1/a.hwp', contentSender.url,
   ).allowed, false);
 });
 

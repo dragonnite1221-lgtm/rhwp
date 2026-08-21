@@ -1,4 +1,4 @@
-// rhwp Safari Web Extension — module service worker.
+// rhwp Safari Web Extension — bundled as one non-module event-page script.
 // Network, capability, sender, and thumbnail parsing policies are shared with
 // the Chrome and Firefox packages.
 
@@ -50,22 +50,14 @@ function resolveDocumentUrl(url) {
   return `https://raw.githubusercontent.com/${owner}/${repo}/${ref}/${pathParts.join('/')}`;
 }
 
-function validateContentTarget(url, senderUrl) {
+function validateContentTarget(url) {
   const validation = validatePublicUrl(url);
   if (!validation.allowed) return validation;
   try {
     const resolved = resolveDocumentUrl(url);
-    const senderOrigin = new URL(senderUrl).origin;
-    const targetOrigin = new URL(resolved).origin;
-    const githubAdapter = senderOrigin === 'https://github.com'
-      && targetOrigin === 'https://raw.githubusercontent.com'
-      && resolved !== url;
-    if (senderOrigin !== targetOrigin && !githubAdapter) {
-      return { allowed: false, reason: '교차 출처 문서 요청 차단' };
-    }
-    return { allowed: true, reason: '동일 출처 또는 승인된 provider adapter' };
+    return validatePublicUrl(resolved);
   } catch {
-    return { allowed: false, reason: '문서 URL 출처 확인 실패' };
+    return { allowed: false, reason: '문서 URL 확인 실패' };
   }
 }
 
@@ -208,18 +200,18 @@ async function extractThumbnailFromUrl(url) {
 
 const messageHandlers = {
   'open-hwp': async (message, sender) => {
-    const validation = validateContentTarget(message.url, sender.url);
+    const validation = validateContentTarget(message.url);
     if (!validation.allowed) return { error: validation.reason };
     return openViewer({ url: message.url, filename: message.filename, explicit: true });
   },
   'prepare-viewer': async (message, sender) => {
-    const validation = validateContentTarget(message.url, sender.url);
+    const validation = validateContentTarget(message.url);
     if (!validation.allowed) return { error: validation.reason };
     return prepareViewer({ url: message.url, filename: message.filename, explicit: true });
   },
   'fetch-file': fetchDocument,
   'extract-thumbnail': async (message, sender) => {
-    const validation = validateContentTarget(message.url, sender.url);
+    const validation = validateContentTarget(message.url);
     if (!validation.allowed) return { error: validation.reason };
     return await extractThumbnailFromUrl(message.url) || { error: 'PrvImage not found' };
   },

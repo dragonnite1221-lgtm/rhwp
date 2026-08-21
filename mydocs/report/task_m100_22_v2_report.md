@@ -9,21 +9,23 @@
    최소 권한·고정 action SHA·검증된 wasm-pack 아카이브를 사용한다.
 2. Studio RPC는 정확한 HTTP(S) origin과 `WindowProxy` identity를 함께
    인증하며, wildcard 응답과 임의 parent/opener 내보내기를 차단한다.
-3. Chrome 확장은 사용자 gesture, 검증된 sender, 동일 출처 또는 정확한
-   GitHub adapter, 단기 exact-URL capability를 모두 요구한다.
+3. Chrome 확장은 사용자 gesture, 검증된 sender, public-only URL, 갱신 상한이
+   있는 exact-URL capability를 모두 요구한다.
 4. 공용 HWP/HWPX 썸네일 파서는 CFB/ZIP 범위·크기·순환·압축 해제 상한을
    검사하고 malformed 입력에서 닫힌다.
 5. Firefox와 Safari에도 같은 capability 및 public-network 불변식을
    적용하고 자동 prefetch, private/local 우회, 무제한 fetch를 제거했다.
 6. 브라우저 background가 받은 문서 bytes는 JSON 메시지로 보내지 않고
-   extension-origin IndexedDB의 2분·1회용 record로 전달한다. pending record는
-   최대 2개라 중단된 뷰어가 저장소를 무제한 점유하지 못한다.
-7. Safari 15에서는 session storage 대신 URL 원문을 남기지 않는 SHA-256
-   digest+TTL local grant fallback을 사용하고, iOS overlay도 background가
+   extension-origin IndexedDB의 2분·1회용 record로 전달한다. 활성 record는
+   소비 전에 축출하지 않고 128 MiB 총량 admission으로 새 요청을 거부한다.
+7. URL 원문을 남기지 않는 SHA-256 digest 기반 local grant는 5분 lease와
+   7일 절대 갱신 상한을 사용해 refresh/브라우저 복원을 지원하고, iOS overlay도 background가
    발급한 grant-bearing viewer URL만 사용한다.
 8. 공개 `@rhwp/editor` iframe은 256-bit fragment capability, direct parent
    `WindowProxy`, 정확한 응답 origin을 함께 인증해 임의 소비자 origin 호환성과
    RPC 경계를 동시에 보존한다.
+9. DoH 공개주소 precheck 뒤 실제 브라우저 연결의 socket IP를 body 읽기 전에
+   재검증하고, 같은 URL 요청을 직렬화하며 extension initiator만 결속한다.
 
 ## 검증 요약
 
@@ -31,7 +33,7 @@
   SHA-256 검증을 통과했다.
 - Studio production build 및 실제 headless Chrome postMessage E2E를
   통과했다.
-- Chrome 55개, Firefox 55개, Safari 9개 보안 회귀 테스트를 통과했다.
+- Chrome 60개, Firefox 60개, Safari 9개 보안 회귀 테스트를 통과했다.
 - Chrome/Firefox/Studio production build와 VS Code extension production
   compile이 통과했다. 네 npm audit 모두 통과했고 보고된 취약점은 0개다.
 - 공용 파서는 500개 deterministic malformed corpus와 실제 저장소 HWP/HWPX
@@ -41,7 +43,7 @@
   통과했다. CI/WASM toolchain은 1.98.0으로 고정하고 cache key에도 버전을
   넣어 floating stable에 따른 gate drift를 제거했다.
 - 실측 최소 Rust는 1.88이다. 1.75는 lockfile v4를 읽지 못하고 1.85는 현재
-  `image`/`zip` MSRV에 거부됐으며, 1.88 `cargo check --locked`는 통과했다.
+  `image`/`zip` MSRV에 거부됐으며, clean checkout의 1.88 `cargo check`는 통과했다.
   Cargo metadata와 한/영 문서에 1.88을 선언하고 독립 MSRV CI job으로
   계속 검증한다.
 - 각 단계와 Stage 5의 다섯 staged-diff lane을 실제 `gemini-3.7-flash`로
@@ -50,11 +52,15 @@
   store, Chrome, Firefox/Safari, Studio/E2E, 문서 lane으로 재검토해 모든
   유효 응답에서 `NO_ISSUES`를 확인했다. 재차 잘린 combined-lane 응답도
   승인으로 세지 않았다.
-- 원격 PR 리뷰의 8개 지적(Safari 15 저장소, iOS overlay grant, 공개 iframe
+- 원격 PR 리뷰의 1차 8개 지적(Safari 15 저장소, iOS overlay grant, 공개 iframe
   호환성, `.yaml` 누락, multiline pipe 우회, fragment 오탐, download
   `finalUrl` 누락, 실제 Rust MSRV 불일치)을 모두 테스트와 함께 수정했다.
   extension/Safari, Studio/editor, workflow policy, download final-URL, Rust
   MSRV lane을 `gemini-3.7-flash`로 다시 검토해 각각 `NO_ISSUES`를 확인했다.
+- 후속 6개 지적(교차 출처 문서, DNS rebinding, 활성 transfer 축출, viewer
+  grant 갱신, Vite 8 Node 하한, Safari background 형식)도 실제 연결 IP 검증,
+  byte admission, 7일 상한 갱신, Node 22.12 engines/docs, Safari event-page
+  IIFE로 수정하고 회귀 테스트를 추가했다.
 - 실제 headless Chrome에서 서로 다른 origin의 소비자 페이지가 기본
   `@rhwp/editor`로 Studio capability handshake를 완료했다. CI에도 Web security
   boundary job을 추가해 이 계층의 단위 회귀를 상시 실행한다.
@@ -71,11 +77,10 @@
   수행할 수 없다. Safari source/test와 배포에 사용하는 단일 Rolldown
   bundle 생성·모의 API 로드는 검증했지만 signed macOS build로 표현하지
   않는다.
-- 브라우저 fetch에는 연결 IP를 고정하는 안정적인 API가 없어 DNS
-  time-of-check/time-of-use window가 남는다. exact-URL capability,
-  same-origin 정책, public DNS 검증, redirect 거부, timeout, 실제 byte
-  제한으로 위험을 축소했다. 임의 cross-origin 자동 수집이 향후 제품
-  요구가 되면 connection-level IP pinning이 가능한 relay가 다음 경계다.
+- 브라우저 fetch는 DoH 결과에 socket을 직접 pin할 수 없으므로, 권한 fetch의
+  실제 `onResponseStarted` 연결 IP가 공개 주소인지 body 소비 전에 확인한다.
+  private 연결은 즉시 abort하며, credential/referrer/redirect 없이 사용자
+  gesture로 선택된 exact URL만 처리한다.
 - 더 넓은 `cargo clippy --all-targets --all-features -- -D warnings` audit에는
   기존 test-only warning이 남아 있다. production CI target의 warning을
   숨기거나 gate를 약화하지 않았으며, 전체 Rust test와 CI 동일 Clippy는

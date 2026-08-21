@@ -5,10 +5,13 @@
   "license": "MIT",
   "private": true,
   "type": "module",
+  "engines": {
+    "node": ">=22.12.0"
+  },
   "scripts": {
     "dev": "vite",
     "build": "node build.mjs",
-    "test": "node --test ../rhwp-shared/security/url-validator.test.js ../rhwp-shared/security/sender-validator.test.js ../rhwp-shared/sw/download-interceptor-common.test.js ../rhwp-shared/sw/thumbnail-parser.test.js content-script-security.test.js sw/fetch-grants.test.js sw/message-router.test.js sw/secure-fetch.test.js",
+    "test": "node --test ../rhwp-shared/security/url-validator.test.js ../rhwp-shared/security/sender-validator.test.js ../rhwp-shared/sw/document-transfer-store.test.js ../rhwp-shared/sw/download-interceptor-common.test.js ../rhwp-shared/sw/thumbnail-parser.test.js content-script-security.test.js sw/fetch-grants.test.js sw/message-router.test.js sw/secure-fetch.test.js",
     "clean": "rm -rf dist"
   },
   "devDependencies": {

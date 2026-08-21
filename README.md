@@ -292,7 +292,7 @@ document.getElementById('viewer').innerHTML = doc.renderPageSvg(0);
 ### Requirements
 - Rust 1.88+
 - Docker (for WASM build)
-- Node.js 18+ (for web editor)
+- Node.js 22.12+ (for the web editor and browser-extension builds)
 
 ### Native Build
 

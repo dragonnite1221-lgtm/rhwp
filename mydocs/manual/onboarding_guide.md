@@ -26,7 +26,7 @@ curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh
 # → Docker Desktop 또는 Docker Engine 설치
 
 # Node.js (rhwp-studio 웹 에디터)
-# → Node.js 18+ 설치
+# → Node.js 22.12+ 설치
 ```
 
 ### 2.2 빌드 확인

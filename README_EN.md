@@ -284,7 +284,7 @@ New contributors: start with the [onboarding guide](mydocs/eng/manual/onboarding
 ### Requirements
 - Rust 1.88+
 - Docker (for WASM build)
-- Node.js 18+ (for web editor)
+- Node.js 22.12+ (for the web editor and browser-extension builds)
 
 ### Native Build
 

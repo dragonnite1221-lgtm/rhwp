@@ -36,7 +36,7 @@ done
 
 echo "[4/6] Safari 전용 소스 적용..."
 "$ROOT/rhwp-chrome/node_modules/.bin/rolldown" "$SRC/background.js" \
-  --file "$DIST/background.js" --format esm --platform browser
+  --file "$DIST/background.js" --format iife --platform browser
 cp "$SRC/content-script.js" "$DIST/content-script.js"
 cp "$SRC/manifest.json" "$DIST/manifest.json"
 cp "$SRC/options.html" "$DIST/options.html"

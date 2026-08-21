@@ -18,8 +18,8 @@
     "default_title": "__MSG_actionTitle__"
   },
   "background": {
-    "service_worker": "background.js",
-    "type": "module"
+    "scripts": ["background.js"],
+    "persistent": false
   },
   "content_scripts": [
     {
@@ -32,6 +32,7 @@
   "permissions": [
     "activeTab",
     "contextMenus",
+    "webRequest",
     "storage"
   ],
   "host_permissions": [

@@ -96,15 +96,13 @@ runTest('postMessage RPC origin and source boundary', async ({ page }) => {
     for (const value of [4, 5, 6]) {
       pending.push(await store.storeDocumentTransfer(new Uint8Array([value]), null));
     }
-    const cappedOldest = await store.takeDocumentTransfer(pending[0]);
-    const cappedMiddle = await store.takeDocumentTransfer(pending[1]);
-    const cappedNewest = await store.takeDocumentTransfer(pending[2]);
+    const pendingTransfers = await Promise.all(pending.map(id => store.takeDocumentTransfer(id)));
     return {
       bytes: first ? Array.from(new Uint8Array(first.data)) : null,
       contentType: first?.contentType,
       second,
       invalid: await store.takeDocumentTransfer('../forged'),
-      capped: [cappedOldest, cappedMiddle, cappedNewest].map(item => (
+      pending: pendingTransfers.map(item => (
         item ? Array.from(new Uint8Array(item.data))[0] : null
       )),
     };
@@ -113,7 +111,7 @@ runTest('postMessage RPC origin and source boundary', async ({ page }) => {
   assert(transfer.contentType === 'application/x-hwp', 'binary transfer preserves content type');
   assert(transfer.second === null, 'binary transfer is one-time');
   assert(transfer.invalid === null, 'invalid binary transfer IDs fail closed');
-  assert(JSON.stringify(transfer.capped) === '[null,5,6]', 'binary transfer backlog is bounded');
+  assert(JSON.stringify(transfer.pending) === '[4,5,6]', 'active transfers are not evicted before consumption');
 
   const parentHost = await startCrossOriginEditorHost(studioUrl);
   try {
