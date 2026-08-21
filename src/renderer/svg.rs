@@ -2414,6 +2414,7 @@ pub(crate) fn bmp_bytes_to_png_bytes(data: &[u8]) -> Option<Vec<u8>> {
 /// 보통 BehindText (글뒤로) 배경/로고 용도로 흰색 (255,255,255) 영역을 투명으로
 /// 보여야 한다 (한컴 호환). 변환 시 흰색 픽셀을 투명 알파로 매핑한 RGBA PNG 를
 /// 출력한다.
+#[allow(clippy::chunks_exact_to_as_chunks)] // Keep compatibility with the declared MSRV.
 pub(crate) fn pcx_bytes_to_png_bytes(data: &[u8]) -> Option<Vec<u8>> {
     use image::{ImageFormat, RgbaImage};
     use std::io::Cursor;
@@ -2436,7 +2437,7 @@ pub(crate) fn pcx_bytes_to_png_bytes(data: &[u8]) -> Option<Vec<u8>> {
         }
         let mut palette = vec![0u8; 256 * 3];
         reader.read_palette(&mut palette).ok()?;
-        for (dst, &idx) in rgba.as_chunks_mut::<4>().0.iter_mut().zip(indices.iter()) {
+        for (dst, &idx) in rgba.chunks_exact_mut(4).zip(indices.iter()) {
             let p = idx as usize * 3;
             let r = palette[p];
             let g = palette[p + 1];
@@ -2453,7 +2454,7 @@ pub(crate) fn pcx_bytes_to_png_bytes(data: &[u8]) -> Option<Vec<u8>> {
         let mut rgb_row = vec![0u8; row_bytes_rgb];
         for y in 0..height as usize {
             reader.next_row_rgb(&mut rgb_row).ok()?;
-            for (x, src) in rgb_row.as_chunks::<3>().0.iter().enumerate() {
+            for (x, src) in rgb_row.chunks_exact(3).enumerate() {
                 let dst = &mut rgba[(y * width as usize + x) * 4..(y * width as usize + x) * 4 + 4];
                 dst[0] = src[0];
                 dst[1] = src[1];

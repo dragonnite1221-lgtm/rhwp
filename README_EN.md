@@ -282,7 +282,7 @@ document.getElementById('viewer').innerHTML = doc.renderPageSvg(0);
 New contributors: start with the [onboarding guide](mydocs/eng/manual/onboarding_guide.md). It covers project architecture, debugging tools, and the development workflow at a glance.
 
 ### Requirements
-- Rust 1.75+
+- Rust 1.88+
 - Docker (for WASM build)
 - Node.js 18+ (for web editor)
 

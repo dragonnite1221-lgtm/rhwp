@@ -19,7 +19,7 @@ HWP/HWPX file → Parser → IR (Model) → Paginator → Layout → SVG/Canvas
 ### 2.1 Required Tools
 
 ```bash
-# Rust (1.75+)
+# Rust (1.88+)
 curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh
 
 # Docker (for WASM builds)

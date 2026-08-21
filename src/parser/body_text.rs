@@ -860,6 +860,7 @@ fn parse_page_border_fill(data: &[u8]) -> PageBorderFill {
 ///   바이트 0~9: 헤더 (paramset 등)
 ///   바이트 10~11: WORD - 필드 이름 길이 (글자 수)
 ///   바이트 12~: WCHAR[len] - 필드 이름 (UTF-16LE)
+#[allow(clippy::chunks_exact_to_as_chunks)] // Keep compatibility with the declared MSRV.
 fn parse_ctrl_data_field_name(data: &[u8]) -> Option<String> {
     if data.len() < 12 {
         return None;
@@ -873,8 +874,8 @@ fn parse_ctrl_data_field_name(data: &[u8]) -> Option<String> {
         return None;
     }
     let wchars: Vec<u16> = name_bytes[..name_len * 2]
-        .as_chunks::<2>().0.iter()
-        .map(|c| u16::from_le_bytes(*c))
+        .chunks_exact(2)
+        .map(|c| u16::from_le_bytes([c[0], c[1]]))
         .collect();
     let name = String::from_utf16_lossy(&wchars);
     if name.is_empty() { None } else { Some(name) }

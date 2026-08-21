@@ -32,6 +32,7 @@ pub use self::{
 use crate::wmf::imports::*;
 
 /// Convert UTF16-LE bytes to String.
+#[allow(clippy::chunks_exact_to_as_chunks)] // Keep compatibility with the declared MSRV.
 fn utf16le_bytes_to_string(
     bytes: &[u8],
 ) -> Result<String, crate::wmf::parser::ParseError> {
@@ -42,8 +43,8 @@ fn utf16le_bytes_to_string(
     }
 
     let u16_vec = bytes
-        .as_chunks::<2>().0.iter()
-        .map(|chunk| u16::from_le_bytes(*chunk))
+        .chunks_exact(2)
+        .map(|chunk| u16::from_le_bytes([chunk[0], chunk[1]]))
         .collect::<Vec<_>>();
 
     String::from_utf16(&u16_vec).map_err(|err| {

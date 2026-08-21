@@ -31,7 +31,7 @@
   SHA-256 검증을 통과했다.
 - Studio production build 및 실제 headless Chrome postMessage E2E를
   통과했다.
-- Chrome 28개, Firefox 28개, Safari 9개 보안 회귀 테스트를 통과했다.
+- Chrome 55개, Firefox 55개, Safari 9개 보안 회귀 테스트를 통과했다.
 - Chrome/Firefox/Studio production build와 VS Code extension production
   compile이 통과했다. 네 npm audit 모두 통과했고 보고된 취약점은 0개다.
 - 공용 파서는 500개 deterministic malformed corpus와 실제 저장소 HWP/HWPX
@@ -40,16 +40,21 @@
   integration suite를 통과했고, CI와 동일한 `cargo clippy -- -D warnings`도
   통과했다. CI/WASM toolchain은 1.98.0으로 고정하고 cache key에도 버전을
   넣어 floating stable에 따른 gate drift를 제거했다.
+- 실측 최소 Rust는 1.88이다. 1.75는 lockfile v4를 읽지 못하고 1.85는 현재
+  `image`/`zip` MSRV에 거부됐으며, 1.88 `cargo check --locked`는 통과했다.
+  Cargo metadata와 한/영 문서에 1.88을 선언하고 독립 MSRV CI job으로
+  계속 검증한다.
 - 각 단계와 Stage 5의 다섯 staged-diff lane을 실제 `gemini-3.7-flash`로
   검토했다. 전체 브랜치 재검토에서 잘린 응답 하나는 승인으로 폐기했고,
   그 과정에서 찾은 binary-message 경계를 수정·실브라우저 검증한 뒤
   store, Chrome, Firefox/Safari, Studio/E2E, 문서 lane으로 재검토해 모든
   유효 응답에서 `NO_ISSUES`를 확인했다. 재차 잘린 combined-lane 응답도
   승인으로 세지 않았다.
-- 원격 PR 리뷰의 6개 지적(Safari 15 저장소, iOS overlay grant, 공개 iframe
-  호환성, `.yaml` 누락, multiline pipe 우회, fragment 오탐)을 모두 테스트와
-  함께 수정했다. extension/Safari, Studio/editor, workflow policy 세 lane을
-  `gemini-3.7-flash`로 다시 검토해 각각 `NO_ISSUES`를 확인했다.
+- 원격 PR 리뷰의 8개 지적(Safari 15 저장소, iOS overlay grant, 공개 iframe
+  호환성, `.yaml` 누락, multiline pipe 우회, fragment 오탐, download
+  `finalUrl` 누락, 실제 Rust MSRV 불일치)을 모두 테스트와 함께 수정했다.
+  extension/Safari, Studio/editor, workflow policy, download final-URL, Rust
+  MSRV lane을 `gemini-3.7-flash`로 다시 검토해 각각 `NO_ISSUES`를 확인했다.
 - 실제 headless Chrome에서 서로 다른 origin의 소비자 페이지가 기본
   `@rhwp/editor`로 Studio capability handshake를 완료했다. CI에도 Web security
   boundary job을 추가해 이 계층의 단위 회귀를 상시 실행한다.

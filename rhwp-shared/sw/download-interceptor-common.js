@@ -30,6 +30,12 @@ export const NON_REFETCHABLE_PATTERNS = [
   /\/dext5handler\.[a-z0-9]+/i,  // DEXT5 (예: dext5handler.ndo, .jsp, .do)
 ];
 
+/** Prefer the browser-resolved final URL so the viewer never repeats redirects. */
+export function refetchUrlForDownload(item) {
+  if (typeof item?.finalUrl === 'string' && item.finalUrl) return item.finalUrl;
+  return typeof item?.url === 'string' ? item.url : '';
+}
+
 /**
  * 다운로드 항목이 HWP/HWPX 인지 판별 (#198 / #207).
  *
@@ -45,8 +51,11 @@ export function shouldInterceptDownload(item) {
 
   // 재요청 불가 패턴 (POST / 세션 의존 핸들러)
   const url = item.url || '';
+  const finalUrl = item.finalUrl || '';
   const referrer = item.referrer || '';
-  if (NON_REFETCHABLE_PATTERNS.some(re => re.test(url) || re.test(referrer))) {
+  if (NON_REFETCHABLE_PATTERNS.some(
+    re => re.test(url) || re.test(finalUrl) || re.test(referrer),
+  )) {
     return false;
   }
 
@@ -55,7 +64,6 @@ export function shouldInterceptDownload(item) {
 
   if (HWP_EXTENSION_RE.test(url)) return true;
 
-  const finalUrl = item.finalUrl || '';
   if (finalUrl !== url && HWP_EXTENSION_RE.test(finalUrl)) return true;
 
   const mime = (item.mime || '').toLowerCase();

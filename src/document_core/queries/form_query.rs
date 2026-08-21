@@ -286,6 +286,7 @@ fn extract_json_string(json: &str, key: &str) -> Option<String> {
 
 /// extra_streams에서 Scripts/DefaultJScript 스트림을 찾아 디코딩한다.
 /// HWP 스크립트는 zlib 압축 + UTF-16LE로 저장됨.
+#[allow(clippy::chunks_exact_to_as_chunks)] // Keep compatibility with the declared MSRV.
 fn decode_hwp_script(extra_streams: &[(String, Vec<u8>)]) -> Option<String> {
     let data = extra_streams.iter()
         .find(|(path, _)| path == "/Scripts/DefaultJScript" || path == "Scripts/DefaultJScript")
@@ -303,8 +304,8 @@ fn decode_hwp_script(extra_streams: &[(String, Vec<u8>)]) -> Option<String> {
 
     // UTF-16LE 디코딩
     if decompressed.len() < 2 { return None; }
-    let u16s: Vec<u16> = decompressed.as_chunks::<2>().0.iter()
-        .map(|c| u16::from_le_bytes(*c))
+    let u16s: Vec<u16> = decompressed.chunks_exact(2)
+        .map(|c| u16::from_le_bytes([c[0], c[1]]))
         .collect();
     Some(String::from_utf16_lossy(&u16s))
 }

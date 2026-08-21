@@ -105,13 +105,14 @@ impl<'a> ByteReader<'a> {
     }
 
     /// UTF-16LE 문자열 읽기 (지정 글자 수)
+    #[allow(clippy::chunks_exact_to_as_chunks)] // Keep compatibility with the declared MSRV.
     pub fn read_utf16_string(&mut self, char_count: usize) -> io::Result<String> {
         // char_count*2 오버플로 + 남은 바이트 초과 선할당 방어 (read_bytes 선할당 전 조기 거부)
         let byte_count = char_count.checked_mul(2).filter(|&n| n <= self.remaining()).ok_or_else(|| io::Error::new(io::ErrorKind::InvalidData, "UTF-16 길이 무효"))?;
         let bytes = self.read_bytes(byte_count)?;
         let utf16: Vec<u16> = bytes
-            .as_chunks::<2>().0.iter()
-            .map(|chunk| u16::from_le_bytes(*chunk))
+            .chunks_exact(2)
+            .map(|chunk| u16::from_le_bytes([chunk[0], chunk[1]]))
             .collect();
 
         String::from_utf16(&utf16).map_err(|e| {

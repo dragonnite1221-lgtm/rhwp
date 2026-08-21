@@ -56,9 +56,9 @@
 
 ## Verification
 
-- Chrome: 28 security tests passed, production build passed, `npm audit` found
+- Chrome: 55 security tests passed, production build passed, `npm audit` found
   zero vulnerabilities.
-- Firefox: 28 security tests passed, production build passed, `npm audit` found
+- Firefox: 55 security tests passed, production build passed, `npm audit` found
   zero vulnerabilities.
 - Safari: 9 sender/target/grant/signature/manifest/trusted-event tests passed;
   shell syntax passed; the production Rolldown command produced a self-contained
@@ -77,6 +77,11 @@
   fill, fixed-width chunk, and expression initialization refactors. CI and WASM
   jobs now pin Rust 1.98.0 and include it in cache keys so a future stable release
   cannot silently change the gate.
+- The actual dependency/lockfile minimum was measured: 1.75 cannot read lockfile
+  v4, 1.85 is rejected by current `image`/`zip`, and Rust 1.88 `cargo check
+  --locked` passes. `Cargo.toml`, Korean/English onboarding docs, and a dedicated
+  CI MSRV job now declare and continuously enforce 1.88. The Clippy refactors use
+  the compatible `chunks_exact` form with a narrow lint allowance.
 - The broader `cargo clippy --all-targets --all-features -- -D warnings` audit
   still exposes pre-existing test-only warnings outside the CI target set; those
   are recorded separately rather than hidden by weakening the production gate.
@@ -103,11 +108,12 @@ Studio/E2E, and documentation lanes; every valid exact-model response was
 `NO_ISSUES`. A second malformed combined-lane response was likewise discarded
 and replaced by the smaller store and Chrome reviews rather than counted.
 
-The PR review then reported six actionable compatibility/policy gaps: Safari 15
+The PR review then reported eight actionable compatibility/policy gaps: Safari 15
 grant storage, the iOS overlay grant, public iframe consumers, `.yaml` coverage,
-multiline network-to-shell detection, and fragment comparison. All six were
-fixed with regression tests. The extension/Safari, Studio/editor, and workflow
-policy remediation diffs were independently re-reviewed by the exact
+multiline network-to-shell detection, fragment comparison, redirected download
+reuse, and the stale Rust 1.75 requirement. All eight were fixed with regression
+tests and explicit compatibility gates. The extension/Safari, Studio/editor,
+workflow policy, download final-URL, and Rust MSRV remediation diffs were independently re-reviewed by the exact
 `gemini-3.7-flash` endpoint and each returned `NO_ISSUES`.
 
 The server-wide `codex_second_review_gate.py` was also invoked against the
