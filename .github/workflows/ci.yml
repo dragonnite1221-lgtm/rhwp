@@ -57,7 +57,9 @@ jobs:
           toolchain: ${{ env.RUST_MSRV }}
 
       - name: Check declared MSRV
-        run: cargo "+${RUST_MSRV}" check --locked
+        # This library intentionally does not track Cargo.lock; resolve dependencies
+        # from a clean index so the declared MSRV is checked against publishable state.
+        run: cargo "+${RUST_MSRV}" check
 
   web-security:
     name: Web security boundaries
