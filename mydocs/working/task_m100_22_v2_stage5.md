@@ -57,10 +57,16 @@
   one-time consumption, invalid-ID rejection, and bounded-backlog assertions.
 - VS Code extension: production Webpack compile passed and `npm audit` found
   zero vulnerabilities.
-- Rust: `cargo test` passed the 1,230-test main suite (2 ignored) and every
-  subsequently executed integration suite. `cargo clippy --all-targets
-  --all-features -- -D warnings` remains red on 84 pre-existing warnings in
-  untouched Rust tests and modules; Stage 5 changes contain no Rust files.
+- Rust 1.98: `cargo test` passed the 1,230-test main suite (2 ignored) and every
+  subsequently executed integration suite; the CI-equivalent `cargo clippy --
+  -D warnings` passed. The first remote CI run exposed 12 lints newly enabled by
+  the floating `stable` toolchain. They were fixed with meaning-preserving slice
+  fill, fixed-width chunk, and expression initialization refactors. CI and WASM
+  jobs now pin Rust 1.98.0 and include it in cache keys so a future stable release
+  cannot silently change the gate.
+- The broader `cargo clippy --all-targets --all-features -- -D warnings` audit
+  still exposes pre-existing test-only warnings outside the CI target set; those
+  are recorded separately rather than hidden by weakening the production gate.
 - `git diff --check` passed.
 
 ## Platform boundary

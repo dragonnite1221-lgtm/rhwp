@@ -30,8 +30,10 @@
   compile이 통과했다. 네 npm audit 모두 통과했고 보고된 취약점은 0개다.
 - 공용 파서는 500개 deterministic malformed corpus와 실제 저장소 HWP/HWPX
   샘플을 모두 검증했다.
-- `cargo test`는 1,230개 main test(2 ignored) 및 모든 후속 integration
-  suite를 통과했다.
+- Rust 1.98 `cargo test`는 1,230개 main test(2 ignored) 및 모든 후속
+  integration suite를 통과했고, CI와 동일한 `cargo clippy -- -D warnings`도
+  통과했다. CI/WASM toolchain은 1.98.0으로 고정하고 cache key에도 버전을
+  넣어 floating stable에 따른 gate drift를 제거했다.
 - 각 단계와 Stage 5의 다섯 staged-diff lane을 실제 `gemini-3.7-flash`로
   검토했다. 전체 브랜치 재검토에서 잘린 응답 하나는 승인으로 폐기했고,
   그 과정에서 찾은 binary-message 경계를 수정·실브라우저 검증한 뒤
@@ -56,9 +58,10 @@
   same-origin 정책, public DNS 검증, redirect 거부, timeout, 실제 byte
   제한으로 위험을 축소했다. 임의 cross-origin 자동 수집이 향후 제품
   요구가 되면 connection-level IP pinning이 가능한 relay가 다음 경계다.
-- `cargo clippy --all-targets --all-features -- -D warnings`는 이번 변경과
-  무관한 기존 Rust warning 84건에서 실패한다. 이번 변경에는 Rust 파일이
-  없고 전체 Rust test는 통과했으므로 별도 품질 정리 대상으로 분리한다.
+- 더 넓은 `cargo clippy --all-targets --all-features -- -D warnings` audit에는
+  기존 test-only warning이 남아 있다. production CI target의 warning을
+  숨기거나 gate를 약화하지 않았으며, 전체 Rust test와 CI 동일 Clippy는
+  통과했다. test-only 정리는 별도 품질 작업으로 분리한다.
 
 ## 병합 조건
 
