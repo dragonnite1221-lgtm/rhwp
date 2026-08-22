@@ -103,8 +103,11 @@
   // The page can control attributes on anchors and a compromised/background
   // cache must not turn those values into an arbitrary DOM URL sink.  Keep
   // this validator at the sink as well as at individual call sites.
-  const MAX_THUMBNAIL_SOURCE_LENGTH = 8 * 1024 * 1024;
-  const SAFE_THUMBNAIL_DATA_URI = /^data:image\/(?:png|jpeg|gif|webp);base64,[A-Za-z0-9+/]+={0,2}$/i;
+  // The shared extractor accepts a 10 MiB raster input.  Base64 expands that
+  // to just under 13.34 MiB, so this leaves a small prefix/encoding margin
+  // without accepting unbounded page-controlled data URLs.
+  const MAX_THUMBNAIL_SOURCE_LENGTH = 14 * 1024 * 1024;
+  const SAFE_THUMBNAIL_DATA_URI = /^data:image\/(?:png|jpeg|gif|webp|bmp);base64,[A-Za-z0-9+/]+={0,2}$/i;
 
   function normalizeSafeThumbnailSource(value) {
     if (typeof value !== 'string' || value.length === 0 || value.length > MAX_THUMBNAIL_SOURCE_LENGTH) {
