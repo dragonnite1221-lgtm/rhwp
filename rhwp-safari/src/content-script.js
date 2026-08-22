@@ -100,12 +100,27 @@
     return str.length > max ? str.slice(0, max) + '…' : str;
   }
 
-  // 보안: 안전한 이미지 URL인지 검증
-  function isSafeImageUrl(url) {
+  // The page can control attributes on anchors and a compromised/background
+  // cache must not turn those values into an arbitrary DOM URL sink.  Keep
+  // this validator at the sink as well as at individual call sites.
+  const MAX_THUMBNAIL_SOURCE_LENGTH = 8 * 1024 * 1024;
+  const SAFE_THUMBNAIL_DATA_URI = /^data:image\/(?:png|jpeg|gif|webp);base64,[A-Za-z0-9+/]+={0,2}$/i;
+
+  function normalizeSafeThumbnailSource(value) {
+    if (typeof value !== 'string' || value.length === 0 || value.length > MAX_THUMBNAIL_SOURCE_LENGTH) {
+      return null;
+    }
+    if (SAFE_THUMBNAIL_DATA_URI.test(value)) return value;
     try {
-      const parsed = new URL(url);
-      return parsed.protocol === 'https:' || parsed.protocol === 'http:';
-    } catch { return false; }
+      const parsed = new URL(value);
+      return parsed.protocol === 'https:' || parsed.protocol === 'http:' ? parsed.href : null;
+    } catch { return null; }
+  }
+
+  // Retained for the page-controlled thumbnail attribute; every source is
+  // nevertheless normalized again in insertThumbnail before DOM assignment.
+  function isSafeImageUrl(url) {
+    return normalizeSafeThumbnailSource(url) !== null;
   }
 
   // DOM API로 안전하게 요소 생성 (innerHTML 미사용 — H-01 XSS 방어)
@@ -117,13 +132,16 @@
   }
 
   function insertThumbnail(container, src) {
+    const safeSrc = normalizeSafeThumbnailSource(src);
+    if (!safeSrc) return false;
     const img = document.createElement('img');
-    img.src = src;
+    img.src = safeSrc;
     img.alt = '\uBBF8\uB9AC\uBCF4\uAE30';
     img.referrerPolicy = 'no-referrer';
     img.style.cssText = 'display:block;width:100%;height:auto;border-radius:4px;';
     container.appendChild(img);
     container.style.display = '';
+    return true;
   }
 
   function showHoverCard(anchor) {
