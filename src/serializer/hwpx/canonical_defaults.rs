@@ -215,7 +215,7 @@ pub const ST_CHAR: u32 = 1;
 mod tests {
     use super::*;
 
-    #[test]
+    #[test] #[allow(clippy::assertions_on_constants)]
     fn snap_to_grid_is_the_only_true_default() {
         assert!(PARASHAPE_SNAP_TO_GRID);
         assert!(!PARASHAPE_FONT_LINE_HEIGHT);

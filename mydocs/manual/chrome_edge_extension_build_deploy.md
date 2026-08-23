@@ -311,6 +311,11 @@ cd rhwp-safari
 4. `xcrun safari-web-extension-converter` 로 Xcode 프로젝트 생성 (최초 1회)
 5. `xcodebuild` 로 macOS 빌드
 
+PR마다 GitHub Actions의 `Safari native build`가 코드 서명 없이 동일 Xcode
+프로젝트를 컴파일한다. 배포 전에는 별도로 Apple Developer 서명을 적용하고
+아래 수동 기기 검증을 완료해야 한다. CI의 unsigned build 성공은 App Store
+서명이나 macOS/iOS Safari 실기기 동작을 대신하지 않는다.
+
 #### App Store 제출
 
 - App Store Connect 계정 필요

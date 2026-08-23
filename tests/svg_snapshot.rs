@@ -1,7 +1,8 @@
 //! SVG snapshot regression tests for HWPX rendering.
 //!
-//! Pure-Rust replacement for `tools/verify_hwpx.py`, which requires Windows
-//! + Hancom Office + pyhwpx and cannot run in CI. This harness invokes
+//! Pure-Rust replacement for `tools/verify_hwpx.py`, whose original workflow
+//! requires Windows, Hancom Office, and pyhwpx and therefore cannot run in CI.
+//! This harness invokes
 //! `rhwp::wasm_api::HwpDocument::render_page_svg_native()` directly so the
 //! same SVG the CLI produces is diffed against committed golden files.
 //!
