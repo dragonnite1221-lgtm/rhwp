@@ -371,7 +371,7 @@
         assert!(json.contains("\"ok\":true"));
         assert!(json.contains("\"charOffset\":3"));
 
-        if let Some(Control::Table(table)) = doc.document.sections[0].paragraphs[0].controls.get(0) {
+        if let Some(Control::Table(table)) = doc.document.sections[0].paragraphs[0].controls.first() {
             assert_eq!(table.cells[0].paragraphs[0].text, "셀추가A");
         } else {
             panic!("표 컨트롤을 찾을 수 없음");
@@ -386,7 +386,7 @@
         let json = result.unwrap();
         assert!(json.contains("\"ok\":true"));
 
-        if let Some(Control::Table(table)) = doc.document.sections[0].paragraphs[0].controls.get(0) {
+        if let Some(Control::Table(table)) = doc.document.sections[0].paragraphs[0].controls.first() {
             assert_eq!(table.cells[1].paragraphs[0].text, "B");
         } else {
             panic!("표 컨트롤을 찾을 수 없음");
@@ -427,14 +427,14 @@
         let result = doc.insert_text_in_cell_native(0, 0, 0, 2, 0, 2, "테스트");
         assert!(result.is_ok());
 
-        if let Some(Control::Table(table)) = doc.document.sections[0].paragraphs[0].controls.get(0) {
+        if let Some(Control::Table(table)) = doc.document.sections[0].paragraphs[0].controls.first() {
             assert_eq!(table.cells[2].paragraphs[0].text, "셀C테스트");
         }
 
         let result = doc.delete_text_in_cell_native(0, 0, 0, 2, 0, 2, 3);
         assert!(result.is_ok());
 
-        if let Some(Control::Table(table)) = doc.document.sections[0].paragraphs[0].controls.get(0) {
+        if let Some(Control::Table(table)) = doc.document.sections[0].paragraphs[0].controls.first() {
             assert_eq!(table.cells[2].paragraphs[0].text, "셀C");
         }
     }
@@ -445,7 +445,7 @@
 
         doc.insert_text_in_cell_native(0, 0, 0, 3, 0, 2, "수정됨").unwrap();
         // 삽입 후 셀 텍스트 확인
-        if let Some(Control::Table(table)) = doc.document.sections[0].paragraphs[0].controls.get(0) {
+        if let Some(Control::Table(table)) = doc.document.sections[0].paragraphs[0].controls.first() {
             assert_eq!(table.cells[3].paragraphs[0].text, "셀D수정됨");
         }
         let svg = doc.render_page_svg_native(0);
@@ -509,7 +509,7 @@
         assert!(json.contains("\"rowCount\":3"));
         assert!(json.contains("\"colCount\":2"));
 
-        if let Some(Control::Table(table)) = doc.document.sections[0].paragraphs[0].controls.get(0) {
+        if let Some(Control::Table(table)) = doc.document.sections[0].paragraphs[0].controls.first() {
             assert_eq!(table.row_count, 3);
             assert_eq!(table.cells.len(), 6);
             // 원래 첫 행의 셀A는 여전히 행 0
@@ -532,7 +532,7 @@
         assert!(json.contains("\"rowCount\":2"));
         assert!(json.contains("\"colCount\":3"));
 
-        if let Some(Control::Table(table)) = doc.document.sections[0].paragraphs[0].controls.get(0) {
+        if let Some(Control::Table(table)) = doc.document.sections[0].paragraphs[0].controls.first() {
             assert_eq!(table.col_count, 3);
             assert_eq!(table.cells.len(), 6);
         } else {
@@ -549,7 +549,7 @@
         let json = result.unwrap();
         assert!(json.contains("\"cellCount\":3")); // 비주 셀 1개 제거
 
-        if let Some(Control::Table(table)) = doc.document.sections[0].paragraphs[0].controls.get(0) {
+        if let Some(Control::Table(table)) = doc.document.sections[0].paragraphs[0].controls.first() {
             assert_eq!(table.cells.len(), 3); // 비주 셀 제거됨
             let merged = &table.cells[0];
             assert_eq!(merged.col_span, 2);
@@ -564,7 +564,7 @@
         let mut doc = create_doc_with_table();
         // 먼저 병합
         doc.merge_table_cells_native(0, 0, 0, 0, 0, 0, 1).unwrap();
-        if let Some(Control::Table(table)) = doc.document.sections[0].paragraphs[0].controls.get(0) {
+        if let Some(Control::Table(table)) = doc.document.sections[0].paragraphs[0].controls.first() {
             assert_eq!(table.cells.len(), 3);
         }
 
@@ -574,7 +574,7 @@
         let json = result.unwrap();
         assert!(json.contains("\"cellCount\":4"));
 
-        if let Some(Control::Table(table)) = doc.document.sections[0].paragraphs[0].controls.get(0) {
+        if let Some(Control::Table(table)) = doc.document.sections[0].paragraphs[0].controls.first() {
             assert_eq!(table.cells.len(), 4);
             let cell = &table.cells[0];
             assert_eq!(cell.col_span, 1);
@@ -585,7 +585,7 @@
     }
 
     #[test]
-    fn test_merge_then_control_layout_has_colSpan() {
+    fn test_merge_then_control_layout_has_col_span() {
         let mut doc = create_doc_with_table();
         // 병합 전: colSpan=1
         let layout_before = doc.get_page_control_layout_native(0).unwrap();
@@ -721,13 +721,13 @@
         eprintln!("\n=== 원본 LIST_HEADER 바이트 ===");
         for (i, r) in orig_table_recs.iter().enumerate() {
             if r.tag_id == crate::parser::tags::HWPTAG_LIST_HEADER {
-                eprintln!("  [{}] {}B: {:02X?}", table_start + i, r.data.len(), &r.data);
+                eprintln!("  [{}] {}B: {:02X?}", table_start + i, r.data.len(), r.data);
             }
         }
         eprintln!("\n=== 수정 후 LIST_HEADER 바이트 ===");
         for (i, r) in new_table_recs.iter().enumerate() {
             if r.tag_id == crate::parser::tags::HWPTAG_LIST_HEADER {
-                eprintln!("  [{}] {}B: {:02X?}", new_table_start + i, r.data.len(), &r.data);
+                eprintln!("  [{}] {}B: {:02X?}", new_table_start + i, r.data.len(), r.data);
             }
         }
 
@@ -735,13 +735,13 @@
         eprintln!("\n=== 원본 PARA_HEADER (표 내부) ===");
         for (i, r) in orig_table_recs.iter().enumerate() {
             if r.tag_id == crate::parser::tags::HWPTAG_PARA_HEADER {
-                eprintln!("  [{}] {}B: {:02X?}", table_start + i, r.data.len(), &r.data);
+                eprintln!("  [{}] {}B: {:02X?}", table_start + i, r.data.len(), r.data);
             }
         }
         eprintln!("\n=== 수정 후 PARA_HEADER (표 내부) ===");
         for (i, r) in new_table_recs.iter().enumerate() {
             if r.tag_id == crate::parser::tags::HWPTAG_PARA_HEADER {
-                eprintln!("  [{}] {}B: {:02X?}", new_table_start + i, r.data.len(), &r.data);
+                eprintln!("  [{}] {}B: {:02X?}", new_table_start + i, r.data.len(), r.data);
             }
         }
 
@@ -749,12 +749,12 @@
         eprintln!("\n=== TABLE 레코드 비교 ===");
         for r in orig_table_recs.iter() {
             if r.tag_id == crate::parser::tags::HWPTAG_TABLE {
-                eprintln!("  원본: {}B: {:02X?}", r.data.len(), &r.data);
+                eprintln!("  원본: {}B: {:02X?}", r.data.len(), r.data);
             }
         }
         for r in new_table_recs.iter() {
             if r.tag_id == crate::parser::tags::HWPTAG_TABLE {
-                eprintln!("  수정: {}B: {:02X?}", r.data.len(), &r.data);
+                eprintln!("  수정: {}B: {:02X?}", r.data.len(), r.data);
             }
         }
     }
@@ -1068,12 +1068,12 @@
         eprintln!("\n=== TABLE 레코드 비교 ===");
         for r in orig_recs[ot_start..ot_end].iter() {
             if r.tag_id == crate::parser::tags::HWPTAG_TABLE {
-                eprintln!("  원본: {:02X?}", &r.data);
+                eprintln!("  원본: {:02X?}", r.data);
             }
         }
         for r in hancom_recs[ht_start..ht_end].iter() {
             if r.tag_id == crate::parser::tags::HWPTAG_TABLE {
-                eprintln!("  한컴: {:02X?}", &r.data);
+                eprintln!("  한컴: {:02X?}", r.data);
             }
         }
 
@@ -1085,7 +1085,7 @@
                 let col = u16::from_le_bytes(r.data[8..10].try_into().unwrap());
                 let row = u16::from_le_bytes(r.data[10..12].try_into().unwrap());
                 if row == 2 {
-                    eprintln!("  cell[{}] col={} row={}: {:02X?}", cell_idx, col, row, &r.data);
+                    eprintln!("  cell[{}] col={} row={}: {:02X?}", cell_idx, col, row, r.data);
                 }
                 cell_idx += 1;
             }
@@ -1102,7 +1102,7 @@
                 let width = u32::from_le_bytes(r.data[16..20].try_into().unwrap());
                 let height = u32::from_le_bytes(r.data[20..24].try_into().unwrap());
                 eprintln!("  cell[{}] col={} row={} span={}x{} w={} h={}: {:02X?}",
-                    cell_idx, col, row, col_span, row_span, width, height, &r.data);
+                    cell_idx, col, row, col_span, row_span, width, height, r.data);
                 cell_idx += 1;
             }
         }
@@ -2220,7 +2220,7 @@
                 }).collect();
                 if !para.controls.is_empty() || para.text.is_empty() {
                     eprintln!("  para[{}]: text={:?} chars={} ctrl_mask=0x{:08X} controls={:?} char_count={} msb={}",
-                        pi, &para.text.chars().take(40).collect::<String>(),
+                        pi, para.text.chars().take(40).collect::<String>(),
                         para.text.len(), para.control_mask, ctrl_types,
                         para.char_count, para.char_count_msb);
                 }
@@ -2707,7 +2707,7 @@
             if let Ok(d) = std::fs::read(cf) {
                 if let Ok(cdoc) = HwpDocument::from_bytes(&d) {
                     eprintln!("  {} → char_shapes={} para_shapes={} border_fills={} styles={}",
-                        cf.split('/').last().unwrap_or(cf),
+                        cf.split('/').next_back().unwrap_or(cf),
                         cdoc.document.doc_info.char_shapes.len(),
                         cdoc.document.doc_info.para_shapes.len(),
                         cdoc.document.doc_info.border_fills.len(),
@@ -3477,7 +3477,7 @@
             if t.ctrl_header.data.len() >= 8 {
                 let obj_attr = u32::from_le_bytes(t.ctrl_header.data[4..8].try_into().unwrap());
                 eprintln!("    obj_attr = 0x{:08X}", obj_attr);
-                let vert_offset = (obj_attr >> 0) & 0x3;
+                let vert_offset = obj_attr & 0x3;
                 let horiz_offset = (obj_attr >> 2) & 0x3;
                 let vert_rel = (obj_attr >> 4) & 0x3;
                 let horiz_rel = (obj_attr >> 7) & 0x3;
@@ -4310,7 +4310,7 @@
                             ci, pi, para.text, para.has_para_text, para.char_count, para.char_count_msb,
                             para.controls.len(), para.raw_header_extra.len());
                         if para.raw_header_extra.len() >= 10 {
-                            eprintln!("    raw_header_extra: {:02x?}", &para.raw_header_extra);
+                            eprintln!("    raw_header_extra: {:02x?}", para.raw_header_extra);
                         }
                     }
                 }
@@ -4580,9 +4580,9 @@
                     let op = &oc.paragraphs[pi];
                     let sp = &sc.paragraphs[pi];
                     eprintln!("    orig para[{}]: text={:?} char_count={} msb={} has_pt={} char_offsets={:?} char_shapes_len={}",
-                        pi, &op.text, op.char_count, op.char_count_msb, op.has_para_text, &op.char_offsets, op.char_shapes.len());
+                        pi, op.text, op.char_count, op.char_count_msb, op.has_para_text, op.char_offsets, op.char_shapes.len());
                     eprintln!("    saved para[{}]: text={:?} char_count={} msb={} has_pt={} char_offsets={:?} char_shapes_len={}",
-                        pi, &sp.text, sp.char_count, sp.char_count_msb, sp.has_para_text, &sp.char_offsets, sp.char_shapes.len());
+                        pi, sp.text, sp.char_count, sp.char_count_msb, sp.has_para_text, sp.char_offsets, sp.char_shapes.len());
                 }
             }
         }
@@ -4622,7 +4622,7 @@
             if pi < orig_doc.sections[0].paragraphs.len() {
                 let p = &orig_doc.sections[0].paragraphs[pi];
                 eprintln!("  ORIG para[{}]: text_len={} text={:?} ctrls={} ctrl_types={:?}",
-                    pi, p.text.len(), &p.text.chars().take(30).collect::<String>(),
+                    pi, p.text.len(), p.text.chars().take(30).collect::<String>(),
                     p.controls.len(),
                     p.controls.iter().map(|c| match c {
                         crate::model::control::Control::Table(_) => "Table",
@@ -4640,7 +4640,7 @@
             if pi < saved_doc.sections[0].paragraphs.len() {
                 let p = &saved_doc.sections[0].paragraphs[pi];
                 eprintln!("  SAVED para[{}]: text_len={} text={:?} ctrls={} ctrl_types={:?}",
-                    pi, p.text.len(), &p.text.chars().take(30).collect::<String>(),
+                    pi, p.text.len(), p.text.chars().take(30).collect::<String>(),
                     p.controls.len(),
                     p.controls.iter().map(|c| match c {
                         crate::model::control::Control::Table(_) => "Table",
@@ -5085,7 +5085,7 @@
             // LIST_HEADER의 border_fill_id (셀) 및 TABLE의 border_fill_id
             if rec.tag_id == tags::HWPTAG_LIST_HEADER && rec.data.len() >= 34 {
                 let bf_id = u16::from_le_bytes([rec.data[32], rec.data[33]]) as usize;
-                if bf_id > 0 && bf_id - 1 >= bf_count {
+                if bf_id > bf_count {
                     dangling_bf.push((ri, "LIST_HEADER", bf_id));
                 }
             }
@@ -5189,7 +5189,7 @@
             }
 
             let bytes = std::fs::read(path).unwrap();
-            let mut cfb = CfbReader::open(&bytes).expect(&format!("{} CFB 열기 실패", label));
+            let mut cfb = CfbReader::open(&bytes).unwrap_or_else(|_| panic!("{} CFB 열기 실패", label));
 
             // DocInfo 분석
             let doc_info_data = cfb.read_doc_info(true).expect("DocInfo 읽기 실패");
@@ -5420,8 +5420,8 @@
         let mut body_diff_count = 0;
 
         eprintln!("\n  --- Record-by-record comparison ---");
-        eprintln!("  {:<6} {:<25} {:<6} {:<8} | {:<25} {:<6} {:<8} | {}",
-            "Idx", "Damaged Tag", "Lvl", "Size", "Fixed Tag", "Lvl", "Size", "Differences");
+        eprintln!("  {:<6} {:<25} {:<6} {:<8} | {:<25} {:<6} {:<8} | Differences",
+            "Idx", "Damaged Tag", "Lvl", "Size", "Fixed Tag", "Lvl", "Size");
         eprintln!("  {}", "-".repeat(120));
 
         for i in 0..max_recs {
@@ -6910,7 +6910,7 @@
             let total_data_bytes: usize = fd.body_records.iter().map(|r| r.data.len()).sum();
             eprintln!("  Total record data bytes: {}", total_data_bytes);
 
-            eprintln!("\n{:<5} {:<5} {:<25} {:>8}  {}", "Idx", "Lvl", "Tag", "Size", "Details");
+            eprintln!("\n{:<5} {:<5} {:<25} {:>8}  Details", "Idx", "Lvl", "Tag", "Size");
             eprintln!("{:-<120}", "");
 
             for (i, rec) in fd.body_records.iter().enumerate() {
@@ -7070,8 +7070,8 @@
         let max_recs = std::cmp::max(valid.body_records.len(), damaged.body_records.len());
         let mut total_diffs = 0;
 
-        eprintln!("\n{:<5} | {:<30} {:>4} {:>6} | {:<30} {:>4} {:>6} | {}",
-            "#", "VALID Tag", "Lvl", "Size", "DAMAGED Tag", "Lvl", "Size", "Status");
+        eprintln!("\n{:<5} | {:<30} {:>4} {:>6} | {:<30} {:>4} {:>6} | Status",
+            "#", "VALID Tag", "Lvl", "Size", "DAMAGED Tag", "Lvl", "Size");
         eprintln!("{:-<130}", "");
 
         for i in 0..max_recs {
@@ -7954,8 +7954,7 @@
                 let ch = u16::from_le_bytes([data[i], data[i + 1]]);
                 match ch {
                     // Extended controls take 8 WCHARs (16 bytes)
-                    0x0001 | 0x0002 | 0x0003 | 0x000B | 0x000C | 0x000D | 0x000E | 0x000F
-                    | 0x0004 | 0x0005 | 0x0006 | 0x0007 | 0x0008 | 0x0009 | 0x000A => {
+                    0x0001..=0x000F => {
                         let name = match ch {
                             0x0002 => "SEC/COL",
                             0x0003 => "FIELD_BEGIN",
@@ -8011,8 +8010,8 @@
             // textStartPos(4) + lineVPos(4) + lineHPos(4) + lineHeight(4)
             // + textPartHeight(4) + distBaseline(4) + lineSpacing(4) + colStartPos(4) + segWidth(4)
             // Some versions use 32 bytes per segment
-            let seg_size = if data.len() % 36 == 0 { 36 } else if data.len() % 32 == 0 { 32 } else { 36 };
-            let seg_count = if seg_size > 0 { data.len() / seg_size } else { 0 };
+            let seg_size = if data.len().is_multiple_of(36) { 36 } else if data.len().is_multiple_of(32) { 32 } else { 36 };
+            let seg_count = data.len() / seg_size;
             let mut result = format!("{} segments ({}B each): ", seg_count, seg_size);
             for s in 0..std::cmp::min(seg_count, 4) {
                 let off = s * seg_size;
@@ -8379,7 +8378,7 @@
         let mut doc = HwpDocument::from_bytes(&orig_data).unwrap();
 
         // 텍스트 삽입
-        doc.insert_text_native(0, 0, 0, "가나다라마바사아");
+        doc.insert_text_native(0, 0, 0, "가나다라마바사아").unwrap();
         let saved = doc.export_hwp_native().unwrap();
 
         // 레코드 파싱
@@ -8673,7 +8672,7 @@
             // 삽입 후 문단 상태 확인
             let para = &doc.document.sections[0].paragraphs[0];
             eprintln!("  삽입 후: text='{}' char_count={}", para.text, para.char_count);
-            eprintln!("  char_offsets: {:?}", &para.char_offsets);
+            eprintln!("  char_offsets: {:?}", para.char_offsets);
             eprintln!("  char_shapes: {:?}", para.char_shapes.iter().map(|cs| (cs.start_pos, cs.char_shape_id)).collect::<Vec<_>>());
             for (i, ls) in para.line_segs.iter().enumerate() {
                 eprintln!("  LineSeg[{}]: text_start={} vpos={} lh={} th={} bd={} ls={} cs={} sw={} tag=0x{:08x}",
@@ -10101,7 +10100,7 @@
                         if diff_count > 10 { eprintln!("  ... 외 {} 개", diff_count - 10); }
                         eprintln!("  일치: {}/{} ({}%)",
                             max.saturating_sub(diff_count), max,
-                            if max > 0 { (max.saturating_sub(diff_count)) * 100 / max } else { 100 });
+                            ((max.saturating_sub(diff_count)) * 100).checked_div(max).unwrap_or(100));
 
                         // 표 안 이미지 보존 확인
                         let mut pic_in_cell = false;
@@ -10357,7 +10356,7 @@
                 eprintln!("  ... 외 {} 개 차이", diff_count - 5);
             }
             eprintln!("  일치: {}/{} 레코드 ({}%)", max_recs - diff_count, max_recs,
-                if max_recs > 0 { (max_recs - diff_count) * 100 / max_recs } else { 100 });
+                ((max_recs - diff_count) * 100).checked_div(max_recs).unwrap_or(100));
 
             if all_match {
                 eprintln!("  → 라운드트립 성공 ✓");
@@ -10925,11 +10924,11 @@
         eprintln!("  복제: cc={} msb={} cm=0x{:08X} ps={} sid={} rhe={:02x?}",
             clone_para.char_count, clone_para.char_count_msb,
             clone_para.control_mask, clone_para.para_shape_id, clone_para.style_id,
-            &clone_para.raw_header_extra);
+            clone_para.raw_header_extra);
         eprintln!("  생성: cc={} msb={} cm=0x{:08X} ps={} sid={} rhe={:02x?}",
             parsed_para.char_count, parsed_para.char_count_msb,
             parsed_para.control_mask, parsed_para.para_shape_id, parsed_para.style_id,
-            &parsed_para.raw_header_extra);
+            parsed_para.raw_header_extra);
 
         // raw_ctrl_data 비교
         if let Some(Control::Table(ref t_a)) = clone_para.controls.first() {
@@ -10939,8 +10938,8 @@
                 eprintln!("  생성: attr=0x{:08X}", t_b.attr);
 
                 eprintln!("\n  [raw_ctrl_data 비교] (CommonObjAttr after attr)");
-                eprintln!("  복제 ({} bytes): {:02x?}", t_a.raw_ctrl_data.len(), &t_a.raw_ctrl_data);
-                eprintln!("  생성 ({} bytes): {:02x?}", t_b.raw_ctrl_data.len(), &t_b.raw_ctrl_data);
+                eprintln!("  복제 ({} bytes): {:02x?}", t_a.raw_ctrl_data.len(), t_a.raw_ctrl_data);
+                eprintln!("  생성 ({} bytes): {:02x?}", t_b.raw_ctrl_data.len(), t_b.raw_ctrl_data);
 
                 // 필드별 해석
                 fn read_i32(d: &[u8], o: usize) -> i32 {
@@ -11200,8 +11199,8 @@
         for (si, section) in doc.document.sections.iter().enumerate() {
             let para_count = section.paragraphs.len();
             eprintln!("\n  Section {} ({} paragraphs)", si, para_count);
-            eprintln!("  {:>4} | {:>5} | {:>3} | {:>5} | {:>3} | {:>8} | {}",
-                "idx", "cc", "msb", "psid", "sid", "ctrl", "text_preview");
+            eprintln!("  {:>4} | {:>5} | {:>3} | {:>5} | {:>3} | {:>8} | text_preview",
+                "idx", "cc", "msb", "psid", "sid", "ctrl");
             eprintln!("  {}", "-".repeat(65));
 
             for (pi, para) in section.paragraphs.iter().enumerate() {
@@ -11464,7 +11463,7 @@
 
         let data = std::fs::read(path).unwrap();
         let mut doc = HwpDocument::from_bytes(&data).unwrap();
-        doc.convert_to_editable_native();
+        doc.convert_to_editable_native().unwrap();
 
         // 문서 구조 확인: Shape 컨트롤 찾기
         let mut shape_found = false;
@@ -12119,7 +12118,7 @@
         let composed: Vec<_> = section.paragraphs.iter()
             .map(crate::renderer::composer::compose_paragraph)
             .collect();
-        let sec_mt = doc.measured_tables.get(0).map(|v| v.as_slice()).unwrap_or(&[]);
+        let sec_mt = doc.measured_tables.first().map(|v| v.as_slice()).unwrap_or(&[]);
         let tree = engine.build_render_tree(
             &pr.pages[0],
             &section.paragraphs,
@@ -12545,29 +12544,29 @@
                     _ => format!("{:?}", std::mem::discriminant(c)),
                 }).collect();
                 eprintln!("  문단[{}]: text={:?} char_count={} msb={} ctrl_mask=0x{:08X} controls=[{}] line_segs={} has_para_text={} raw_header_extra({})={:02x?}",
-                    pi, &para.text.chars().take(30).collect::<String>(),
+                    pi, para.text.chars().take(30).collect::<String>(),
                     para.char_count, para.char_count_msb, para.control_mask,
                     ctrl_types.join(", "), para.line_segs.len(), para.has_para_text,
-                    para.raw_header_extra.len(), &para.raw_header_extra);
+                    para.raw_header_extra.len(), para.raw_header_extra);
                 for (ci, ctrl) in para.controls.iter().enumerate() {
                     if let Control::Table(t) = ctrl {
                         eprintln!("\n  문단[{}] 컨트롤[{}]: 표 {}행×{}열 (셀 {}개)", pi, ci, t.row_count, t.col_count, t.cells.len());
                         eprintln!("  row_sizes: {:?}", t.row_sizes);
                         eprintln!("  raw_table_record_attr: 0x{:08X}", t.raw_table_record_attr);
-                        eprintln!("  raw_table_record_extra ({} bytes): {:02x?}", t.raw_table_record_extra.len(), &t.raw_table_record_extra);
+                        eprintln!("  raw_table_record_extra ({} bytes): {:02x?}", t.raw_table_record_extra.len(), t.raw_table_record_extra);
 
                         // 각 셀 상세
                         for (cell_idx, cell) in t.cells.iter().enumerate() {
                             eprintln!("  셀[{}]: col={} row={} cs={} rs={} w={} h={} bfid={} paras={}",
                                 cell_idx, cell.col, cell.row, cell.col_span, cell.row_span,
                                 cell.width, cell.height, cell.border_fill_id, cell.paragraphs.len());
-                            eprintln!("    raw_list_extra ({} bytes): {:02x?}", cell.raw_list_extra.len(), &cell.raw_list_extra);
+                            eprintln!("    raw_list_extra ({} bytes): {:02x?}", cell.raw_list_extra.len(), cell.raw_list_extra);
                             for (pp, para) in cell.paragraphs.iter().enumerate() {
                                 eprintln!("    para[{}]: text={:?} char_count={} msb={} line_segs={} char_shapes={} has_para_text={}",
-                                    pp, &para.text.chars().take(20).collect::<String>(),
+                                    pp, para.text.chars().take(20).collect::<String>(),
                                     para.char_count, para.char_count_msb,
                                     para.line_segs.len(), para.char_shapes.len(), para.has_para_text);
-                                eprintln!("      raw_header_extra ({} bytes): {:02x?}", para.raw_header_extra.len(), &para.raw_header_extra);
+                                eprintln!("      raw_header_extra ({} bytes): {:02x?}", para.raw_header_extra.len(), para.raw_header_extra);
                             }
                         }
 
@@ -12757,7 +12756,7 @@
 
         // 2단 영역 편집 시뮬레이션: para[14] (col_idx=1, 2단 영역)
         eprintln!("\n=== 2단 영역 편집: insert_text_native(0, 14, 0, \"Y\") ===");
-        let col_idx_14_before = doc.para_column_map.get(0)
+        let col_idx_14_before = doc.para_column_map.first()
             .and_then(|m| m.get(14)).copied().unwrap_or(0);
         eprintln!("편집 전 para[14] col_idx: {}", col_idx_14_before);
 
@@ -12975,7 +12974,7 @@
             }
 
             let bytes = std::fs::read(path).unwrap();
-            let mut cfb = CfbReader::open(&bytes).expect(&format!("{} CFB 열기 실패", label));
+            let mut cfb = CfbReader::open(&bytes).unwrap_or_else(|_| panic!("{} CFB 열기 실패", label));
 
             eprintln!("\n{}", "=".repeat(80));
             eprintln!("  {} ({} bytes)", label, bytes.len());
@@ -13051,7 +13050,7 @@
             // 원본 문단 정보
             let para = &doc.document.sections[0].paragraphs[0];
             eprintln!("  원본 para[0]: text='{}' cc={} raw_header_extra({} bytes): {:02x?}",
-                para.text, para.char_count, para.raw_header_extra.len(), &para.raw_header_extra);
+                para.text, para.char_count, para.raw_header_extra.len(), para.raw_header_extra);
             eprintln!("  원본 para[0] line_segs[0].tag = 0x{:08X}", para.line_segs.first().map(|ls| ls.tag).unwrap_or(0));
 
             // 엔터 (split at 0)
@@ -13061,7 +13060,7 @@
             // 분할 후 문단 정보
             for (i, p) in doc.document.sections[0].paragraphs.iter().enumerate() {
                 eprintln!("  split 후 para[{}]: text='{}' cc={} has_para_text={} raw_header_extra({} bytes): {:02x?}",
-                    i, p.text, p.char_count, p.has_para_text, p.raw_header_extra.len(), &p.raw_header_extra);
+                    i, p.text, p.char_count, p.has_para_text, p.raw_header_extra.len(), p.raw_header_extra);
                 if let Some(ls) = p.line_segs.first() {
                     eprintln!("    line_seg: lh={} th={} bd={} sw={} tag=0x{:08X}",
                         ls.line_height, ls.text_height, ls.baseline_distance, ls.segment_width, ls.tag);
@@ -14006,8 +14005,8 @@
             eprintln!("  char_offsets={:?}", para.char_offsets);
 
             // 직렬화된 바이트에서 컨트롤 문자 위치 추출
-            let code_units: Vec<u16> = serialized.chunks_exact(2)
-                .map(|c| u16::from_le_bytes([c[0], c[1]]))
+            let code_units: Vec<u16> = serialized.as_chunks::<2>().0.iter()
+                .map(|c| u16::from_le_bytes(*c))
                 .collect();
 
             eprintln!("  serialized code_units({}):", code_units.len());
@@ -14166,8 +14165,8 @@
                                     eprintln!("    CTRL_DATA name_len: {}", name_len);
                                     if name_len > 0 && cd.len() >= 12 + name_len * 2 {
                                         let wchars: Vec<u16> = cd[12..12 + name_len * 2]
-                                            .chunks_exact(2)
-                                            .map(|c| u16::from_le_bytes([c[0], c[1]]))
+                                            .as_chunks::<2>().0.iter()
+                                            .map(|c| u16::from_le_bytes(*c))
                                             .collect();
                                         let name = String::from_utf16_lossy(&wchars);
                                         eprintln!("    CTRL_DATA name: {:?}", name);
@@ -14400,7 +14399,7 @@
                         }
                         // Also show as u16 code units
                         eprint!(" | ");
-                        for pair in chunk.chunks_exact(2) {
+                        for pair in chunk.as_chunks::<2>().0 {
                             let cu = u16::from_le_bytes([pair[0], pair[1]]);
                             if cu >= 0x20 && cu < 0x7F {
                                 eprint!("{} ", cu as u8 as char);
@@ -14484,8 +14483,8 @@
                         let cmd_len = u16::from_le_bytes([rec.data[9], rec.data[10]]) as usize;
                         if cmd_len > 0 && rec.data.len() >= 11 + cmd_len * 2 {
                             let wchars: Vec<u16> = rec.data[11..11 + cmd_len * 2]
-                                .chunks_exact(2)
-                                .map(|c| u16::from_le_bytes([c[0], c[1]]))
+                                .as_chunks::<2>().0.iter()
+                                .map(|c| u16::from_le_bytes(*c))
                                 .collect();
                             let cmd = String::from_utf16_lossy(&wchars);
                             return cmd.contains("메일") || cmd.contains("mail") || cmd.contains("Mail");
@@ -14544,7 +14543,7 @@
                                     eprint!("{:02x} ", b);
                                 }
                                 eprint!(" | ");
-                                for pair in chunk.chunks_exact(2) {
+                                for pair in chunk.as_chunks::<2>().0 {
                                     let cu = u16::from_le_bytes([pair[0], pair[1]]);
                                     if cu >= 0x20 && cu < 0x7F {
                                         eprint!("{} ", cu as u8 as char);
@@ -14614,8 +14613,8 @@
                                         eprintln!("      properties=0x{:08x} extra_properties=0x{:02x} command_len={}", props, extra, cmd_len);
                                         if cmd_len > 0 && rec.data.len() >= 11 + cmd_len * 2 {
                                             let wchars: Vec<u16> = rec.data[11..11 + cmd_len * 2]
-                                                .chunks_exact(2)
-                                                .map(|c| u16::from_le_bytes([c[0], c[1]]))
+                                                .as_chunks::<2>().0.iter()
+                                                .map(|c| u16::from_le_bytes(*c))
                                                 .collect();
                                             let cmd = String::from_utf16_lossy(&wchars);
                                             eprintln!("      command: {:?}", cmd);
@@ -14649,8 +14648,8 @@
                                 eprintln!("      name_len={}", name_len);
                                 if name_len > 0 && rec.data.len() >= 12 + name_len * 2 {
                                     let wchars: Vec<u16> = rec.data[12..12 + name_len * 2]
-                                        .chunks_exact(2)
-                                        .map(|c| u16::from_le_bytes([c[0], c[1]]))
+                                        .as_chunks::<2>().0.iter()
+                                        .map(|c| u16::from_le_bytes(*c))
                                         .collect();
                                     let name = String::from_utf16_lossy(&wchars);
                                     eprintln!("      name: {:?}", name);
@@ -14712,8 +14711,8 @@
             for rec in &records {
                 if rec.tag_id != tags::HWPTAG_PARA_TEXT { continue; }
                 // Scan for TAB characters (0x0009)
-                let code_units: Vec<u16> = rec.data.chunks_exact(2)
-                    .map(|c| u16::from_le_bytes([c[0], c[1]]))
+                let code_units: Vec<u16> = rec.data.as_chunks::<2>().0.iter()
+                    .map(|c| u16::from_le_bytes(*c))
                     .collect();
                 for (i, &cu) in code_units.iter().enumerate() {
                     if cu == 0x0009 && i + 7 < code_units.len() {
@@ -14827,8 +14826,8 @@
                                 if !tags::is_field_ctrl_id(cid) { return false; }
                                 let cl = u16::from_le_bytes([r.data[9], r.data[10]]) as usize;
                                 if cl > 0 && r.data.len() >= 11 + cl*2 {
-                                    let w: Vec<u16> = r.data[11..11+cl*2].chunks_exact(2)
-                                        .map(|c| u16::from_le_bytes([c[0], c[1]])).collect();
+                                    let w: Vec<u16> = r.data[11..11+cl*2].as_chunks::<2>().0.iter()
+                                        .map(|c| u16::from_le_bytes(*c)).collect();
                                     let cmd = String::from_utf16_lossy(&w);
                                     cmd.contains("메일") || cmd.contains("mail") || cmd.contains("Mail")
                                 } else { false }
@@ -15011,8 +15010,8 @@
                             let cmd_byte_end = cmd_byte_start + cmd_len * 2;
                             if rec.data.len() >= cmd_byte_end {
                                 let wchars: Vec<u16> = rec.data[cmd_byte_start..cmd_byte_end]
-                                    .chunks_exact(2)
-                                    .map(|c| u16::from_le_bytes([c[0], c[1]]))
+                                    .as_chunks::<2>().0.iter()
+                                    .map(|c| u16::from_le_bytes(*c))
                                     .collect();
                                 let cmd = String::from_utf16_lossy(&wchars);
                                 eprintln!("    command({} chars): {:?}", cmd.len(), cmd);
@@ -15110,8 +15109,8 @@
                         eprintln!("    CTRL_DATA name_len: {}", name_len);
                         if name_len > 0 && cd.len() >= 12 + name_len * 2 {
                             let wchars: Vec<u16> = cd[12..12 + name_len * 2]
-                                .chunks_exact(2)
-                                .map(|c| u16::from_le_bytes([c[0], c[1]]))
+                                .as_chunks::<2>().0.iter()
+                                .map(|c| u16::from_le_bytes(*c))
                                 .collect();
                             let name = String::from_utf16_lossy(&wchars);
                             eprintln!("    CTRL_DATA name: {:?}", name);

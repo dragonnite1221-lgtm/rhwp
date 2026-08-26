@@ -11,6 +11,12 @@ ROOT = Path(__file__).resolve().parents[1]
 WORKFLOWS = ROOT / ".github" / "workflows"
 PINNED_ACTION = re.compile(r"^\s*-?\s*uses:\s*[^\s@]+@[0-9a-f]{40}(?:\s+#.*)?$")
 NETWORK_TO_SHELL = re.compile(r"\b(?:curl|wget)\b[^\n|]*\|\s*(?:ba|z)?sh\b")
+CHECKSUM_MISMATCH_GUARD = re.compile(
+    r"if\s+\[\[\s*\"\$\{actual_sha256\}\"\s*!=\s*"
+    r"\"\$\{WASM_PACK_SHA256\}\"\s*\]\];\s*then\b"
+    r".*?\bexit\s+[1-9][0-9]*\b.*?\bfi\b",
+    re.DOTALL,
+)
 
 
 def fail(message: str) -> None:
@@ -24,6 +30,24 @@ def workflow_paths() -> list[Path]:
 def pipes_network_response_to_shell(text: str) -> bool:
     normalized = re.sub(r"(?:\\\s*)?\n\s*(?=\|)", " ", text)
     return NETWORK_TO_SHELL.search(normalized) is not None
+
+
+def wasm_pack_installer_violations(text: str) -> list[str]:
+    """Return missing portable checksum invariants for the wasm-pack installer."""
+    required_tokens = {
+        "declared expected SHA-256": "WASM_PACK_SHA256",
+        "Linux SHA-256 calculation": 'sha256sum "${ARCHIVE_PATH}"',
+        "macOS SHA-256 calculation": 'shasum -a 256 "${ARCHIVE_PATH}"',
+        "HTTPS-only curl": "--proto '=https'",
+    }
+    violations = [
+        description
+        for description, token in required_tokens.items()
+        if token not in text
+    ]
+    if CHECKSUM_MISMATCH_GUARD.search(text) is None:
+        violations.append("digest mismatch failure guard")
+    return violations
 
 
 def main() -> None:
@@ -62,9 +86,9 @@ def main() -> None:
     installer = (ROOT / ".github" / "scripts" / "install-wasm-pack.sh").read_text(
         encoding="utf-8"
     )
-    for required in ("WASM_PACK_SHA256", "sha256sum --check --strict", "--proto '=https'"):
-        if required not in installer:
-            fail(f"wasm-pack installer is missing {required!r}")
+    violations = wasm_pack_installer_violations(installer)
+    if violations:
+        fail(f"wasm-pack installer is missing {', '.join(violations)}")
 
     print(f"workflow security policy passed for {len(workflow_text)} workflows")
 

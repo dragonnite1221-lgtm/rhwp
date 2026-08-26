@@ -331,7 +331,7 @@ mod tests {
         para.char_offsets = vec![0, 9, 18];
         para.char_count = 20;
         para.controls.push(Control::ColumnDef(ColumnDef::default()));
-        para.controls.push(Control::Table(Box::new(Table::default())));
+        para.controls.push(Control::Table(Box::default()));
         para.controls.push(Control::Equation(Box::new(Equation {
             common: CommonObjAttr {
                 width: 1000,
@@ -691,7 +691,7 @@ mod tests {
         para.char_offsets = vec![8];
         para.char_count = 10;
         para.controls
-            .push(Control::Table(Box::new(Table::default())));
+            .push(Control::Table(Box::default()));
         section.paragraphs.push(para);
         doc.sections.push(section);
 

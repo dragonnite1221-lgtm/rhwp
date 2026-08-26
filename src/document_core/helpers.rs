@@ -1082,7 +1082,7 @@ mod tests {
         let para = Paragraph {
             text: "abc".to_string(),
             char_offsets: vec![0, 1, 2],
-            controls: vec![Control::Footnote(Box::new(Footnote::default()))],
+            controls: vec![Control::Footnote(Box::default())],
             ..Default::default()
         };
 

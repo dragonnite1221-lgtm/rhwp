@@ -5,7 +5,7 @@
 # 3. safari-web-extension-converter로 Xcode 프로젝트 재생성
 # 4. xcodebuild로 macOS 빌드
 
-set -e
+set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
@@ -16,11 +16,11 @@ CHROME_DIST="$ROOT/rhwp-chrome/dist"
 echo "=== rhwp-safari 빌드 시작 ==="
 
 # 1. Chrome 확장 빌드 (뷰어 + 리소스)
-echo "[1/5] Chrome 확장 빌드..."
+echo "[1/6] Chrome 확장 빌드..."
 cd "$ROOT/rhwp-chrome" && npm run build
 
 # 2. Chrome dist를 Safari dist로 복사
-echo "[2/5] Safari dist 생성..."
+echo "[2/6] Safari dist 생성..."
 rm -rf "$DIST"
 cp -R "$CHROME_DIST" "$DIST"
 
@@ -51,6 +51,11 @@ rm -f "$DIST/viewer.html.bak"
 # Safari 호환: dev-tools-inject.js 참조만 제거
 # viewer.html의 type="module", crossorigin, 절대 경로는 원본 유지
 
+if [[ "${RHWP_SAFARI_PREPARE_ONLY:-0}" == "1" ]]; then
+  echo "=== Safari dist 준비 완료 (native build 생략) ==="
+  exit 0
+fi
+
 # 5. Xcode 프로젝트 (최초 생성 시에만, 서명 설정 보존)
 if [ ! -d "$SCRIPT_DIR/HWP Viewer/HWP Viewer.xcodeproj" ]; then
   echo "[5/6] Xcode 프로젝트 생성 (최초)..."
@@ -66,7 +71,15 @@ fi
 # 6. macOS 빌드
 echo "[6/6] macOS 빌드..."
 cd "$SCRIPT_DIR/HWP Viewer"
-xcodebuild -scheme "HWP Viewer (macOS)" -configuration Debug build | tail -3
+xcodebuild_args=(
+  -project "HWP Viewer.xcodeproj"
+  -scheme "HWP Viewer (macOS)"
+  -configuration Debug
+)
+if [[ "${RHWP_SAFARI_UNSIGNED_BUILD:-0}" == "1" ]]; then
+  xcodebuild_args+=(CODE_SIGNING_ALLOWED=NO CODE_SIGNING_REQUIRED=NO)
+fi
+xcodebuild "${xcodebuild_args[@]}" build | tail -3
 
 echo ""
 echo "=== 빌드 완료 ==="

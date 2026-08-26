@@ -2,8 +2,20 @@
 set -euo pipefail
 
 readonly WASM_PACK_VERSION="0.13.1"
-readonly WASM_PACK_TARGET="x86_64-unknown-linux-musl"
-readonly WASM_PACK_SHA256="c539d91ccab2591a7e975bcf82c82e1911b03335c80aa83d67ad25ed2ad06539"
+case "$(uname -s)-$(uname -m)" in
+  Linux-x86_64)
+    readonly WASM_PACK_TARGET="x86_64-unknown-linux-musl"
+    readonly WASM_PACK_SHA256="c539d91ccab2591a7e975bcf82c82e1911b03335c80aa83d67ad25ed2ad06539"
+    ;;
+  Darwin-x86_64)
+    readonly WASM_PACK_TARGET="x86_64-apple-darwin"
+    readonly WASM_PACK_SHA256="91cd02f14e6ab04700dfc5cb67e27b2bd26638d84220f68a4e83621d98408364"
+    ;;
+  *)
+    echo "unsupported wasm-pack runner: $(uname -s)-$(uname -m)" >&2
+    exit 2
+    ;;
+esac
 readonly WASM_PACK_ARCHIVE="wasm-pack-v${WASM_PACK_VERSION}-${WASM_PACK_TARGET}.tar.gz"
 readonly WASM_PACK_URL="https://github.com/wasm-bindgen/wasm-pack/releases/download/v${WASM_PACK_VERSION}/${WASM_PACK_ARCHIVE}"
 readonly ARCHIVE_PATH="${RUNNER_TEMP:?RUNNER_TEMP is required}/${WASM_PACK_ARCHIVE}"
@@ -20,8 +32,18 @@ curl \
   --output "${ARCHIVE_PATH}" \
   "${WASM_PACK_URL}"
 
-printf '%s  %s\n' "${WASM_PACK_SHA256}" "${ARCHIVE_PATH}" \
-  | sha256sum --check --strict
+if command -v sha256sum >/dev/null 2>&1; then
+  actual_sha256="$(sha256sum "${ARCHIVE_PATH}" | awk '{print $1}')"
+elif command -v shasum >/dev/null 2>&1; then
+  actual_sha256="$(shasum -a 256 "${ARCHIVE_PATH}" | awk '{print $1}')"
+else
+  echo "no SHA-256 implementation is available" >&2
+  exit 1
+fi
+if [[ "${actual_sha256}" != "${WASM_PACK_SHA256}" ]]; then
+  echo "wasm-pack archive SHA-256 mismatch" >&2
+  exit 1
+fi
 
 mkdir -p "${EXTRACT_PATH}" "${BIN_PATH}"
 tar -xzf "${ARCHIVE_PATH}" -C "${EXTRACT_PATH}"

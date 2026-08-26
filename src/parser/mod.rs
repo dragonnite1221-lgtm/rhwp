@@ -921,7 +921,7 @@ mod tests {
             .expect("samples/issue_265.hwp should exist in repo");
         assert_eq!(detect_format(&data), FileFormat::Hwp3);
         let doc = parse_document(&data).expect("Should successfully parse HWP3 sample");
-        assert!(doc.sections.len() > 0, "Document should have at least one section");
+        assert!(!doc.sections.is_empty(), "Document should have at least one section");
     }
 
     #[test]
