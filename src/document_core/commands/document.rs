@@ -828,20 +828,35 @@ impl DocumentCore {
                     // (모델 불변식 위반이지만 panic 대신 안전하게 무시).
                     continue;
                 }
-                let removed_len = end - start;
                 let new_text: String = chars[..start].iter().chain(chars[end..].iter()).collect();
                 para.text = new_text;
                 para.field_ranges[fri].end_char_idx = start;
-                // 이후 field_ranges의 char_idx 조정
+                // 이후 field_ranges의 char_idx 조정.
+                //
+                // 단순히 "end 이상이면 shift" 하는 방식은 다른 필드의 범위가 지워진
+                // 구간 안쪽에 완전히 포함된 경우(예: 겹치되 끝점을 공유하는 중첩
+                // 필드) start와 end가 서로 다른 규칙으로 이동해 역전된 범위
+                // (start > end)를 만들 수 있다. 대신 각 좌표를 독립적으로, 단조
+                // 비감소 함수로 매핑한다:
+                //   - start 이전 좌표는 그대로 유지
+                //   - end 이후 좌표는 (end-start)만큼 당겨진다
+                //   - 지워진 구간 [start, end) 내부 좌표는 start로 수렴한다
+                // 이 매핑은 단조 비감소이므로, 원래 start<=end였던 범위는 매핑 후에도
+                // 항상 start<=end를 유지한다 — 역전이 구조적으로 발생할 수 없다.
+                let map_pos = |pos: usize| -> usize {
+                    if pos <= start {
+                        pos
+                    } else if pos >= end {
+                        pos - (end - start)
+                    } else {
+                        start
+                    }
+                };
                 for i in 0..para.field_ranges.len() {
                     if i == fri { continue; }
                     let other = &mut para.field_ranges[i];
-                    if other.start_char_idx >= end {
-                        other.start_char_idx -= removed_len;
-                    }
-                    if other.end_char_idx >= end {
-                        other.end_char_idx -= removed_len;
-                    }
+                    other.start_char_idx = map_pos(other.start_char_idx);
+                    other.end_char_idx = map_pos(other.end_char_idx);
                 }
             }
         }
@@ -1174,6 +1189,50 @@ mod clear_initial_field_texts_tests {
 
         let para = &doc.sections[0].paragraphs[0];
         assert_eq!(para.text, "");
+        assert_eq!(para.field_ranges[0].start_char_idx, 0);
+        assert_eq!(para.field_ranges[0].end_char_idx, 0);
+        assert_eq!(para.field_ranges[1].start_char_idx, 0);
+        assert_eq!(para.field_ranges[1].end_char_idx, 0);
+    }
+
+    /// Regression test for codex-flagged issue: nested but NON-identical ranges
+    /// sharing an end index. Parser emits field_ranges in stack-pop order, so an
+    /// inner field's range is pushed BEFORE its enclosing outer field's range.
+    /// If both guide texts match (inner="B" at [1,2), outer="AB" at [0,2) over
+    /// text "AB"), processing removals in reverse handles the OUTER field first
+    /// (it has the higher field_ranges index). The old shift-based adjustment
+    /// only decremented `end_char_idx` when it was >= the removed end, leaving
+    /// `start_char_idx` untouched — producing an inverted range (start > end)
+    /// for the inner field. The fix maps both endpoints through a monotonic
+    /// position function, so both endpoints collapse to the same value and the
+    /// inner field ends up correctly normalized to an empty range.
+    #[test]
+    fn clear_initial_field_texts_normalizes_nested_unequal_range_sharing_endpoint() {
+        let mut doc = Document::default();
+        let mut section = Section::default();
+        let mut para = Paragraph::default();
+        para.text = "AB".to_string();
+        // controls[0] = outer field (guide "AB"), controls[1] = inner field (guide "B")
+        para.controls.push(click_here_field(1, "AB"));
+        para.controls.push(click_here_field(2, "B"));
+        // field_ranges pushed in parser (stack-pop / inner-first) order:
+        // index 0 = inner [1,2) over control_idx 1, index 1 = outer [0,2) over control_idx 0
+        para.field_ranges.push(FieldRange { start_char_idx: 1, end_char_idx: 2, control_idx: 1 });
+        para.field_ranges.push(FieldRange { start_char_idx: 0, end_char_idx: 2, control_idx: 0 });
+        section.paragraphs.push(para);
+        doc.sections.push(section);
+
+        DocumentCore::clear_initial_field_texts(&mut doc);
+
+        let para = &doc.sections[0].paragraphs[0];
+        for fr in &para.field_ranges {
+            assert!(
+                fr.start_char_idx <= fr.end_char_idx,
+                "field_range must never be inverted: {:?}", fr
+            );
+        }
+        assert_eq!(para.text, "", "both guide texts covered the whole paragraph");
+        // inner (index 0) and outer (index 1) both collapse to the empty range at 0
         assert_eq!(para.field_ranges[0].start_char_idx, 0);
         assert_eq!(para.field_ranges[0].end_char_idx, 0);
         assert_eq!(para.field_ranges[1].start_char_idx, 0);
