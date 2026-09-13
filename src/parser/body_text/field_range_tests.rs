@@ -129,3 +129,6 @@ fn test_roundtrip_empty_field_nested_at_same_start_as_spanning_field() {
         "필드1은 [0,1)로 유지되어야 한다 (텍스트 전체를 포함)"
     );
 }
+
+#[cfg(test)]
+mod field_end_interleave_tests;

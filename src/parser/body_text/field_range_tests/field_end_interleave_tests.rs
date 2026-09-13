@@ -5,7 +5,7 @@
 //! 동일하게 [p,p)로 남기 때문) — 그래서 직렬화 결과의 raw code unit을 직접
 //! 검사한다. `field_range_tests.rs`가 200줄을 넘지 않도록 별도 파일로 분리했다.
 
-use super::*;
+use super::super::*;
 
 /// Regression test for a second codex-flagged issue found in the first
 /// interleaving fix: draining a due FIELD_END *immediately* after its own
