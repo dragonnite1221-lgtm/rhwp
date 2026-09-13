@@ -46,7 +46,7 @@
 591 src/ooxml_chart/renderer.rs
 756 src/paint/builder.rs
 1044 src/paint/json.rs
-886 src/parser/body_text.rs
+888 src/parser/body_text.rs
 696 src/parser/body_text/tests.rs
 255 src/parser/byte_reader.rs
 988 src/parser/cfb_reader.rs

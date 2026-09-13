@@ -356,18 +356,31 @@ fn serialize_para_text(para: &Paragraph) -> Vec<u8> {
         //      놓는다 (비-필드 컨트롤은 대기 중인 FIELD_END가 있어도 자유롭게
         //      먼저 놓일 수 있다 — 열려 있는 필드 안에 남을 수 있게 하기 위해서다).
         //   3. 둘 다 아니면 이 갭에서 할 일이 끝난 것이다.
+        //
+        // 대기 목록(field_ends[i]) 안에 END가 *둘 이상* 밀려 있을 수도 있다 —
+        // 예를 들어 폭이 0인 두 필드가 같은 위치에서 중첩된 경우(outer가
+        // inner를 감싸고, 둘 다 [p,p))다. 이때 Vec 안의 순서는 field_ranges
+        // 배열 순서, 즉 파서의 실제 닫힘(스택 pop) 순서와 항상 같다 — 안쪽
+        // 필드가 먼저 닫히므로 항상 먼저 들어있다. 그러므로 "조건에 맞는 아무
+        // 항목이나" 드레인하면 안 되고 반드시 **맨 앞(index 0)** 항목만
+        // 검사·드레인해야 한다. 맨 앞 항목이 아직 준비되지 않았다면(자신의
+        // BEGIN이 아직 안 나왔다면) 그 뒤에 있는 항목이 우연히 조건을 만족하더라도
+        // 건너뛰어 먼저 닫아서는 안 된다 — outer가 inner보다 먼저 열렸다고 해서
+        // inner보다 먼저 닫히면 중첩 구조 자체가 깨진다(outer CLOSE, 그 다음에야
+        // inner BEGIN이 나오면 inner가 outer 밖으로 밀려난다).
         while prev_end + 8 <= offset {
             let next_is_field_begin = para
                 .controls
                 .get(ctrl_idx)
                 .is_some_and(|c| matches!(c, Control::Field(_)));
             let no_more_controls = ctrl_idx >= para.controls.len();
-            let due_end_idx = field_ends
+            let front_is_due = field_ends
                 .get(&i)
-                .and_then(|ids| ids.iter().position(|&(cidx, _)| cidx < ctrl_idx));
+                .and_then(|ids| ids.first())
+                .is_some_and(|&(cidx, _)| cidx < ctrl_idx);
 
-            if let Some(idx) = due_end_idx.filter(|_| next_is_field_begin || no_more_controls) {
-                let (_, ctrl_id) = field_ends.get_mut(&i).unwrap().remove(idx);
+            if front_is_due && (next_is_field_begin || no_more_controls) {
+                let (_, ctrl_id) = field_ends.get_mut(&i).unwrap().remove(0);
                 push_extended_ctrl(&mut code_units, 0x0004, ctrl_id);
                 prev_end += 8;
             } else if ctrl_idx < para.controls.len() {
