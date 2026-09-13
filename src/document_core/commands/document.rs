@@ -891,4 +891,6 @@ impl DocumentCore {
 #[cfg(test)]
 mod validate_linesegs_tests;
 #[cfg(test)]
+mod needs_reflow_tests;
+#[cfg(test)]
 mod clear_initial_field_texts_tests;

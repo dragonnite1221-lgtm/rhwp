@@ -5,7 +5,6 @@
 357 src/document_core/builders/exam_paper.rs
 1202 src/document_core/commands/clipboard.rs
 1093 src/document_core/commands/document.rs
-236 src/document_core/commands/document/validate_linesegs_tests.rs
 477 src/document_core/commands/footnote_ops.rs
 1257 src/document_core/commands/formatting.rs
 1260 src/document_core/commands/header_footer_ops.rs
