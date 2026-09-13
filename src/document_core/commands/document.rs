@@ -811,9 +811,24 @@ impl DocumentCore {
                 }
             }
             // 뒤에서부터 삭제 (인덱스 안정성 유지)
-            for &(fri, start, end) in removals.iter().rev() {
-                let removed_len = end - start;
+            // 주의: removals의 (start, end)는 수집 시점의 스냅샷이라 겹치는 삭제(예: 범위가
+            // 동일한 중첩 필드)가 먼저 처리되면 stale 해진다. 매 반복마다 field_ranges에서
+            // 현재(이미 조정된) 범위를 다시 읽어야 한다 — 이전 삭제로 이미 collapse된 필드를
+            // 다시 삭제하면 아래 슬라이스가 범위를 벗어나 panic한다.
+            for &(fri, _start, _end) in removals.iter().rev() {
+                let start = para.field_ranges[fri].start_char_idx;
+                let end = para.field_ranges[fri].end_char_idx;
+                if start >= end {
+                    // 겹치는 이전 삭제로 이미 빈 범위가 됨 — 더 지울 것이 없다.
+                    continue;
+                }
                 let chars: Vec<char> = para.text.chars().collect();
+                if end > chars.len() {
+                    // 방어적 가드: 범위가 현재 텍스트 길이를 벗어나면 스킵한다
+                    // (모델 불변식 위반이지만 panic 대신 안전하게 무시).
+                    continue;
+                }
+                let removed_len = end - start;
                 let new_text: String = chars[..start].iter().chain(chars[end..].iter()).collect();
                 para.text = new_text;
                 para.field_ranges[fri].end_char_idx = start;
@@ -1089,5 +1104,79 @@ mod validate_linesegs_tests {
         seg.line_height = 1000;
         para.line_segs.push(seg);
         assert!(DocumentCore::needs_reflow_broadly(&para));
+    }
+}
+
+/// rhwp-1 회귀 테스트: clear_initial_field_texts가 중첩(동일 범위) ClickHere
+/// 안내문을 처리할 때 stale 범위를 재사용해 panic하던 결함.
+#[cfg(test)]
+mod clear_initial_field_texts_tests {
+    use super::*;
+    use crate::model::control::{Control, Field, FieldType};
+    use crate::model::document::{Document, Section};
+    use crate::model::paragraph::{FieldRange, Paragraph};
+
+    fn click_here_field(ctrl_id: u32, guide: &str) -> Control {
+        Control::Field(Field {
+            field_type: FieldType::ClickHere,
+            command: format!("Direction:wstring:{}:{}", guide.chars().count(), guide),
+            properties: 0, // bit 15 == 0 → 초기 상태
+            extra_properties: 0,
+            field_id: ctrl_id,
+            ctrl_id,
+            ctrl_data_name: None,
+            memo_index: 0,
+        })
+    }
+
+    /// 트리거: 문단 텍스트 "X"를 범위가 완전히 동일한([0,1)) 중첩 ClickHere 필드
+    /// 두 개가 감싼 문서를 로드한다. 수정 전에는 두 번째(뒤에서부터 처리되는)
+    /// 삭제가 stale end=1을 빈 문자열에 적용해 슬라이스 out-of-range panic이 발생했다.
+    #[test]
+    fn clear_initial_field_texts_survives_nested_same_range_fields() {
+        let mut doc = Document::default();
+        let mut section = Section::default();
+        let mut para = Paragraph::default();
+        para.text = "X".to_string();
+        para.controls.push(click_here_field(1, "X")); // 외부 필드 (control_idx 0)
+        para.controls.push(click_here_field(2, "X")); // 내부 필드 (control_idx 1)
+        para.field_ranges.push(FieldRange { start_char_idx: 0, end_char_idx: 1, control_idx: 0 });
+        para.field_ranges.push(FieldRange { start_char_idx: 0, end_char_idx: 1, control_idx: 1 });
+        section.paragraphs.push(para);
+        doc.sections.push(section);
+
+        // 수정 전: 두 번째 반복에서 chars[1..] (len 0) 슬라이스로 panic.
+        DocumentCore::clear_initial_field_texts(&mut doc);
+
+        let para = &doc.sections[0].paragraphs[0];
+        assert_eq!(para.text, "", "두 안내문이 모두 제거되어 빈 문자열이어야 한다");
+        for fr in &para.field_ranges {
+            assert_eq!(fr.start_char_idx, 0);
+            assert_eq!(fr.end_char_idx, 0, "빈 필드로 정규화되어야 한다 (start==end)");
+        }
+    }
+
+    /// 서로 다른 범위의 중첩 안내문(겹치지 않음)도 정상적으로 정규화되는지 확인.
+    #[test]
+    fn clear_initial_field_texts_handles_disjoint_ranges() {
+        let mut doc = Document::default();
+        let mut section = Section::default();
+        let mut para = Paragraph::default();
+        para.text = "AB".to_string();
+        para.controls.push(click_here_field(1, "A"));
+        para.controls.push(click_here_field(2, "B"));
+        para.field_ranges.push(FieldRange { start_char_idx: 0, end_char_idx: 1, control_idx: 0 });
+        para.field_ranges.push(FieldRange { start_char_idx: 1, end_char_idx: 2, control_idx: 1 });
+        section.paragraphs.push(para);
+        doc.sections.push(section);
+
+        DocumentCore::clear_initial_field_texts(&mut doc);
+
+        let para = &doc.sections[0].paragraphs[0];
+        assert_eq!(para.text, "");
+        assert_eq!(para.field_ranges[0].start_char_idx, 0);
+        assert_eq!(para.field_ranges[0].end_char_idx, 0);
+        assert_eq!(para.field_ranges[1].start_char_idx, 0);
+        assert_eq!(para.field_ranges[1].end_char_idx, 0);
     }
 }
