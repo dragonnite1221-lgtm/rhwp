@@ -46,7 +46,7 @@
 591 src/ooxml_chart/renderer.rs
 756 src/paint/builder.rs
 1044 src/paint/json.rs
-884 src/parser/body_text.rs
+886 src/parser/body_text.rs
 696 src/parser/body_text/tests.rs
 255 src/parser/byte_reader.rs
 988 src/parser/cfb_reader.rs
@@ -113,6 +113,7 @@
 3012 src/renderer/typeset.rs
 2740 src/renderer/web_canvas.rs
 906 src/serializer/body_text.rs
+413 src/serializer/body_text/tests.rs
 236 src/serializer/byte_writer.rs
 1320 src/serializer/cfb_writer/tests.rs
 1743 src/serializer/control.rs

@@ -326,34 +326,52 @@ fn serialize_para_text(para: &Paragraph) -> Vec<u8> {
             prev_end
         };
 
-        // FIELD_END 선(先) 배치: 이 위치(i)에서 닫혀야 하는 필드 중 자신의
-        // FIELD_BEGIN이 이미 출력된 것(control_idx < ctrl_idx)은 다음 갭-채우기
-        // while 루프보다 먼저 내보내야 한다. 그렇지 않으면 이 갭이 (아직 출력되지
-        // 않은) 다음 컨트롤의 FIELD_BEGIN 슬롯으로 잘못 소비되어, 종료 마커가
-        // 다음 필드의 시작 마커 뒤로 밀리며 필드 범위가 뒤바뀐다 (rhwp-3).
-        if let Some(ids) = field_ends.get_mut(&i) {
-            let mut still_pending = Vec::new();
-            for &(cidx, ctrl_id) in ids.iter() {
-                if cidx < ctrl_idx {
-                    push_extended_ctrl(&mut code_units, 0x0004, ctrl_id);
-                    prev_end += 8;
-                } else {
-                    still_pending.push((cidx, ctrl_id));
+        // 이 위치(i)에서 닫혀야 하는 필드 중, 자신의 FIELD_BEGIN이 이미 출력된
+        // 것(control_idx < ctrl_idx)은 즉시 내보낸다. HWP 파서는 FIELD_BEGIN/
+        // FIELD_END를 순수하게 스택(LIFO)으로 매칭하므로 — 마커에 박힌 ctrl_id
+        // 값은 보지 않고 그냥 top-of-stack을 pop한다 — 어떤 필드의 END가
+        // 나오는 시점에 아직 열려 있는 다른 필드의 BEGIN이 그 사이에 끼어들면
+        // 안 된다. 그러므로 "갭에 컨트롤 배치" 루프 안에서 컨트롤을 하나 놓을
+        // 때마다(자신의 BEGIN이 막 나온 empty/self 케이스 포함) 그 즉시 드레인
+        // 해야 한다 — 루프가 끝난 뒤 한 번만 몰아서 처리하면(post-pass) 그 사이에
+        // 놓인 다음 필드의 BEGIN이 스택에서 먼저 pop되어 두 필드의 범위가
+        // 뒤바뀐다 (rhwp-3).
+        let drain_due_field_ends = |code_units: &mut Vec<u16>,
+                                     field_ends: &mut BTreeMap<usize, Vec<(usize, u32)>>,
+                                     prev_end: &mut u32,
+                                     ctrl_idx: usize| {
+            if let Some(ids) = field_ends.get_mut(&i) {
+                let mut still_pending = Vec::new();
+                for &(cidx, ctrl_id) in ids.iter() {
+                    if cidx < ctrl_idx {
+                        push_extended_ctrl(code_units, 0x0004, ctrl_id);
+                        *prev_end += 8;
+                    } else {
+                        still_pending.push((cidx, ctrl_id));
+                    }
                 }
+                *ids = still_pending;
             }
-            *ids = still_pending;
-        }
+        };
 
-        // 갭에 컨트롤 문자 배치 (각 컨트롤 = 8 code unit)
+        // 이전 갭에서 이미 BEGIN이 나온 필드의 END부터 먼저 드레인한다.
+        drain_due_field_ends(&mut code_units, &mut field_ends, &mut prev_end, ctrl_idx);
+
+        // 갭에 컨트롤 문자 배치 (각 컨트롤 = 8 code unit). 컨트롤을 하나 놓을
+        // 때마다 그 컨트롤(그리고 그보다 앞선 컨트롤)의 FIELD_END가 이 위치에서
+        // 대기 중이면 다음 컨트롤을 놓기 전에 즉시 인터리브해서 내보낸다.
         while prev_end + 8 <= offset && ctrl_idx < para.controls.len() {
             let (ctrl_code, ctrl_id) = control_char_code_and_id(&para.controls[ctrl_idx]);
             push_extended_ctrl(&mut code_units, ctrl_code, ctrl_id);
             ctrl_idx += 1;
             prev_end += 8;
+            drain_due_field_ends(&mut code_units, &mut field_ends, &mut prev_end, ctrl_idx);
         }
 
-        // FIELD_END 후(後) 배치: 방금 while 루프에서 자신의 FIELD_BEGIN이 막
-        // 출력된 필드(empty/self 케이스)는 여기서 바로 뒤이어 닫는다.
+        // 최종 안전망: 위 인터리브 과정에서도 자신의 FIELD_BEGIN을 만나지 못한
+        // (예: char_offsets가 실제 필요한 갭보다 좁게 주어진 비정상 입력) 항목은
+        // 텍스트 문자 앞에서 그대로 흘려보낸다 (기존 동작 유지, panic 방지용
+        // 최후의 fallback일 뿐 정상 경로에서는 도달하지 않는다).
         if let Some(ids) = field_ends.get(&i) {
             for &(_cidx, ctrl_id) in ids {
                 push_extended_ctrl(&mut code_units, 0x0004, ctrl_id);
@@ -515,413 +533,4 @@ fn control_char_code_and_id(ctrl: &Control) -> (u16, u32) {
 }
 
 #[cfg(test)]
-mod tests {
-    use super::*;
-    use crate::model::control::AutoNumber;
-    use crate::model::document::{Section, SectionDef};
-    use crate::model::paragraph::{CharShapeRef, LineSeg, Paragraph, RangeTag};
-    use crate::parser::body_text::parse_body_text_section;
-
-    /// 간단한 텍스트 문단 라운드트립
-    #[test]
-    fn test_roundtrip_simple_text() {
-        let para = Paragraph {
-            char_count: 6,
-            text: "Hello".to_string(),
-            char_offsets: vec![0, 1, 2, 3, 4],
-            char_shapes: vec![CharShapeRef {
-                start_pos: 0,
-                char_shape_id: 0,
-            }],
-            line_segs: vec![LineSeg {
-                text_start: 0,
-                line_height: 400,
-                text_height: 400,
-                baseline_distance: 320,
-                ..Default::default()
-            }],
-            ..Default::default()
-        };
-
-        let section = Section {
-            paragraphs: vec![para],
-            raw_stream: None,
-            ..Default::default()
-        };
-
-        let bytes = serialize_section(&section);
-        let parsed = parse_body_text_section(&bytes).unwrap();
-
-        assert_eq!(parsed.paragraphs.len(), 1);
-        assert_eq!(parsed.paragraphs[0].text, "Hello");
-        assert_eq!(parsed.paragraphs[0].char_offsets, vec![0, 1, 2, 3, 4]);
-    }
-
-    /// 한글 텍스트 라운드트립
-    #[test]
-    fn test_roundtrip_korean_text() {
-        let para = Paragraph {
-            char_count: 10,
-            text: "한글 테스트입니다.".to_string(),
-            char_offsets: vec![0, 1, 2, 3, 4, 5, 6, 7, 8],
-            char_shapes: vec![CharShapeRef {
-                start_pos: 0,
-                char_shape_id: 1,
-            }],
-            line_segs: vec![LineSeg {
-                text_start: 0,
-                ..Default::default()
-            }],
-            ..Default::default()
-        };
-
-        let section = Section {
-            paragraphs: vec![para],
-            raw_stream: None,
-            ..Default::default()
-        };
-
-        let bytes = serialize_section(&section);
-        let parsed = parse_body_text_section(&bytes).unwrap();
-
-        assert_eq!(parsed.paragraphs[0].text, "한글 테스트입니다.");
-    }
-
-    /// 탭 문자 포함 라운드트립
-    #[test]
-    fn test_roundtrip_with_tab() {
-        let para = Paragraph {
-            char_count: 4,
-            text: "A\tB".to_string(),
-            char_offsets: vec![0, 1, 9],
-            char_shapes: vec![CharShapeRef {
-                start_pos: 0,
-                char_shape_id: 0,
-            }],
-            line_segs: vec![LineSeg {
-                text_start: 0,
-                ..Default::default()
-            }],
-            ..Default::default()
-        };
-
-        let section = Section {
-            paragraphs: vec![para],
-            raw_stream: None,
-            ..Default::default()
-        };
-
-        let bytes = serialize_section(&section);
-        let parsed = parse_body_text_section(&bytes).unwrap();
-
-        assert_eq!(parsed.paragraphs[0].text, "A\tB");
-        assert_eq!(parsed.paragraphs[0].char_offsets, vec![0, 1, 9]);
-    }
-
-    /// 줄바꿈 포함 라운드트립
-    #[test]
-    fn test_roundtrip_with_linebreak() {
-        let para = Paragraph {
-            char_count: 4,
-            text: "A\nB".to_string(),
-            char_offsets: vec![0, 1, 2],
-            char_shapes: vec![CharShapeRef {
-                start_pos: 0,
-                char_shape_id: 0,
-            }],
-            line_segs: vec![LineSeg {
-                text_start: 0,
-                ..Default::default()
-            }],
-            ..Default::default()
-        };
-
-        let section = Section {
-            paragraphs: vec![para],
-            raw_stream: None,
-            ..Default::default()
-        };
-
-        let bytes = serialize_section(&section);
-        let parsed = parse_body_text_section(&bytes).unwrap();
-
-        assert_eq!(parsed.paragraphs[0].text, "A\nB");
-    }
-
-    /// 빈 문단 직렬화
-    #[test]
-    fn test_serialize_empty_paragraph() {
-        let para = Paragraph {
-            char_count: 0,
-            ..Default::default()
-        };
-
-        let section = Section {
-            paragraphs: vec![para],
-            raw_stream: None,
-            ..Default::default()
-        };
-
-        let bytes = serialize_section(&section);
-        let parsed = parse_body_text_section(&bytes).unwrap();
-
-        assert_eq!(parsed.paragraphs.len(), 1);
-        assert!(parsed.paragraphs[0].text.is_empty());
-    }
-
-    /// 여러 문단 라운드트립
-    #[test]
-    fn test_roundtrip_multiple_paragraphs() {
-        let para1 = Paragraph {
-            char_count: 4,
-            text: "ABC".to_string(),
-            char_offsets: vec![0, 1, 2],
-            char_shapes: vec![CharShapeRef {
-                start_pos: 0,
-                char_shape_id: 0,
-            }],
-            para_shape_id: 0,
-            style_id: 0,
-            line_segs: vec![LineSeg {
-                text_start: 0,
-                ..Default::default()
-            }],
-            ..Default::default()
-        };
-
-        let para2 = Paragraph {
-            char_count: 4,
-            text: "DEF".to_string(),
-            char_offsets: vec![0, 1, 2],
-            char_shapes: vec![CharShapeRef {
-                start_pos: 0,
-                char_shape_id: 1,
-            }],
-            para_shape_id: 1,
-            style_id: 0,
-            line_segs: vec![LineSeg {
-                text_start: 0,
-                ..Default::default()
-            }],
-            ..Default::default()
-        };
-
-        let section = Section {
-            paragraphs: vec![para1, para2],
-            raw_stream: None,
-            ..Default::default()
-        };
-
-        let bytes = serialize_section(&section);
-        let parsed = parse_body_text_section(&bytes).unwrap();
-
-        assert_eq!(parsed.paragraphs.len(), 2);
-        assert_eq!(parsed.paragraphs[0].text, "ABC");
-        assert_eq!(parsed.paragraphs[1].text, "DEF");
-        assert_eq!(parsed.paragraphs[1].para_shape_id, 1);
-    }
-
-    /// PARA_CHAR_SHAPE 라운드트립
-    #[test]
-    fn test_roundtrip_char_shapes() {
-        let para = Paragraph {
-            char_count: 5,
-            text: "ABCD".to_string(),
-            char_offsets: vec![0, 1, 2, 3],
-            char_shapes: vec![
-                CharShapeRef {
-                    start_pos: 0,
-                    char_shape_id: 1,
-                },
-                CharShapeRef {
-                    start_pos: 2,
-                    char_shape_id: 3,
-                },
-            ],
-            line_segs: vec![LineSeg {
-                text_start: 0,
-                ..Default::default()
-            }],
-            ..Default::default()
-        };
-
-        let section = Section {
-            paragraphs: vec![para],
-            raw_stream: None,
-            ..Default::default()
-        };
-
-        let bytes = serialize_section(&section);
-        let parsed = parse_body_text_section(&bytes).unwrap();
-
-        assert_eq!(parsed.paragraphs[0].char_shapes.len(), 2);
-        assert_eq!(parsed.paragraphs[0].char_shapes[0].start_pos, 0);
-        assert_eq!(parsed.paragraphs[0].char_shapes[0].char_shape_id, 1);
-        assert_eq!(parsed.paragraphs[0].char_shapes[1].start_pos, 2);
-        assert_eq!(parsed.paragraphs[0].char_shapes[1].char_shape_id, 3);
-    }
-
-    /// PARA_LINE_SEG 라운드트립
-    #[test]
-    fn test_roundtrip_line_segs() {
-        let para = Paragraph {
-            char_count: 3,
-            text: "AB".to_string(),
-            char_offsets: vec![0, 1],
-            char_shapes: vec![CharShapeRef {
-                start_pos: 0,
-                char_shape_id: 0,
-            }],
-            line_segs: vec![LineSeg {
-                text_start: 0,
-                vertical_pos: 100,
-                line_height: 500,
-                text_height: 400,
-                baseline_distance: 300,
-                line_spacing: 200,
-                column_start: 0,
-                segment_width: 42000,
-                tag: 0x01,
-            }],
-            ..Default::default()
-        };
-
-        let section = Section {
-            paragraphs: vec![para],
-            raw_stream: None,
-            ..Default::default()
-        };
-
-        let bytes = serialize_section(&section);
-        let parsed = parse_body_text_section(&bytes).unwrap();
-
-        assert_eq!(parsed.paragraphs[0].line_segs.len(), 1);
-        let seg = &parsed.paragraphs[0].line_segs[0];
-        assert_eq!(seg.vertical_pos, 100);
-        assert_eq!(seg.line_height, 500);
-        assert_eq!(seg.segment_width, 42000);
-        assert!(seg.is_first_line_of_page());
-    }
-
-    /// PARA_RANGE_TAG 라운드트립
-    #[test]
-    fn test_roundtrip_range_tags() {
-        let para = Paragraph {
-            char_count: 20,
-            text: "ABCDEFGHIJKLMNOPQRS".to_string(),
-            char_offsets: (0..19).collect(),
-            char_shapes: vec![CharShapeRef {
-                start_pos: 0,
-                char_shape_id: 0,
-            }],
-            line_segs: vec![LineSeg {
-                text_start: 0,
-                ..Default::default()
-            }],
-            range_tags: vec![RangeTag {
-                start: 5,
-                end: 15,
-                tag: 0x01000003,
-            }],
-            ..Default::default()
-        };
-
-        let section = Section {
-            paragraphs: vec![para],
-            raw_stream: None,
-            ..Default::default()
-        };
-
-        let bytes = serialize_section(&section);
-        let parsed = parse_body_text_section(&bytes).unwrap();
-
-        assert_eq!(parsed.paragraphs[0].range_tags.len(), 1);
-        assert_eq!(parsed.paragraphs[0].range_tags[0].start, 5);
-        assert_eq!(parsed.paragraphs[0].range_tags[0].end, 15);
-        assert_eq!(parsed.paragraphs[0].range_tags[0].tag, 0x01000003);
-    }
-
-    /// 컨트롤 문자 코드 매핑 테스트
-    #[test]
-    fn test_control_char_code() {
-        assert_eq!(
-            control_char_code_and_id(&Control::SectionDef(Box::default())).0,
-            0x0002
-        );
-        assert_eq!(
-            control_char_code_and_id(&Control::AutoNumber(AutoNumber::default())).0,
-            0x0012
-        );
-    }
-
-    /// 확장 컨트롤 포함 문단 라운드트립
-    #[test]
-    fn test_roundtrip_with_section_def_control() {
-        let sd = SectionDef {
-            flags: 0,
-            default_tab_spacing: 800,
-            page_num: 1,
-            ..Default::default()
-        };
-
-        let para = Paragraph {
-            char_count: 4,
-            text: "AB".to_string(),
-            char_offsets: vec![0, 9], // 0~7 = secd 컨트롤, 8~8 gap? 아니, 0=A, 1~8=secd, 9=B
-            char_shapes: vec![CharShapeRef {
-                start_pos: 0,
-                char_shape_id: 0,
-            }],
-            line_segs: vec![LineSeg {
-                text_start: 0,
-                ..Default::default()
-            }],
-            controls: vec![Control::SectionDef(Box::new(sd))],
-            ..Default::default()
-        };
-
-        let section = Section {
-            paragraphs: vec![para],
-            raw_stream: None,
-            ..Default::default()
-        };
-
-        let bytes = serialize_section(&section);
-        let parsed = parse_body_text_section(&bytes).unwrap();
-
-        assert_eq!(parsed.paragraphs[0].text, "AB");
-        // SectionDef 컨트롤이 파싱되어 section_def에 반영
-        assert_eq!(parsed.section_def.default_tab_spacing, 800);
-    }
-
-    /// 단 나누기 종류 라운드트립
-    #[test]
-    fn test_roundtrip_break_type() {
-        let para = Paragraph {
-            char_count: 2,
-            text: "A".to_string(),
-            char_offsets: vec![0],
-            column_type: ColumnBreakType::Page,
-            char_shapes: vec![CharShapeRef {
-                start_pos: 0,
-                char_shape_id: 0,
-            }],
-            line_segs: vec![LineSeg {
-                text_start: 0,
-                ..Default::default()
-            }],
-            ..Default::default()
-        };
-
-        let section = Section {
-            paragraphs: vec![para],
-            raw_stream: None,
-            ..Default::default()
-        };
-
-        let bytes = serialize_section(&section);
-        let parsed = parse_body_text_section(&bytes).unwrap();
-
-        assert_eq!(parsed.paragraphs[0].column_type, ColumnBreakType::Page);
-    }
-}
+mod tests;
