@@ -1090,4 +1090,52 @@ mod tests {
             "parent must stay anchored at 0 and only its end should grow, not (1,3)"
         );
     }
+
+    /// Independent stress test (not from codex): three levels of nesting all
+    /// sharing the same start position, exercising the combined open-order
+    /// (control_idx) + close-order (field_ranges index) check across more
+    /// than one ancestor at once. text "ABC" with outer=[0,3) wrapping
+    /// middle=[0,2) wrapping inner=[0,1); all three start at 0. Shrinking the
+    /// innermost field to empty must adjust BOTH ancestors' ends (and only
+    /// their ends), leaving all three starts pinned at 0.
+    #[test]
+    fn set_field_text_shrinking_innermost_of_three_nested_fields_adjusts_both_ancestors() {
+        use crate::model::document::Section;
+
+        let mut core = DocumentCore::new_empty();
+        core.document.sections.push(Section::default());
+        let mut para = Paragraph::default();
+        para.text = "ABC".to_string();
+        para.controls.push(make_field_control(1)); // outer, control_idx 0 (opens first)
+        para.controls.push(make_field_control(2)); // middle, control_idx 1
+        para.controls.push(make_field_control(3)); // inner, control_idx 2 (opens last)
+        // Parser stack-pop order: innermost closes first.
+        para.field_ranges.push(FieldRange { start_char_idx: 0, end_char_idx: 1, control_idx: 2 }); // inner (index 0)
+        para.field_ranges.push(FieldRange { start_char_idx: 0, end_char_idx: 2, control_idx: 1 }); // middle (index 1)
+        para.field_ranges.push(FieldRange { start_char_idx: 0, end_char_idx: 3, control_idx: 0 }); // outer (index 2)
+        core.document.sections[0].paragraphs.push(para);
+
+        let location = FieldLocation { section_index: 0, para_index: 0, nested_path: vec![] };
+
+        // Shrink inner (index 0) to empty: "ABC" -> "BC"
+        core.set_field_text_at(&location, 0, "").unwrap();
+
+        let para = &core.document.sections[0].paragraphs[0];
+        assert_eq!(para.text, "BC");
+        assert_eq!(
+            (para.field_ranges[0].start_char_idx, para.field_ranges[0].end_char_idx),
+            (0, 0),
+            "inner collapses to empty"
+        );
+        assert_eq!(
+            (para.field_ranges[1].start_char_idx, para.field_ranges[1].end_char_idx),
+            (0, 1),
+            "middle must stay anchored at 0, only its end shrinks"
+        );
+        assert_eq!(
+            (para.field_ranges[2].start_char_idx, para.field_ranges[2].end_char_idx),
+            (0, 2),
+            "outer must stay anchored at 0, only its end shrinks"
+        );
+    }
 }
