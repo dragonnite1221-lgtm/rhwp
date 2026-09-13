@@ -1238,4 +1238,42 @@ mod clear_initial_field_texts_tests {
         assert_eq!(para.field_ranges[1].start_char_idx, 0);
         assert_eq!(para.field_ranges[1].end_char_idx, 0);
     }
+
+    /// Independent stress test (not from codex): three-level-deep nesting that
+    /// all share the same START instead of the same END (the mirror image of
+    /// the case above). text "ABC" with inner="A" [0,1), middle="AB" [0,2),
+    /// outer="ABC" [0,3), all guide texts matching. This is a distinct
+    /// reproduction from the codex-flagged one, added because this exact
+    /// field-offset logic has already been "fixed" twice before with adjacent
+    /// cases left broken — a triple-nesting case with a different shared
+    /// endpoint gives independent confidence the monotonic mapping generalizes
+    /// beyond the two-field case it was derived from.
+    #[test]
+    fn clear_initial_field_texts_normalizes_triple_nested_fields_sharing_start() {
+        let mut doc = Document::default();
+        let mut section = Section::default();
+        let mut para = Paragraph::default();
+        para.text = "ABC".to_string();
+        para.controls.push(click_here_field(1, "ABC")); // outer, control_idx 0
+        para.controls.push(click_here_field(2, "AB"));  // middle, control_idx 1
+        para.controls.push(click_here_field(3, "A"));   // inner, control_idx 2
+        // Parser stack-pop order: innermost closes first, so it is pushed first.
+        para.field_ranges.push(FieldRange { start_char_idx: 0, end_char_idx: 1, control_idx: 2 }); // inner
+        para.field_ranges.push(FieldRange { start_char_idx: 0, end_char_idx: 2, control_idx: 1 }); // middle
+        para.field_ranges.push(FieldRange { start_char_idx: 0, end_char_idx: 3, control_idx: 0 }); // outer
+        section.paragraphs.push(para);
+        doc.sections.push(section);
+
+        DocumentCore::clear_initial_field_texts(&mut doc);
+
+        let para = &doc.sections[0].paragraphs[0];
+        assert_eq!(para.text, "", "all three guide texts covered the whole paragraph");
+        for fr in &para.field_ranges {
+            assert!(
+                fr.start_char_idx <= fr.end_char_idx,
+                "field_range must never be inverted: {:?}", fr
+            );
+            assert_eq!((fr.start_char_idx, fr.end_char_idx), (0, 0));
+        }
+    }
 }
