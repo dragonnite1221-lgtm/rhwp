@@ -266,15 +266,58 @@ impl DocumentCore {
             current_fr.end_char_idx = new_end;
         }
 
-        // 이후 필드 범위들의 위치 조정
+        // 이후/외부 필드 범위들의 위치 조정.
+        //
+        // "외부(포함하는) 필드"인지 판정할 때 경계값(start/end)만 보면 실제 중첩과
+        // "경계가 우연히 맞닿은, 관계없는 형제 필드"를 구분할 수 없다. 두 가지
+        // 대칭적인 오판 사례가 있다:
+        //   (a) 이미 닫힌 형제 필드 [0,4) 바로 뒤에 빈 대상 필드 [4,4)가 있을 때,
+        //       `other.start <= fr.start && other.end >= fr.end` 만으로는 앞선
+        //       형제 필드가 fr을 "포함한다"고 오판한다.
+        //   (b) fr이 자기 부모의 맨 앞에서 시작하는 빈 필드([p,p))일 때 — 예:
+        //       부모 [0,2) 안에 자식 [0,0) — 부모의 start(0)도 fr.end(0)와 같아서
+        //       "교체 구간 뒤에 완전히 위치한 필드"(other.start >= fr.end) 조건에도
+        //       걸려버려, 진짜 부모인데도 시작 위치까지 함께 밀려나 버린다.
+        //
+        // 두 오판 모두 파서(parser/body_text.rs의 field_stack)가 이미 암묵적으로
+        // 남겨 둔 두 가지 순서 정보로 구조적으로 해결할 수 있다. 진짜 중첩은
+        // "부모가 먼저 열리고 나중에 닫힌다"는 것과 동치이고, 이 열림/닫힘 순서는
+        // FieldRange 두 필드에 각각 그대로 남아 있다:
+        //   - 닫힌 순서 = field_ranges 배열의 인덱스. FIELD_BEGIN/FIELD_END는
+        //     스택(LIFO)으로 처리되므로 자식은 항상 부모보다 *먼저* 닫히고,
+        //     따라서 field_ranges 배열에도 항상 부모보다 **더 작은 인덱스**로
+        //     먼저 push된다 → 진짜 부모라면 other의 배열 인덱스(i)가 fr의 인덱스
+        //     (field_range_index)보다 커야 한다.
+        //   - 열린 순서 = control_idx (controls[] 안에서의 위치, FIELD_BEGIN을
+        //     만날 때마다 순서대로 배정됨). 부모는 자식보다 먼저 열리므로 항상
+        //     더 작은 control_idx를 가진다 → 진짜 부모라면 other의 control_idx가
+        //     fr의 control_idx보다 작아야 한다.
+        // 형제 관계에서는 이 두 순서 중 최소 하나가 반대로 뒤집힌다 — 앞선 형제는
+        // 배열 인덱스가 더 작고(닫힘이 더 빠름), 뒤따르는 형제는 control_idx가 더
+        // 크다(열림이 더 늦음) — 이므로 두 조건을 모두 요구하면 (a), (b) 두
+        // 오판 사례를 모두 구조적으로 배제할 수 있다.
         for (i, other_fr) in para.field_ranges.iter_mut().enumerate() {
             if i == field_range_index {
                 continue;
             }
-            if other_fr.start_char_idx >= fr.end_char_idx {
+            let is_genuine_parent = i > field_range_index
+                && other_fr.control_idx < fr.control_idx
+                && other_fr.start_char_idx <= fr.start_char_idx
+                && other_fr.end_char_idx >= fr.end_char_idx;
+            if is_genuine_parent {
+                // 진짜 부모 필드(fr보다 먼저 열리고 나중에 닫힌, 경계상으로도
+                // fr을 포함하는 필드)는 끝 위치만 delta만큼 보정한다. (수정 전에는
+                // 이 보정이 아예 누락되어 외부 필드의 end_char_idx가 교체 후 텍스트
+                // 길이를 초과한 채로 남아, 다음 슬라이스에서 panic으로 이어졌다.)
+                other_fr.end_char_idx = (other_fr.end_char_idx as isize + delta) as usize;
+            } else if other_fr.start_char_idx >= fr.end_char_idx {
+                // 교체 구간 뒤에 완전히 위치한 필드(진짜 부모가 아닌 것으로 이미
+                // 확인됨): 시작·끝 모두 이동
                 other_fr.start_char_idx = (other_fr.start_char_idx as isize + delta) as usize;
                 other_fr.end_char_idx = (other_fr.end_char_idx as isize + delta) as usize;
             }
+            // 그 외 (경계에 걸쳐 부분적으로만 겹치는 필드)는 조정하지 않고 기존
+            // 동작(변경 없음)을 유지한다.
         }
 
         // char_offsets 재생성: 컨트롤 문자(8 code unit)와 일반 문자(1~2 code unit) 반영
@@ -826,95 +869,6 @@ fn json_escape(s: &str) -> String {
 }
 
 #[cfg(test)]
-mod tests {
-    use super::*;
-    use crate::model::control::{Control, Field, FieldType};
-    use crate::model::paragraph::{FieldRange, Paragraph};
-
-    fn make_field_control(ctrl_id: u32) -> Control {
-        Control::Field(Field {
-            field_type: FieldType::ClickHere,
-            command: String::new(),
-            properties: 0,
-            extra_properties: 0,
-            field_id: ctrl_id,
-            ctrl_id,
-            ctrl_data_name: None,
-            memo_index: 0,
-        })
-    }
-
-    #[test]
-    fn rebuild_preserves_mid_text_field_begin_gap() {
-        // Stream: [ColumnDef 8B] A(1) B(1) C(1) [FIELD_BEGIN 8B] X(1) Y(1) [FIELD_END 8B]
-        let mut para = Paragraph {
-            text: "ABCXY".into(),
-            controls: vec![
-                Control::ColumnDef(Default::default()),
-                make_field_control(100),
-            ],
-            field_ranges: vec![FieldRange {
-                start_char_idx: 3,
-                end_char_idx: 5,
-                control_idx: 1,
-            }],
-            char_offsets: vec![8, 9, 10, 19, 20],
-            ..Default::default()
-        };
-
-        rebuild_char_offsets(&mut para);
-
-        // A=8(+1) B=9(+1) C=10(+1) → gap 8 for FIELD_BEGIN → X=19(+1) Y=20
-        assert_eq!(para.char_offsets, vec![8, 9, 10, 19, 20]);
-    }
-
-    #[test]
-    fn rebuild_field_at_start_no_double_count() {
-        // FIELD_BEGIN is pre-text control (control_idx=0 < ctrls_before_text=1)
-        let mut para = Paragraph {
-            text: "XY".into(),
-            controls: vec![make_field_control(100)],
-            field_ranges: vec![FieldRange {
-                start_char_idx: 0,
-                end_char_idx: 2,
-                control_idx: 0,
-            }],
-            char_offsets: vec![8, 9],
-            ..Default::default()
-        };
-
-        rebuild_char_offsets(&mut para);
-
-        assert_eq!(para.char_offsets, vec![8, 9]);
-    }
-
-    #[test]
-    fn rebuild_after_set_field_creates_serializable_gap() {
-        // After set_field: "라벨: " [FIELD_BEGIN] "NEW" [FIELD_END]
-        let mut para = Paragraph {
-            text: "라벨: NEW".into(), // 7 chars: 라 벨 : ' ' N E W
-            controls: vec![
-                Control::ColumnDef(Default::default()),
-                make_field_control(200),
-            ],
-            field_ranges: vec![FieldRange {
-                start_char_idx: 4,
-                end_char_idx: 7,
-                control_idx: 1,
-            }],
-            // 원본 offsets (stale after text change, but char_offsets[0] still valid for ctrls_before_text)
-            char_offsets: vec![8, 9, 10, 11, 20, 21, 22],
-            ..Default::default()
-        };
-
-        rebuild_char_offsets(&mut para);
-
-        // ctrls_before_text = 8/8 = 1
-        // 라=8(+1) 벨=9(+1) :=10(+1) ' '=11(+1) → field_begin gap +8 → N=20(+1) E=21(+1) W=22
-        assert_eq!(para.char_offsets[0], 8);  // 라
-        assert_eq!(para.char_offsets[3], 11); // ' '
-        assert_eq!(para.char_offsets[4], 20); // N — 8-byte gap after ' ' for FIELD_BEGIN
-        let gap = para.char_offsets[4] as i64 - (para.char_offsets[3] as i64 + 1);
-        assert_eq!(gap, 8); // serializer needs exactly 8 code units for FIELD_BEGIN
-    }
-}
+mod tests;
+#[cfg(test)]
+mod parent_range_tests;
