@@ -266,7 +266,23 @@ impl DocumentCore {
             current_fr.end_char_idx = new_end;
         }
 
-        // 이후/외부 필드 범위들의 위치 조정
+        // 이후/외부 필드 범위들의 위치 조정.
+        //
+        // "외부(포함하는) 필드"인지 판정할 때 경계값(start/end)만 보면 실제 중첩과
+        // "끝점이 우연히 맞닿은, 관계없는 형제 필드"를 구분할 수 없다. 예를 들어
+        // 이미 닫힌 형제 필드 [0,4) 바로 뒤에 빈 대상 필드 [4,4)가 있을 때,
+        // `other.start <= fr.start && other.end >= fr.end` 만으로는 형제 필드가
+        // "포함한다"고 오판한다.
+        //
+        // 실제 중첩 여부는 파서(parser/body_text.rs의 field_stack)가 이미 암묵적으로
+        // 기록해 두었다: FIELD_BEGIN/FIELD_END는 스택(LIFO)으로 처리되므로, 진짜
+        // 자식 필드는 자신을 감싸는 부모 필드보다 항상 *먼저* 닫히고, 따라서
+        // field_ranges 배열에도 항상 부모보다 **더 작은 인덱스**로 먼저 push된다.
+        // (형제 관계에서는 이 순서가 반대다: 앞선 형제가 닫힌 뒤에야 다음 형제가
+        // 열리므로, 앞선 형제의 인덱스가 더 작다.) 즉, `other_fr`가 `fr`의 진짜
+        // 부모이려면 반드시 `other_fr`의 배열 인덱스가 `fr`의 인덱스(field_range_index)
+        // 보다 커야 한다 — 이 순서 조건과 경계 포함 조건을 함께 요구하면 끝점이
+        // 맞닿은 형제 필드를 구조적으로 배제할 수 있다.
         for (i, other_fr) in para.field_ranges.iter_mut().enumerate() {
             if i == field_range_index {
                 continue;
@@ -275,16 +291,19 @@ impl DocumentCore {
                 // 교체 구간 뒤에 완전히 위치한 필드: 시작·끝 모두 이동
                 other_fr.start_char_idx = (other_fr.start_char_idx as isize + delta) as usize;
                 other_fr.end_char_idx = (other_fr.end_char_idx as isize + delta) as usize;
-            } else if other_fr.start_char_idx <= fr.start_char_idx
+            } else if i > field_range_index
+                && other_fr.start_char_idx <= fr.start_char_idx
                 && other_fr.end_char_idx >= fr.end_char_idx
             {
-                // 교체 구간을 완전히 포함하는 외부 필드: 끝 위치만 delta만큼 보정한다.
-                // (수정 전에는 이 경우가 누락되어 외부 필드의 end_char_idx가 교체 후
-                // 텍스트 길이를 초과한 채로 남아, 다음 슬라이스에서 panic으로 이어졌다.)
+                // 진짜 부모 필드(파서가 fr보다 나중에 닫은, 즉 더 큰 인덱스를 가진
+                // 필드)이면서 경계상으로도 fr을 포함하는 경우에만 끝 위치를 delta
+                // 만큼 보정한다. (수정 전에는 이 보정이 아예 누락되어 외부 필드의
+                // end_char_idx가 교체 후 텍스트 길이를 초과한 채로 남아, 다음
+                // 슬라이스에서 panic으로 이어졌다.)
                 other_fr.end_char_idx = (other_fr.end_char_idx as isize + delta) as usize;
             }
-            // 그 외 (경계에 걸쳐 부분적으로만 겹치는 필드)는 잘 정의되지 않은
-            // 입력으로 간주하고 기존 동작(변경 없음)을 유지한다.
+            // 그 외 (경계에 걸쳐 부분적으로만 겹치는 필드, 또는 끝점만 맞닿은 형제
+            // 필드)는 조정하지 않고 기존 동작(변경 없음)을 유지한다.
         }
 
         // char_offsets 재생성: 컨트롤 문자(8 code unit)와 일반 문자(1~2 code unit) 반영
@@ -945,21 +964,25 @@ mod tests {
         para.text = "ABCD".to_string();
         para.controls.push(make_field_control(1)); // 외부 필드 컨트롤 (control_idx 0)
         para.controls.push(make_field_control(2)); // 내부 필드 컨트롤 (control_idx 1)
-        para.field_ranges.push(FieldRange { start_char_idx: 0, end_char_idx: 4, control_idx: 0 }); // 외부 (index 0)
-        para.field_ranges.push(FieldRange { start_char_idx: 1, end_char_idx: 3, control_idx: 1 }); // 내부 (index 1)
+        // field_ranges는 파서(parser/body_text.rs의 field_stack)가 실제로 채우는 순서를
+        // 그대로 재현한다: FIELD_BEGIN/FIELD_END는 스택(LIFO)으로 처리되므로 안쪽
+        // 필드가 항상 바깥쪽 필드보다 먼저 닫히고, 따라서 field_ranges 배열에도
+        // 항상 더 작은 인덱스로 먼저 push된다 (index 0 = 내부, index 1 = 외부).
+        para.field_ranges.push(FieldRange { start_char_idx: 1, end_char_idx: 3, control_idx: 1 }); // 내부 (index 0)
+        para.field_ranges.push(FieldRange { start_char_idx: 0, end_char_idx: 4, control_idx: 0 }); // 외부 (index 1)
         core.document.sections[0].paragraphs.push(para);
 
         let location = FieldLocation { section_index: 0, para_index: 0, nested_path: vec![] };
 
-        // 내부 필드(index 1)를 빈 문자열로 치환 → "ABCD" -> "AD"
-        core.set_field_text_at(&location, 1, "").unwrap();
+        // 내부 필드(index 0)를 빈 문자열로 치환 → "ABCD" -> "AD"
+        core.set_field_text_at(&location, 0, "").unwrap();
 
         let text_len = {
             let para = &core.document.sections[0].paragraphs[0];
             assert_eq!(para.text, "AD");
             para.text.chars().count()
         };
-        let outer = &core.document.sections[0].paragraphs[0].field_ranges[0];
+        let outer = &core.document.sections[0].paragraphs[0].field_ranges[1];
         assert_eq!(outer.start_char_idx, 0);
         assert!(
             outer.end_char_idx <= text_len,
@@ -970,7 +993,42 @@ mod tests {
         assert_eq!(outer.end_char_idx, 2, "outer는 [0,2)로 축소되어야 한다");
 
         // 수정 전에는 보정되지 않은 [0,4) 범위로 여기서 panic이 발생했다.
-        core.set_field_text_at(&location, 0, "Z").unwrap();
+        core.set_field_text_at(&location, 1, "Z").unwrap();
         assert_eq!(core.document.sections[0].paragraphs[0].text, "Z");
+    }
+
+    /// Verification test for codex-flagged issue: the new "containment" branch
+    /// (other_fr.start <= fr.start && other_fr.end >= fr.end) also matches a
+    /// field that merely ENDS exactly where an empty target field sits, even
+    /// though it does not nest/contain that field at all. Text "ABCD" with a
+    /// field [0,4) that closes right where a separate empty field [4,4) begins.
+    /// Inserting into the empty field must NOT grow the preceding closed field.
+    #[test]
+    fn set_field_text_does_not_grow_adjacent_field_ending_at_empty_target_start() {
+        use crate::model::document::Section;
+
+        let mut core = DocumentCore::new_empty();
+        core.document.sections.push(Section::default());
+        let mut para = Paragraph::default();
+        para.text = "ABCD".to_string();
+        para.controls.push(make_field_control(1)); // preceding, already-closed field
+        para.controls.push(make_field_control(2)); // target empty field right after it
+        para.field_ranges.push(FieldRange { start_char_idx: 0, end_char_idx: 4, control_idx: 0 });
+        para.field_ranges.push(FieldRange { start_char_idx: 4, end_char_idx: 4, control_idx: 1 });
+        core.document.sections[0].paragraphs.push(para);
+
+        let location = FieldLocation { section_index: 0, para_index: 0, nested_path: vec![] };
+
+        // Insert "X" into the empty target field (index 1) at position 4.
+        core.set_field_text_at(&location, 1, "X").unwrap();
+
+        let para = &core.document.sections[0].paragraphs[0];
+        assert_eq!(para.text, "ABCDX");
+        let preceding = &para.field_ranges[0];
+        assert_eq!(
+            (preceding.start_char_idx, preceding.end_char_idx),
+            (0, 4),
+            "preceding closed field [0,4) must stay unchanged, not grow to include the new text"
+        );
     }
 }
