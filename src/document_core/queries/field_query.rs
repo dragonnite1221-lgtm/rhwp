@@ -266,15 +266,25 @@ impl DocumentCore {
             current_fr.end_char_idx = new_end;
         }
 
-        // 이후 필드 범위들의 위치 조정
+        // 이후/외부 필드 범위들의 위치 조정
         for (i, other_fr) in para.field_ranges.iter_mut().enumerate() {
             if i == field_range_index {
                 continue;
             }
             if other_fr.start_char_idx >= fr.end_char_idx {
+                // 교체 구간 뒤에 완전히 위치한 필드: 시작·끝 모두 이동
                 other_fr.start_char_idx = (other_fr.start_char_idx as isize + delta) as usize;
                 other_fr.end_char_idx = (other_fr.end_char_idx as isize + delta) as usize;
+            } else if other_fr.start_char_idx <= fr.start_char_idx
+                && other_fr.end_char_idx >= fr.end_char_idx
+            {
+                // 교체 구간을 완전히 포함하는 외부 필드: 끝 위치만 delta만큼 보정한다.
+                // (수정 전에는 이 경우가 누락되어 외부 필드의 end_char_idx가 교체 후
+                // 텍스트 길이를 초과한 채로 남아, 다음 슬라이스에서 panic으로 이어졌다.)
+                other_fr.end_char_idx = (other_fr.end_char_idx as isize + delta) as usize;
             }
+            // 그 외 (경계에 걸쳐 부분적으로만 겹치는 필드)는 잘 정의되지 않은
+            // 입력으로 간주하고 기존 동작(변경 없음)을 유지한다.
         }
 
         // char_offsets 재생성: 컨트롤 문자(8 code unit)와 일반 문자(1~2 code unit) 반영
@@ -916,5 +926,51 @@ mod tests {
         assert_eq!(para.char_offsets[4], 20); // N — 8-byte gap after ' ' for FIELD_BEGIN
         let gap = para.char_offsets[4] as i64 - (para.char_offsets[3] as i64 + 1);
         assert_eq!(gap, 8); // serializer needs exactly 8 code units for FIELD_BEGIN
+    }
+
+    /// rhwp-2 회귀 테스트: 내부 필드를 빈 문자열로 축소했을 때, 그 내부 필드를
+    /// 완전히 포함하는 외부 필드의 end_char_idx가 함께 보정되어야 한다.
+    ///
+    /// 트리거: "ABCD"에 외부 필드 [0,4)와 내부 필드 [1,3)가 있고, 내부 필드를
+    /// 빈 문자열로 치환한다. 수정 전에는 외부 필드가 [0,4)로 그대로 남아 텍스트
+    /// 길이(2)를 초과했고, 그 상태로 외부 필드를 다시 치환하면
+    /// text_chars[fr.end_char_idx..] 슬라이스가 범위를 벗어나 panic했다.
+    #[test]
+    fn set_field_text_shrinking_inner_field_fixes_outer_field_end() {
+        use crate::model::document::Section;
+
+        let mut core = DocumentCore::new_empty();
+        core.document.sections.push(Section::default());
+        let mut para = Paragraph::default();
+        para.text = "ABCD".to_string();
+        para.controls.push(make_field_control(1)); // 외부 필드 컨트롤 (control_idx 0)
+        para.controls.push(make_field_control(2)); // 내부 필드 컨트롤 (control_idx 1)
+        para.field_ranges.push(FieldRange { start_char_idx: 0, end_char_idx: 4, control_idx: 0 }); // 외부 (index 0)
+        para.field_ranges.push(FieldRange { start_char_idx: 1, end_char_idx: 3, control_idx: 1 }); // 내부 (index 1)
+        core.document.sections[0].paragraphs.push(para);
+
+        let location = FieldLocation { section_index: 0, para_index: 0, nested_path: vec![] };
+
+        // 내부 필드(index 1)를 빈 문자열로 치환 → "ABCD" -> "AD"
+        core.set_field_text_at(&location, 1, "").unwrap();
+
+        let text_len = {
+            let para = &core.document.sections[0].paragraphs[0];
+            assert_eq!(para.text, "AD");
+            para.text.chars().count()
+        };
+        let outer = &core.document.sections[0].paragraphs[0].field_ranges[0];
+        assert_eq!(outer.start_char_idx, 0);
+        assert!(
+            outer.end_char_idx <= text_len,
+            "외부 필드 end_char_idx({})가 텍스트 길이({})를 초과하면 안 된다",
+            outer.end_char_idx,
+            text_len
+        );
+        assert_eq!(outer.end_char_idx, 2, "outer는 [0,2)로 축소되어야 한다");
+
+        // 수정 전에는 보정되지 않은 [0,4) 범위로 여기서 panic이 발생했다.
+        core.set_field_text_at(&location, 0, "Z").unwrap();
+        assert_eq!(core.document.sections[0].paragraphs[0].text, "Z");
     }
 }
