@@ -290,10 +290,14 @@ fn serialize_para_text(para: &Paragraph) -> Vec<u8> {
     // 2. trailing: end_char_idx == text_chars.len() → 남은 컨트롤과 인터리빙
     use std::collections::BTreeMap;
     use std::collections::HashMap;
+    use std::collections::VecDeque;
     let text_len = para.text.chars().count();
     // (control_idx, ctrl_id): control_idx를 함께 보관해 아래 메인 루프에서
     // "이 FIELD_END의 FIELD_BEGIN이 이미 출력되었는지"를 판별한다.
-    let mut field_ends: BTreeMap<usize, Vec<(usize, u32)>> = BTreeMap::new();
+    // VecDeque: 항상 맨 앞(front)만 드레인하므로 O(1) pop_front가 필요하다 —
+    // Vec::remove(0)은 나머지 원소를 매번 당겨서 O(n)이라, 같은 위치에서 끝나는
+    // 필드가 많은 문서에서 직렬화가 O(n^2)로 느려진다.
+    let mut field_ends: BTreeMap<usize, VecDeque<(usize, u32)>> = BTreeMap::new();
     // trailing FIELD_END: control_idx → ctrl_id 매핑 (FIELD_BEGIN 직후에 삽입)
     let mut trailing_end_after_ctrl: HashMap<usize, Vec<u32>> = HashMap::new();
     // trailing FIELD_END 중 FIELD_BEGIN이 이미 본문에 배치된 경우 (orphan)
@@ -308,7 +312,7 @@ fn serialize_para_text(para: &Paragraph) -> Vec<u8> {
             0
         };
         if fr.end_char_idx < text_len {
-            field_ends.entry(fr.end_char_idx).or_default().push((fr.control_idx, ctrl_id));
+            field_ends.entry(fr.end_char_idx).or_default().push_back((fr.control_idx, ctrl_id));
         } else {
             // trailing FIELD_END: control_idx가 남은 컨트롤에 포함되는지 판별은
             // 메인 루프 후에 수행 (ctrl_idx 확정 후)
@@ -376,11 +380,11 @@ fn serialize_para_text(para: &Paragraph) -> Vec<u8> {
             let no_more_controls = ctrl_idx >= para.controls.len();
             let front_is_due = field_ends
                 .get(&i)
-                .and_then(|ids| ids.first())
+                .and_then(|ids| ids.front())
                 .is_some_and(|&(cidx, _)| cidx < ctrl_idx);
 
             if front_is_due && (next_is_field_begin || no_more_controls) {
-                let (_, ctrl_id) = field_ends.get_mut(&i).unwrap().remove(0);
+                let (_, ctrl_id) = field_ends.get_mut(&i).unwrap().pop_front().unwrap();
                 push_extended_ctrl(&mut code_units, 0x0004, ctrl_id);
                 prev_end += 8;
             } else if ctrl_idx < para.controls.len() {
