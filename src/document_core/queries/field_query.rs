@@ -269,41 +269,55 @@ impl DocumentCore {
         // 이후/외부 필드 범위들의 위치 조정.
         //
         // "외부(포함하는) 필드"인지 판정할 때 경계값(start/end)만 보면 실제 중첩과
-        // "끝점이 우연히 맞닿은, 관계없는 형제 필드"를 구분할 수 없다. 예를 들어
-        // 이미 닫힌 형제 필드 [0,4) 바로 뒤에 빈 대상 필드 [4,4)가 있을 때,
-        // `other.start <= fr.start && other.end >= fr.end` 만으로는 형제 필드가
-        // "포함한다"고 오판한다.
+        // "경계가 우연히 맞닿은, 관계없는 형제 필드"를 구분할 수 없다. 두 가지
+        // 대칭적인 오판 사례가 있다:
+        //   (a) 이미 닫힌 형제 필드 [0,4) 바로 뒤에 빈 대상 필드 [4,4)가 있을 때,
+        //       `other.start <= fr.start && other.end >= fr.end` 만으로는 앞선
+        //       형제 필드가 fr을 "포함한다"고 오판한다.
+        //   (b) fr이 자기 부모의 맨 앞에서 시작하는 빈 필드([p,p))일 때 — 예:
+        //       부모 [0,2) 안에 자식 [0,0) — 부모의 start(0)도 fr.end(0)와 같아서
+        //       "교체 구간 뒤에 완전히 위치한 필드"(other.start >= fr.end) 조건에도
+        //       걸려버려, 진짜 부모인데도 시작 위치까지 함께 밀려나 버린다.
         //
-        // 실제 중첩 여부는 파서(parser/body_text.rs의 field_stack)가 이미 암묵적으로
-        // 기록해 두었다: FIELD_BEGIN/FIELD_END는 스택(LIFO)으로 처리되므로, 진짜
-        // 자식 필드는 자신을 감싸는 부모 필드보다 항상 *먼저* 닫히고, 따라서
-        // field_ranges 배열에도 항상 부모보다 **더 작은 인덱스**로 먼저 push된다.
-        // (형제 관계에서는 이 순서가 반대다: 앞선 형제가 닫힌 뒤에야 다음 형제가
-        // 열리므로, 앞선 형제의 인덱스가 더 작다.) 즉, `other_fr`가 `fr`의 진짜
-        // 부모이려면 반드시 `other_fr`의 배열 인덱스가 `fr`의 인덱스(field_range_index)
-        // 보다 커야 한다 — 이 순서 조건과 경계 포함 조건을 함께 요구하면 끝점이
-        // 맞닿은 형제 필드를 구조적으로 배제할 수 있다.
+        // 두 오판 모두 파서(parser/body_text.rs의 field_stack)가 이미 암묵적으로
+        // 남겨 둔 두 가지 순서 정보로 구조적으로 해결할 수 있다. 진짜 중첩은
+        // "부모가 먼저 열리고 나중에 닫힌다"는 것과 동치이고, 이 열림/닫힘 순서는
+        // FieldRange 두 필드에 각각 그대로 남아 있다:
+        //   - 닫힌 순서 = field_ranges 배열의 인덱스. FIELD_BEGIN/FIELD_END는
+        //     스택(LIFO)으로 처리되므로 자식은 항상 부모보다 *먼저* 닫히고,
+        //     따라서 field_ranges 배열에도 항상 부모보다 **더 작은 인덱스**로
+        //     먼저 push된다 → 진짜 부모라면 other의 배열 인덱스(i)가 fr의 인덱스
+        //     (field_range_index)보다 커야 한다.
+        //   - 열린 순서 = control_idx (controls[] 안에서의 위치, FIELD_BEGIN을
+        //     만날 때마다 순서대로 배정됨). 부모는 자식보다 먼저 열리므로 항상
+        //     더 작은 control_idx를 가진다 → 진짜 부모라면 other의 control_idx가
+        //     fr의 control_idx보다 작아야 한다.
+        // 형제 관계에서는 이 두 순서 중 최소 하나가 반대로 뒤집힌다 — 앞선 형제는
+        // 배열 인덱스가 더 작고(닫힘이 더 빠름), 뒤따르는 형제는 control_idx가 더
+        // 크다(열림이 더 늦음) — 이므로 두 조건을 모두 요구하면 (a), (b) 두
+        // 오판 사례를 모두 구조적으로 배제할 수 있다.
         for (i, other_fr) in para.field_ranges.iter_mut().enumerate() {
             if i == field_range_index {
                 continue;
             }
-            if other_fr.start_char_idx >= fr.end_char_idx {
-                // 교체 구간 뒤에 완전히 위치한 필드: 시작·끝 모두 이동
+            let is_genuine_parent = i > field_range_index
+                && other_fr.control_idx < fr.control_idx
+                && other_fr.start_char_idx <= fr.start_char_idx
+                && other_fr.end_char_idx >= fr.end_char_idx;
+            if is_genuine_parent {
+                // 진짜 부모 필드(fr보다 먼저 열리고 나중에 닫힌, 경계상으로도
+                // fr을 포함하는 필드)는 끝 위치만 delta만큼 보정한다. (수정 전에는
+                // 이 보정이 아예 누락되어 외부 필드의 end_char_idx가 교체 후 텍스트
+                // 길이를 초과한 채로 남아, 다음 슬라이스에서 panic으로 이어졌다.)
+                other_fr.end_char_idx = (other_fr.end_char_idx as isize + delta) as usize;
+            } else if other_fr.start_char_idx >= fr.end_char_idx {
+                // 교체 구간 뒤에 완전히 위치한 필드(진짜 부모가 아닌 것으로 이미
+                // 확인됨): 시작·끝 모두 이동
                 other_fr.start_char_idx = (other_fr.start_char_idx as isize + delta) as usize;
                 other_fr.end_char_idx = (other_fr.end_char_idx as isize + delta) as usize;
-            } else if i > field_range_index
-                && other_fr.start_char_idx <= fr.start_char_idx
-                && other_fr.end_char_idx >= fr.end_char_idx
-            {
-                // 진짜 부모 필드(파서가 fr보다 나중에 닫은, 즉 더 큰 인덱스를 가진
-                // 필드)이면서 경계상으로도 fr을 포함하는 경우에만 끝 위치를 delta
-                // 만큼 보정한다. (수정 전에는 이 보정이 아예 누락되어 외부 필드의
-                // end_char_idx가 교체 후 텍스트 길이를 초과한 채로 남아, 다음
-                // 슬라이스에서 panic으로 이어졌다.)
-                other_fr.end_char_idx = (other_fr.end_char_idx as isize + delta) as usize;
             }
-            // 그 외 (경계에 걸쳐 부분적으로만 겹치는 필드, 또는 끝점만 맞닿은 형제
-            // 필드)는 조정하지 않고 기존 동작(변경 없음)을 유지한다.
+            // 그 외 (경계에 걸쳐 부분적으로만 겹치는 필드)는 조정하지 않고 기존
+            // 동작(변경 없음)을 유지한다.
         }
 
         // char_offsets 재생성: 컨트롤 문자(8 code unit)와 일반 문자(1~2 code unit) 반영
@@ -1029,6 +1043,51 @@ mod tests {
             (preceding.start_char_idx, preceding.end_char_idx),
             (0, 4),
             "preceding closed field [0,4) must stay unchanged, not grow to include the new text"
+        );
+    }
+
+    /// Regression test for a second codex-flagged issue found in the first fix
+    /// attempt: a genuine parent whose start coincides EXACTLY with an empty
+    /// child's position at the very front of the parent. Text "AB" with
+    /// parent=[0,2) wrapping the whole text and child=[0,0) nested right at
+    /// its start. Because the child is empty, `other.start(0) >= fr.end(0)`
+    /// was also true for the parent, so the (checked-first) "entirely after"
+    /// branch fired before the containment branch ever got a chance, shifting
+    /// the parent's start along with its end and producing (1,3) instead of
+    /// (0,3) after inserting "X" into the child.
+    ///
+    /// The fix requires BOTH order signals the parser leaves behind for a
+    /// genuine parent -- opens first (smaller control_idx) AND closes last
+    /// (larger field_ranges index) -- checked *before* the "entirely after"
+    /// branch, which correctly excludes this from ever being misclassified.
+    #[test]
+    fn set_field_text_growing_child_at_parent_start_keeps_parent_start_fixed() {
+        use crate::model::document::Section;
+
+        let mut core = DocumentCore::new_empty();
+        core.document.sections.push(Section::default());
+        let mut para = Paragraph::default();
+        para.text = "AB".to_string();
+        para.controls.push(make_field_control(1)); // parent control (control_idx 0, opens first)
+        para.controls.push(make_field_control(2)); // child control (control_idx 1, opens second)
+        // field_ranges in real parser (stack-pop) order: child closes first (index 0),
+        // parent closes last (index 1).
+        para.field_ranges.push(FieldRange { start_char_idx: 0, end_char_idx: 0, control_idx: 1 }); // child
+        para.field_ranges.push(FieldRange { start_char_idx: 0, end_char_idx: 2, control_idx: 0 }); // parent
+        core.document.sections[0].paragraphs.push(para);
+
+        let location = FieldLocation { section_index: 0, para_index: 0, nested_path: vec![] };
+
+        // Insert "X" into the empty child (index 0) at position 0.
+        core.set_field_text_at(&location, 0, "X").unwrap();
+
+        let para = &core.document.sections[0].paragraphs[0];
+        assert_eq!(para.text, "XAB");
+        let parent = &para.field_ranges[1];
+        assert_eq!(
+            (parent.start_char_idx, parent.end_char_idx),
+            (0, 3),
+            "parent must stay anchored at 0 and only its end should grow, not (1,3)"
         );
     }
 }
