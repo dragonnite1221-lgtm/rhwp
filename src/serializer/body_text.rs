@@ -291,7 +291,9 @@ fn serialize_para_text(para: &Paragraph) -> Vec<u8> {
     use std::collections::BTreeMap;
     use std::collections::HashMap;
     let text_len = para.text.chars().count();
-    let mut field_ends: BTreeMap<usize, Vec<u32>> = BTreeMap::new();
+    // (control_idx, ctrl_id): control_idx를 함께 보관해 아래 메인 루프에서
+    // "이 FIELD_END의 FIELD_BEGIN이 이미 출력되었는지"를 판별한다.
+    let mut field_ends: BTreeMap<usize, Vec<(usize, u32)>> = BTreeMap::new();
     // trailing FIELD_END: control_idx → ctrl_id 매핑 (FIELD_BEGIN 직후에 삽입)
     let mut trailing_end_after_ctrl: HashMap<usize, Vec<u32>> = HashMap::new();
     // trailing FIELD_END 중 FIELD_BEGIN이 이미 본문에 배치된 경우 (orphan)
@@ -306,7 +308,7 @@ fn serialize_para_text(para: &Paragraph) -> Vec<u8> {
             0
         };
         if fr.end_char_idx < text_len {
-            field_ends.entry(fr.end_char_idx).or_default().push(ctrl_id);
+            field_ends.entry(fr.end_char_idx).or_default().push((fr.control_idx, ctrl_id));
         } else {
             // trailing FIELD_END: control_idx가 남은 컨트롤에 포함되는지 판별은
             // 메인 루프 후에 수행 (ctrl_idx 확정 후)
@@ -324,6 +326,24 @@ fn serialize_para_text(para: &Paragraph) -> Vec<u8> {
             prev_end
         };
 
+        // FIELD_END 선(先) 배치: 이 위치(i)에서 닫혀야 하는 필드 중 자신의
+        // FIELD_BEGIN이 이미 출력된 것(control_idx < ctrl_idx)은 다음 갭-채우기
+        // while 루프보다 먼저 내보내야 한다. 그렇지 않으면 이 갭이 (아직 출력되지
+        // 않은) 다음 컨트롤의 FIELD_BEGIN 슬롯으로 잘못 소비되어, 종료 마커가
+        // 다음 필드의 시작 마커 뒤로 밀리며 필드 범위가 뒤바뀐다 (rhwp-3).
+        if let Some(ids) = field_ends.get_mut(&i) {
+            let mut still_pending = Vec::new();
+            for &(cidx, ctrl_id) in ids.iter() {
+                if cidx < ctrl_idx {
+                    push_extended_ctrl(&mut code_units, 0x0004, ctrl_id);
+                    prev_end += 8;
+                } else {
+                    still_pending.push((cidx, ctrl_id));
+                }
+            }
+            *ids = still_pending;
+        }
+
         // 갭에 컨트롤 문자 배치 (각 컨트롤 = 8 code unit)
         while prev_end + 8 <= offset && ctrl_idx < para.controls.len() {
             let (ctrl_code, ctrl_id) = control_char_code_and_id(&para.controls[ctrl_idx]);
@@ -332,9 +352,10 @@ fn serialize_para_text(para: &Paragraph) -> Vec<u8> {
             prev_end += 8;
         }
 
-        // FIELD_END 삽입: 컨트롤(FIELD_BEGIN) 뒤, 텍스트 문자 앞
+        // FIELD_END 후(後) 배치: 방금 while 루프에서 자신의 FIELD_BEGIN이 막
+        // 출력된 필드(empty/self 케이스)는 여기서 바로 뒤이어 닫는다.
         if let Some(ids) = field_ends.get(&i) {
-            for &ctrl_id in ids {
+            for &(_cidx, ctrl_id) in ids {
                 push_extended_ctrl(&mut code_units, 0x0004, ctrl_id);
                 prev_end += 8;
             }
