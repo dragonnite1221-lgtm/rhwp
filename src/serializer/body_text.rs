@@ -372,18 +372,32 @@ fn serialize_para_text(para: &Paragraph) -> Vec<u8> {
         // 건너뛰어 먼저 닫아서는 안 된다 — outer가 inner보다 먼저 열렸다고 해서
         // inner보다 먼저 닫히면 중첩 구조 자체가 깨진다(outer CLOSE, 그 다음에야
         // inner BEGIN이 나오면 inner가 outer 밖으로 밀려난다).
+        //
+        // 세 번째 조건이 하나 더 필요하다: 이 갭에 아직 배치되지 않은 대기
+        // 항목이 있다면, 그 항목들은 반드시 *이 갭 안에서* (다음 텍스트 문자
+        // 앞에서) 끝나야 하므로 갭의 남은 용량 중 그만큼은 예약되어 있어야
+        // 한다. 그렇지 않고 비-필드 컨트롤을 계속 무조건 먼저 통과시키면,
+        // 사실은 *다음* 갭에 속하는 컨트롤(예: 뒤쪽 문자 뒤에 오는 책갈피)이
+        // 이 갭의 남은 자리를 먼저 차지해버리고, 정작 이 갭에서 반드시
+        // 나와야 할 END가 안전망으로 밀려나 그 컨트롤보다 뒤로 배치된다 —
+        // 결과적으로 그 컨트롤이 원래 위치(다음 문자 뒤)보다 앞으로 잘못
+        // 당겨진다. 그러므로 "남은 슬롯 수가 대기 항목 수 이하로 줄어들면"
+        // 더 이상 비-필드 컨트롤에 양보하지 말고 즉시 드레인해야 한다.
         while prev_end + 8 <= offset {
             let next_is_field_begin = para
                 .controls
                 .get(ctrl_idx)
                 .is_some_and(|c| matches!(c, Control::Field(_)));
             let no_more_controls = ctrl_idx >= para.controls.len();
+            let pending_here = field_ends.get(&i).map_or(0, |ids| ids.len());
+            let remaining_slots = (offset - prev_end) / 8;
+            let must_reserve_room = remaining_slots as usize <= pending_here;
             let front_is_due = field_ends
                 .get(&i)
                 .and_then(|ids| ids.front())
                 .is_some_and(|&(cidx, _)| cidx < ctrl_idx);
 
-            if front_is_due && (next_is_field_begin || no_more_controls) {
+            if front_is_due && (next_is_field_begin || no_more_controls || must_reserve_room) {
                 let (_, ctrl_id) = field_ends.get_mut(&i).unwrap().pop_front().unwrap();
                 push_extended_ctrl(&mut code_units, 0x0004, ctrl_id);
                 prev_end += 8;

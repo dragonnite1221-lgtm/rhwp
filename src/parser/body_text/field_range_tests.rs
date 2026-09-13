@@ -132,3 +132,5 @@ fn test_roundtrip_empty_field_nested_at_same_start_as_spanning_field() {
 
 #[cfg(test)]
 mod field_end_interleave_tests;
+#[cfg(test)]
+mod gap_reservation_tests;
