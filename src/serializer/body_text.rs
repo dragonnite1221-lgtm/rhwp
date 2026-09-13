@@ -563,3 +563,7 @@ fn control_char_code_and_id(ctrl: &Control) -> (u16, u32) {
 
 #[cfg(test)]
 mod tests;
+#[cfg(test)]
+mod tests_more;
+#[cfg(test)]
+mod tests_controls;

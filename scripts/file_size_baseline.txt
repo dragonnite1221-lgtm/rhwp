@@ -113,7 +113,6 @@
 3012 src/renderer/typeset.rs
 2740 src/renderer/web_canvas.rs
 906 src/serializer/body_text.rs
-413 src/serializer/body_text/tests.rs
 236 src/serializer/byte_writer.rs
 1320 src/serializer/cfb_writer/tests.rs
 1743 src/serializer/control.rs
