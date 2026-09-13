@@ -129,3 +129,70 @@ fn test_roundtrip_empty_field_nested_at_same_start_as_spanning_field() {
         "필드1은 [0,1)로 유지되어야 한다 (텍스트 전체를 포함)"
     );
 }
+
+/// Regression test for a second codex-flagged issue found in the first
+/// interleaving fix: draining a due FIELD_END *immediately* after its own
+/// FIELD_BEGIN is placed (unconditionally, on every control) incorrectly
+/// closes a zero-width field before a non-field control (e.g. Bookmark,
+/// Table, Picture) that is meant to sit *inside* it. Only FIELD_BEGIN/
+/// FIELD_END participate in the parser's LIFO stack -- other control types
+/// never affect it -- so a zero-text field can legitimately wrap a non-field
+/// control without any ordering hazard, and closing it too early physically
+/// moves that control outside the field in the byte stream.
+///
+/// Trigger: controls=[Field (zero-width, wraps nothing in text), Bookmark],
+/// field_ranges=[[0,0) over control_idx 0], text "A". The field's own
+/// control is control_idx 0, Bookmark is control_idx 1; both must be placed
+/// before 'A', with the field's END emitted only after the enclosed
+/// Bookmark, not immediately after the field's own BEGIN. This cannot be
+/// observed by re-parsing field_ranges (a zero-width field's recorded range
+/// doesn't change no matter where among these zero-advance controls its END
+/// lands), so this test inspects the raw serialized code units directly.
+#[test]
+fn test_serialize_field_end_waits_for_enclosed_non_field_control() {
+    use crate::model::control::{Bookmark, Control, Field, FieldType};
+    use crate::model::paragraph::{FieldRange, Paragraph};
+    use crate::serializer::body_text::test_serialize_para_text;
+
+    let field_ctrl = Control::Field(Field {
+        field_type: FieldType::Bookmark,
+        command: String::new(),
+        properties: 0,
+        extra_properties: 0,
+        field_id: 100,
+        ctrl_id: 100,
+        ctrl_data_name: None,
+        memo_index: 0,
+    });
+    let bookmark_ctrl = Control::Bookmark(Bookmark { name: "bm".to_string() });
+
+    let para = Paragraph {
+        text: "A".to_string(),
+        controls: vec![field_ctrl, bookmark_ctrl],
+        field_ranges: vec![FieldRange { start_char_idx: 0, end_char_idx: 0, control_idx: 0 }],
+        // 2 controls (16) + 1 mid-text FIELD_END gap (8) = 24, same derivation
+        // as `rebuild_char_offsets` would produce for this layout.
+        char_offsets: vec![24],
+        ..Default::default()
+    };
+
+    let bytes = test_serialize_para_text(&para);
+    let units: Vec<u16> = bytes.chunks(2).map(|c| u16::from_le_bytes([c[0], c[1]])).collect();
+
+    // Each control/marker occupies an 8-code-unit block whose first unit is
+    // its char code. Collect just those leading codes, in order, up to 'A'
+    // (0x0041).
+    let mut leading_codes = Vec::new();
+    let mut pos = 0;
+    while pos < units.len() && units[pos] != 0x0041 {
+        leading_codes.push(units[pos]);
+        pos += 8;
+    }
+
+    assert_eq!(
+        leading_codes,
+        vec![0x0003, 0x0016, 0x0004],
+        "expected BEGIN(field), BOOKMARK, END(field) -- the bookmark must stay \
+         inside the zero-width field, not be pushed out after a premature END"
+    );
+}

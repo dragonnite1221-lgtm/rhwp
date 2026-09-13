@@ -327,51 +327,63 @@ fn serialize_para_text(para: &Paragraph) -> Vec<u8> {
         };
 
         // 이 위치(i)에서 닫혀야 하는 필드 중, 자신의 FIELD_BEGIN이 이미 출력된
-        // 것(control_idx < ctrl_idx)은 즉시 내보낸다. HWP 파서는 FIELD_BEGIN/
-        // FIELD_END를 순수하게 스택(LIFO)으로 매칭하므로 — 마커에 박힌 ctrl_id
-        // 값은 보지 않고 그냥 top-of-stack을 pop한다 — 어떤 필드의 END가
-        // 나오는 시점에 아직 열려 있는 다른 필드의 BEGIN이 그 사이에 끼어들면
-        // 안 된다. 그러므로 "갭에 컨트롤 배치" 루프 안에서 컨트롤을 하나 놓을
-        // 때마다(자신의 BEGIN이 막 나온 empty/self 케이스 포함) 그 즉시 드레인
-        // 해야 한다 — 루프가 끝난 뒤 한 번만 몰아서 처리하면(post-pass) 그 사이에
-        // 놓인 다음 필드의 BEGIN이 스택에서 먼저 pop되어 두 필드의 범위가
-        // 뒤바뀐다 (rhwp-3).
-        let drain_due_field_ends = |code_units: &mut Vec<u16>,
-                                     field_ends: &mut BTreeMap<usize, Vec<(usize, u32)>>,
-                                     prev_end: &mut u32,
-                                     ctrl_idx: usize| {
-            if let Some(ids) = field_ends.get_mut(&i) {
-                let mut still_pending = Vec::new();
-                for &(cidx, ctrl_id) in ids.iter() {
-                    if cidx < ctrl_idx {
-                        push_extended_ctrl(code_units, 0x0004, ctrl_id);
-                        *prev_end += 8;
-                    } else {
-                        still_pending.push((cidx, ctrl_id));
-                    }
-                }
-                *ids = still_pending;
+        // 것(control_idx < ctrl_idx)은 드레인 대상이다. 다만 "언제" 드레인할지가
+        // 중요하다:
+        //
+        // HWP 파서는 FIELD_BEGIN/FIELD_END를 순수하게 스택(LIFO)으로 매칭한다 —
+        // 마커에 박힌 ctrl_id 값은 보지 않고 그냥 top-of-stack을 pop한다. 그러므로
+        // 어떤 필드의 END가 나오는 시점에 **다른 필드의 BEGIN**이 그 사이에
+        // 끼어들면 안 된다 (그 다른 필드의 BEGIN이 스택 맨 위에 남아 있는 채로
+        // 이 END가 그것을 잘못 닫아버린다). 반면 Table/Picture 같은 비-필드
+        // 컨트롤은 애초에 field_stack에 전혀 관여하지 않으므로, 텍스트를 전혀
+        // 소비하지 않는(zero-width) 필드가 그런 비-필드 컨트롤을 감싸고 있어도
+        // — 예: controls=[Field, Picture], field range [0,0) — 그 컨트롤이
+        // 먼저 나오고 END가 나중에 나와도 스택 정합성에는 전혀 영향이 없다.
+        // 오히려 컨트롤을 놓을 때마다 무조건 드레인해버리면(즉, BEGIN 바로 뒤에
+        // END를 내보내면) 그 Picture가 필드 밖으로 밀려나 버린다.
+        //
+        // 그러므로 이 갭의 8-code-unit 슬롯마다 다음 우선순위로 "무엇을 놓을지"
+        // 하나씩 결정한다 (드레인과 컨트롤 배치를 같은 슬롯에 함께 밀어넣지
+        // 않고, 각각 남은 갭 용량을 별도로 확인한다 — 그렇지 않으면 드레인 한
+        // 번이 슬롯 하나를 이미 다 써버렸는데도 같은 반복에서 다음 컨트롤까지
+        // 함께 밀어넣어, 그 컨트롤이 원래 있어야 할 갭보다 앞당겨져 배치되는
+        // 용량 오류가 생긴다):
+        //   1. 대기 중인 FIELD_END가 있고, 그것을 지금 내보내야만 하는 이유가
+        //      있다 — 즉 다음에 놓을 컨트롤이 (a) 다른 필드의 FIELD_BEGIN이거나
+        //      (b) 이 갭에 더는 놓을 컨트롤이 없다 — 면 그 FIELD_END를 하나
+        //      내보낸다.
+        //   2. 그렇지 않고 아직 놓을 컨트롤이 남아 있으면 다음 컨트롤을 하나
+        //      놓는다 (비-필드 컨트롤은 대기 중인 FIELD_END가 있어도 자유롭게
+        //      먼저 놓일 수 있다 — 열려 있는 필드 안에 남을 수 있게 하기 위해서다).
+        //   3. 둘 다 아니면 이 갭에서 할 일이 끝난 것이다.
+        while prev_end + 8 <= offset {
+            let next_is_field_begin = para
+                .controls
+                .get(ctrl_idx)
+                .is_some_and(|c| matches!(c, Control::Field(_)));
+            let no_more_controls = ctrl_idx >= para.controls.len();
+            let due_end_idx = field_ends
+                .get(&i)
+                .and_then(|ids| ids.iter().position(|&(cidx, _)| cidx < ctrl_idx));
+
+            if let Some(idx) = due_end_idx.filter(|_| next_is_field_begin || no_more_controls) {
+                let (_, ctrl_id) = field_ends.get_mut(&i).unwrap().remove(idx);
+                push_extended_ctrl(&mut code_units, 0x0004, ctrl_id);
+                prev_end += 8;
+            } else if ctrl_idx < para.controls.len() {
+                let (ctrl_code, ctrl_id) = control_char_code_and_id(&para.controls[ctrl_idx]);
+                push_extended_ctrl(&mut code_units, ctrl_code, ctrl_id);
+                ctrl_idx += 1;
+                prev_end += 8;
+            } else {
+                break;
             }
-        };
-
-        // 이전 갭에서 이미 BEGIN이 나온 필드의 END부터 먼저 드레인한다.
-        drain_due_field_ends(&mut code_units, &mut field_ends, &mut prev_end, ctrl_idx);
-
-        // 갭에 컨트롤 문자 배치 (각 컨트롤 = 8 code unit). 컨트롤을 하나 놓을
-        // 때마다 그 컨트롤(그리고 그보다 앞선 컨트롤)의 FIELD_END가 이 위치에서
-        // 대기 중이면 다음 컨트롤을 놓기 전에 즉시 인터리브해서 내보낸다.
-        while prev_end + 8 <= offset && ctrl_idx < para.controls.len() {
-            let (ctrl_code, ctrl_id) = control_char_code_and_id(&para.controls[ctrl_idx]);
-            push_extended_ctrl(&mut code_units, ctrl_code, ctrl_id);
-            ctrl_idx += 1;
-            prev_end += 8;
-            drain_due_field_ends(&mut code_units, &mut field_ends, &mut prev_end, ctrl_idx);
         }
 
-        // 최종 안전망: 위 인터리브 과정에서도 자신의 FIELD_BEGIN을 만나지 못한
-        // (예: char_offsets가 실제 필요한 갭보다 좁게 주어진 비정상 입력) 항목은
-        // 텍스트 문자 앞에서 그대로 흘려보낸다 (기존 동작 유지, panic 방지용
-        // 최후의 fallback일 뿐 정상 경로에서는 도달하지 않는다).
+        // 최종 안전망: 이 갭의 용량(offset)이 소진되어 루프가 끝났는데도 남아
+        // 있는 드레인 대상을 텍스트 문자 앞에서 모두 내보낸다. char_offsets가
+        // 실제 필요한 갭보다 좁게 주어진 비정상 입력(자신의 FIELD_BEGIN을 아직
+        // 만나지 못한 경우 포함)에 대해서도 panic 방지를 위해 무조건 흘려보낸다.
         if let Some(ids) = field_ends.get(&i) {
             for &(_cidx, ctrl_id) in ids {
                 push_extended_ctrl(&mut code_units, 0x0004, ctrl_id);
