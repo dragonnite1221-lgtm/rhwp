@@ -92,3 +92,38 @@ use crate::parser::body_text::parse_body_text_section;
 
         assert_eq!(parsed.paragraphs[0].column_type, ColumnBreakType::Page);
     }
+
+    /// 묶음 빈칸(U+00A0, NO-BREAK SPACE) 라운드트립 -- 하이픈으로 오염되면 안 됨.
+    /// HWP 5.0 표 7 기준 코드 24(0x0018)=하이픈, 코드 30(0x001E)=묶음 빈칸이며,
+    /// 파서(parser/body_text.rs)는 이 매핑을 정확히 따른다.
+    #[test]
+    fn test_roundtrip_no_break_space() {
+        let para = Paragraph {
+            char_count: 4,
+            text: "A\u{00A0}B".to_string(),
+            char_offsets: vec![0, 1, 2],
+            char_shapes: vec![CharShapeRef {
+                start_pos: 0,
+                char_shape_id: 0,
+            }],
+            line_segs: vec![LineSeg {
+                text_start: 0,
+                ..Default::default()
+            }],
+            ..Default::default()
+        };
+
+        let section = Section {
+            paragraphs: vec![para],
+            raw_stream: None,
+            ..Default::default()
+        };
+
+        let bytes = serialize_section(&section);
+        let parsed = parse_body_text_section(&bytes).unwrap();
+
+        assert_eq!(
+            parsed.paragraphs[0].text, "A\u{00A0}B",
+            "no-break space must round-trip as itself, not decay into a hyphen"
+        );
+    }

@@ -444,7 +444,11 @@ fn serialize_para_text(para: &Paragraph) -> Vec<u8> {
                 prev_end = offset + 1;
             }
             '\u{00A0}' => {
-                code_units.push(0x0018);
+                // HWP 5.0 표 7: 코드 24(0x0018)=하이픈, 코드 30(0x001E)=묶음 빈칸.
+                // parser/body_text.rs가 이 매핑을 따르므로 여기서도 반드시 일치해야
+                // 왕복 시 문자 내용이 보존된다 (이전에는 0x0018을 잘못 사용해
+                // 재파싱 시 하이픈으로 오염되었다).
+                code_units.push(0x001E);
                 prev_end = offset + 1;
             }
             c => {

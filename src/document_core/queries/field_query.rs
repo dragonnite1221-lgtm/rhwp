@@ -25,6 +25,9 @@ pub enum NestedEntry {
     TextBox { control_index: usize, para_index: usize },
 }
 
+mod virtual_cell_id;
+use virtual_cell_id::virtual_cell_field_id;
+
 /// 필드 검색 결과
 #[derive(Debug)]
 pub struct FieldInfo {
@@ -77,12 +80,8 @@ impl DocumentCore {
     /// getFieldValue: field_id로 필드 값 조회
     pub fn get_field_value_by_id(&self, field_id: u32) -> Result<String, HwpError> {
         let fields = self.collect_all_fields();
-        for fi in &fields {
-            if fi.field.field_id == field_id {
-                return Ok(format!("{{\"ok\":true,\"value\":{}}}", json_escape(&fi.value)));
-            }
-        }
-        Err(HwpError::InvalidField(format!("필드 ID {} 없음", field_id)))
+        let fi = find_field_by_id(&fields, field_id)?;
+        Ok(format!("{{\"ok\":true,\"value\":{}}}", json_escape(&fi.value)))
     }
 
     /// getFieldValueByName: 필드 이름으로 값 조회
@@ -106,8 +105,7 @@ impl DocumentCore {
     pub fn set_field_value_by_id(&mut self, field_id: u32, value: &str) -> Result<String, HwpError> {
         // 먼저 필드 위치 찾기
         let fields = self.collect_all_fields();
-        let fi = fields.iter().find(|f| f.field.field_id == field_id)
-            .ok_or_else(|| HwpError::InvalidField(format!("필드 ID {} 없음", field_id)))?;
+        let fi = find_field_by_id(&fields, field_id)?;
 
         let location = fi.location.clone();
         let fri = fi.field_range_index;
@@ -574,6 +572,24 @@ impl DocumentCore {
     }
 }
 
+/// field_id로 필드를 찾는다. 정확히 하나만 일치해야 한다: 둘 이상 일치하면
+/// (해시 충돌 또는 조작된 문서로 인한 잔여 위험) 첫 항목을 임의로 반환하는
+/// 대신 명확한 오류를 반환한다 -- 어느 위치의 값을 반환할지 알 수 없는
+/// 상태에서 조용히 잘못된 값을 돌려주는 것보다 안전하다.
+fn find_field_by_id(fields: &[FieldInfo], field_id: u32) -> Result<&FieldInfo, HwpError> {
+    let mut matches = fields.iter().filter(|fi| fi.field.field_id == field_id);
+    let first = matches
+        .next()
+        .ok_or_else(|| HwpError::InvalidField(format!("필드 ID {} 없음", field_id)))?;
+    if matches.next().is_some() {
+        return Err(HwpError::InvalidField(format!(
+            "필드 ID {} 가 둘 이상의 위치와 일치함 (내부 ID 충돌)",
+            field_id
+        )));
+    }
+    Ok(first)
+}
+
 /// 문단 내 커서 위치의 필드 범위 정보를 JSON으로 반환한다.
 fn field_info_at_in_para(para: &Paragraph, char_offset: usize) -> String {
     for fr in &para.field_ranges {
@@ -650,7 +666,7 @@ fn collect_fields_from_paragraph(
                         result.push(FieldInfo {
                             field: Field {
                                 ctrl_id: 0,
-                                field_id: (ci as u32) << 16 | cell_i as u32,
+                                field_id: virtual_cell_field_id(&loc),
                                 field_type: FieldType::ClickHere,
                                 command: String::new(),
                                 properties: 0,
@@ -872,3 +888,5 @@ fn json_escape(s: &str) -> String {
 mod tests;
 #[cfg(test)]
 mod parent_range_tests;
+#[cfg(test)]
+mod virtual_cell_id_tests;
