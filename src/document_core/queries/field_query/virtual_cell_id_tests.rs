@@ -95,3 +95,65 @@ fn get_field_value_by_id_errors_on_a_genuine_duplicate_instead_of_guessing() {
         "a genuine ID collision must be reported as an error, not silently resolved to the first match"
     );
 }
+
+fn virtual_field(id: u32, name: &str) -> FieldInfo {
+    FieldInfo {
+        field: Field {
+            field_type: FieldType::ClickHere,
+            command: String::new(),
+            properties: 0,
+            extra_properties: 0,
+            field_id: id,
+            ctrl_id: 0,
+            ctrl_data_name: Some(name.to_string()),
+            memo_index: 0,
+        },
+        location: FieldLocation { section_index: 0, para_index: 0, nested_path: vec![] },
+        value: String::new(),
+        field_range_index: 0,
+    }
+}
+
+fn real_field(id: u32) -> FieldInfo {
+    FieldInfo {
+        field: Field {
+            field_type: FieldType::ClickHere,
+            command: String::new(),
+            properties: 0,
+            extra_properties: 0,
+            field_id: id,
+            ctrl_id: 1,
+            ctrl_data_name: None,
+            memo_index: 0,
+        },
+        location: FieldLocation { section_index: 0, para_index: 0, nested_path: vec![] },
+        value: String::new(),
+        field_range_index: 0,
+    }
+}
+
+/// 해시가 우연히 같은 제안 ID를 만들었다고 가정한 경우(직접 구성해 재현) --
+/// 재배정 후에는 모든 필드의 ID가 서로 다르고, 실제 필드(ctrl_id!=0)의
+/// ID는 그대로 유지되어야 한다.
+#[test]
+fn resolve_virtual_field_id_collisions_guarantees_document_wide_uniqueness() {
+    let mut fields = vec![
+        real_field(0x8000_0005),
+        virtual_field(0x8000_0005, "collides-with-real"),
+        virtual_field(0x9000_0000, "collides-with-next"),
+        virtual_field(0x9000_0000, "collides-with-prev"),
+    ];
+
+    resolve_virtual_field_id_collisions(&mut fields);
+
+    assert_eq!(fields[0].field.field_id, 0x8000_0005, "real field IDs must never change");
+
+    let ids: Vec<u32> = fields.iter().map(|fi| fi.field.field_id).collect();
+    let mut unique = ids.clone();
+    unique.sort_unstable();
+    unique.dedup();
+    assert_eq!(
+        unique.len(), ids.len(),
+        "every field must end up with a distinct ID after resolution, got: {ids:?}"
+    );
+}

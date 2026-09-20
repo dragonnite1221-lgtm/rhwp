@@ -26,7 +26,7 @@ pub enum NestedEntry {
 }
 
 mod virtual_cell_id;
-use virtual_cell_id::virtual_cell_field_id;
+use virtual_cell_id::{resolve_virtual_field_id_collisions, virtual_cell_field_id};
 
 /// 필드 검색 결과
 #[derive(Debug)]
@@ -53,6 +53,7 @@ impl DocumentCore {
                 collect_fields_from_paragraph(para, &loc, &mut result);
             }
         }
+        resolve_virtual_field_id_collisions(&mut result);
         result
     }
 
