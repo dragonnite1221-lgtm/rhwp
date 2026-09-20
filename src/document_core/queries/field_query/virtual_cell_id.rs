@@ -40,10 +40,15 @@ pub(super) fn virtual_cell_field_id(loc: &FieldLocation) -> u32 {
     0x8000_0000 | ((digest as u32) & 0x7FFF_FFFF)
 }
 
-/// `collect_all_fields`가 만든 목록에서 가상 셀 필드(ctrl_id == 0)의 제안
-/// ID가 서로 또는 실제 필드 ID와 충돌하면 재배정해 이 문서 내에서 완전히
-/// 고유하게 만든다. 실제 필드의 ID는 절대 바꾸지 않는다 -- 오직 이
-/// 함수 스스로 새로 만든 가상 ID만 조정 대상이다.
+/// `collect_all_fields`가 만든 목록에서 가상 셀 필드(`is_virtual_cell_field`)의
+/// 제안 ID가 서로 또는 실제 필드 ID와 충돌하면 재배정해 이 문서 내에서
+/// 완전히 고유하게 만든다. 실제 필드의 ID는 절대 바꾸지 않는다 -- 오직
+/// 이 함수 스스로 새로 만든 가상 ID만 조정 대상이다.
+///
+/// `field.ctrl_id == 0`으로 판별하면 안 된다: HWP3/HWPX 파서가
+/// `Field::default()`로 만드는 실제 필드(메일머지, 색인 표시, HWPX
+/// FIELD_BEGIN 등)도 ctrl_id를 채우지 않아 그대로 0이므로, 그 값을
+/// 가상 필드로 오인해 실제 필드의 ID를 바꿔버릴 수 있다.
 ///
 /// 해시 기반 제안값은 31비트 공간이므로 극단적으로 많은 가상 셀 필드가
 /// 있는 문서에서는 충돌할 수 있다 (생일 문제로 대략 수만 개 규모부터).
@@ -53,10 +58,10 @@ pub(super) fn virtual_cell_field_id(loc: &FieldLocation) -> u32 {
 pub(super) fn resolve_virtual_field_id_collisions(fields: &mut [FieldInfo]) {
     let mut used: HashSet<u32> = fields
         .iter()
-        .filter(|fi| fi.field.ctrl_id != 0)
+        .filter(|fi| !fi.is_virtual_cell_field)
         .map(|fi| fi.field.field_id)
         .collect();
-    for fi in fields.iter_mut().filter(|fi| fi.field.ctrl_id == 0) {
+    for fi in fields.iter_mut().filter(|fi| fi.is_virtual_cell_field) {
         if used.insert(fi.field.field_id) {
             continue;
         }

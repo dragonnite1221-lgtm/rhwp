@@ -37,6 +37,11 @@ pub struct FieldInfo {
     pub value: String,
     /// field_ranges에서의 인덱스
     pub field_range_index: usize,
+    /// 실제 Field 컨트롤이 아니라 표 셀 자체의 field_name에서 합성한 값인가.
+    /// `field.ctrl_id == 0`은 이 구분에 쓸 수 없다: HWP3/HWPX 파서가
+    /// `Field::default()`로 만드는 실제 필드(메일머지, 색인 표시, HWPX
+    /// FIELD_BEGIN 등)도 ctrl_id를 명시적으로 채우지 않아 그대로 0이다.
+    pub is_virtual_cell_field: bool,
 }
 
 impl DocumentCore {
@@ -135,7 +140,7 @@ impl DocumentCore {
         let location = fi.location.clone();
         let fri = fi.field_range_index;
         let old_value = fi.value.clone();
-        let is_cell_field = fi.field.ctrl_id == 0; // 가상 셀 필드
+        let is_cell_field = fi.is_virtual_cell_field;
 
         let section_index = location.section_index;
 
@@ -643,6 +648,7 @@ fn collect_fields_from_paragraph(
                 location: base_location.clone(),
                 value,
                 field_range_index: fri,
+                is_virtual_cell_field: false,
             });
         }
     }
@@ -678,6 +684,7 @@ fn collect_fields_from_paragraph(
                             location: loc,
                             value,
                             field_range_index: 0,
+                            is_virtual_cell_field: true,
                         });
                     }
                     for (pi, cell_para) in cell.paragraphs.iter().enumerate() {
