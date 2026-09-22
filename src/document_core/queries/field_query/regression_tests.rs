@@ -175,3 +175,21 @@ fn set_field_value_by_name_on_paragraphless_cell_returns_error_not_silent_succes
          while leaving the value unchanged"
     );
 }
+
+/// 문서화 성격의 회귀 테스트 (b0284787b853, 조사 결과 false positive):
+/// 이 finding은 `set_active_field_by_path`가 빈 경로에 대해
+/// `path.last().unwrap()`으로 panic할 수 있다고 지적했다. 하지만
+/// `resolve_paragraph_by_path`(cursor_nav.rs)는 함수 맨 앞에서
+/// `path.is_empty()`이면 항상 `Err`를 반환하므로, `set_active_field_by_path`는
+/// 그 경우 `path.last().unwrap()`에 도달하기 전에 이미 `return false`로
+/// 빠져나간다 -- 즉 현재 코드에서는 이 panic 경로에 도달할 방법이 없다.
+/// 이 테스트는 그 불변조건을 회귀로 고정한다.
+#[test]
+fn set_active_field_by_path_with_empty_path_returns_false_without_panicking() {
+    let mut para = Paragraph::default();
+    para.controls.push(table_with_named_cell("cell-field", "value"));
+    let mut core = core_with_section(Section { paragraphs: vec![para], ..Default::default() });
+
+    let changed = core.set_active_field_by_path(0, 0, &[], 0);
+    assert!(!changed, "an empty path must be rejected, not treated as a valid host paragraph");
+}
