@@ -116,9 +116,26 @@ impl DocumentCore {
         let location = fi.location.clone();
         let fri = fi.field_range_index;
         let old_value = fi.value.clone();
+        let is_cell_field = fi.is_virtual_cell_field;
 
         let section_index = location.section_index;
-        self.set_field_text_at(&location, fri, value)?;
+        if is_cell_field {
+            // 가상 셀 필드: 이 위치에는 실제 FIELD_BEGIN/END로 만들어진
+            // field_ranges가 없다 (셀의 field_name에서 합성한 값일 뿐이다).
+            // 그런데도 아래처럼 일반 field_ranges 경로(set_field_text_at)로
+            // 처리하면, 우연히 이 문단(nested_path가 가리키는 셀 문단)에
+            // 존재하는 *다른* field_range를 field_range_index=0 으로 잘못
+            // 골라 그 필드를 덮어쓰거나, field_ranges가 아예 없으면
+            // "field_range 인덱스 초과" 오류로 실패한다. 셀의 첫 문단
+            // 텍스트를 직접 교체하는 set_cell_field_text를 써야 한다
+            // (set_field_value_by_name이 이미 이렇게 분기하고 있었다).
+            self.set_cell_field_text(&location, value)?;
+            if let Some(sec) = self.document.sections.get_mut(section_index) {
+                sec.raw_stream = None;
+            }
+        } else {
+            self.set_field_text_at(&location, fri, value)?;
+        }
         self.recompose_section(section_index);
 
         Ok(format!(
@@ -230,10 +247,11 @@ impl DocumentCore {
                     let cell = table.cells.get_mut(*cell_index)
                         .ok_or_else(|| HwpError::InvalidField(
                             format!("경로[{}]: 셀 인덱스 {} 초과", last_idx, cell_index)))?;
-                    if let Some(cell_para) = cell.paragraphs.first_mut() {
-                        cell_para.text = value.to_string();
-                        rebuild_char_offsets(cell_para);
-                    }
+                    let cell_para = cell.paragraphs.first_mut()
+                        .ok_or_else(|| HwpError::InvalidField(
+                            format!("경로[{}]: 셀 {}에 문단이 없어 값을 쓸 수 없음", last_idx, cell_index)))?;
+                    cell_para.text = value.to_string();
+                    rebuild_char_offsets(cell_para);
                     Ok(())
                 } else {
                     Err(HwpError::InvalidField(
@@ -257,6 +275,17 @@ impl DocumentCore {
 
         // 필드 범위 내 텍스트 교체
         let text_chars: Vec<char> = para.text.chars().collect();
+        // field_ranges는 파일에서 파싱된 값을 그대로 담고 있어 신뢰할 수 없다
+        // (손상되었거나 조작된 문서일 수 있다). start/end가 실제 텍스트 길이를
+        // 벗어나거나 start > end이면 아래 슬라이싱(`text_chars[..start]`,
+        // `text_chars[end..]`)이 범위를 벗어나 panic한다 -- 여기서 먼저
+        // 검증해 잘못된 입력을 명확한 오류로 바꾼다.
+        if fr.start_char_idx > fr.end_char_idx || fr.end_char_idx > text_chars.len() {
+            return Err(HwpError::InvalidField(format!(
+                "field_range 범위가 유효하지 않음: start={}, end={}, 텍스트 길이={}",
+                fr.start_char_idx, fr.end_char_idx, text_chars.len()
+            )));
+        }
         let before: String = text_chars[..fr.start_char_idx].iter().collect();
         let after: String = text_chars[fr.end_char_idx..].iter().collect();
         para.text = format!("{}{}{}", before, value, after);
@@ -390,6 +419,12 @@ impl DocumentCore {
             .and_then(|s| s.paragraphs.get_mut(para_idx))
             .ok_or_else(|| HwpError::InvalidField("문단 위치 초과".into()))?;
         remove_field_in_para(para, char_offset)?;
+        // raw_stream 무효화: 원본 스트림이 남아있으면 serialize_section이
+        // 모델 변경을 무시하고 그 원본을 그대로 반환하므로, 여기서 지우지
+        // 않으면 방금 제거한 필드가 저장 시 다시 살아난다.
+        if let Some(sec) = self.document.sections.get_mut(section_idx) {
+            sec.raw_stream = None;
+        }
         self.recompose_section(section_idx);
         Ok(r#"{"ok":true}"#.to_string())
     }
@@ -434,6 +469,11 @@ impl DocumentCore {
             }
         };
         remove_field_in_para(para, char_offset)?;
+        // raw_stream 무효화: remove_field_at와 같은 이유로, 원본 스트림이
+        // 남아있으면 이 제거가 직렬화 시 유실된다.
+        if let Some(sec) = self.document.sections.get_mut(section_idx) {
+            sec.raw_stream = None;
+        }
         self.recompose_section(section_idx);
         Ok(r#"{"ok":true}"#.to_string())
     }
@@ -898,3 +938,5 @@ mod tests;
 mod parent_range_tests;
 #[cfg(test)]
 mod virtual_cell_id_tests;
+#[cfg(test)]
+mod regression_tests;
