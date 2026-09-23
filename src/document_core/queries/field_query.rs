@@ -264,10 +264,6 @@ impl DocumentCore {
 
     /// 필드 위치에서 텍스트를 교체한다.
     fn set_field_text_at(&mut self, location: &FieldLocation, field_range_index: usize, value: &str) -> Result<(), HwpError> {
-        // raw_stream 무효화: 직렬화 시 수정된 모델을 사용하도록 강제
-        if let Some(sec) = self.document.sections.get_mut(location.section_index) {
-            sec.raw_stream = None;
-        }
         let para = self.get_para_mut_at_location(location)?;
         let fr = para.field_ranges.get(field_range_index)
             .ok_or_else(|| HwpError::InvalidField("field_range 인덱스 초과".into()))?
@@ -279,13 +275,25 @@ impl DocumentCore {
         // (손상되었거나 조작된 문서일 수 있다). start/end가 실제 텍스트 길이를
         // 벗어나거나 start > end이면 아래 슬라이싱(`text_chars[..start]`,
         // `text_chars[end..]`)이 범위를 벗어나 panic한다 -- 여기서 먼저
-        // 검증해 잘못된 입력을 명확한 오류로 바꾼다.
+        // 검증해 잘못된 입력을 명확한 오류로 바꾼다. 이 검증(그리고 위
+        // field_range 인덱스 조회)은 반드시 raw_stream을 지우기 *전에*
+        // 끝나야 한다: 여기서 실패해 Err를 반환하면 모델은 전혀 바뀌지
+        // 않는데, raw_stream만 먼저 지워버리면 다음 저장 시 (변경되지
+        // 않은) 모델에서 다시 직렬화하게 되어 원본 바이트가 아닌, 손실
+        // 가능성이 있는 재직렬화 결과로 대체되어 버린다.
         if fr.start_char_idx > fr.end_char_idx || fr.end_char_idx > text_chars.len() {
             return Err(HwpError::InvalidField(format!(
                 "field_range 범위가 유효하지 않음: start={}, end={}, 텍스트 길이={}",
                 fr.start_char_idx, fr.end_char_idx, text_chars.len()
             )));
         }
+
+        // raw_stream 무효화: 여기부터는 실제로 모델을 변경하므로, 직렬화 시
+        // 수정된 모델을 사용하도록 강제한다.
+        if let Some(sec) = self.document.sections.get_mut(location.section_index) {
+            sec.raw_stream = None;
+        }
+        let para = self.get_para_mut_at_location(location)?;
         let before: String = text_chars[..fr.start_char_idx].iter().collect();
         let after: String = text_chars[fr.end_char_idx..].iter().collect();
         para.text = format!("{}{}{}", before, value, after);

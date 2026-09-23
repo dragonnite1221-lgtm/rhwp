@@ -101,6 +101,38 @@ fn set_field_text_at_rejects_out_of_bounds_field_range_instead_of_panicking() {
     );
 }
 
+/// 회귀 테스트: 위 out-of-bounds 검증이 실패하는 경우, `set_field_text_at`은
+/// 섹션의 `raw_stream`을 절대 건드리면 안 된다. 초기 구현은 검증보다 먼저
+/// `raw_stream = None`을 실행했는데, 그 상태에서 검증이 실패해 `Err`를
+/// 반환해도 모델 자체는 전혀 바뀌지 않은 채였다 -- 그런데 `raw_stream`만
+/// 지워진 채로 남아 있으면, 다음 저장 시 `serialize_section`이 (원본
+/// 바이트 대신) 손실 위험이 있는 재직렬화 경로로 빠지게 되어, 실패한
+/// 시도 하나가 무관한 이후 저장까지 오염시킨다. `raw_stream` 무효화는
+/// 검증을 통과해 실제로 모델을 바꾸기로 확정된 뒤에만 일어나야 한다.
+#[test]
+fn set_field_text_at_preserves_raw_stream_when_validation_fails() {
+    let mut para = Paragraph::default();
+    para.text = "AB".to_string();
+    para.controls.push(make_field_control(1));
+    para.field_ranges.push(FieldRange { start_char_idx: 0, end_char_idx: 99, control_idx: 0 });
+    let mut core = core_with_section(Section {
+        paragraphs: vec![para],
+        raw_stream: Some(vec![0xAA, 0xBB]),
+        ..Default::default()
+    });
+
+    let location = FieldLocation { section_index: 0, para_index: 0, nested_path: vec![] };
+    let result = core.set_field_text_at(&location, 0, "x");
+
+    assert!(result.is_err(), "the out-of-bounds field_range must still be rejected");
+    assert!(
+        core.document.sections[0].raw_stream.is_some(),
+        "a failed, no-op call must not clear raw_stream -- doing so would make the \
+         next successful save re-serialize an unmodified model instead of returning \
+         the original bytes, silently risking data loss unrelated to this call"
+    );
+}
+
 /// 회귀 테스트 (ceedfcb8a189 / 76220fb80809): `remove_field_at`과
 /// `remove_field_at_in_cell`은 필드를 지운 뒤 섹션의 raw_stream을
 /// 무효화해야 한다. `serialize_section`은 raw_stream이 Some이면 모델의
