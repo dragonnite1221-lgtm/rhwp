@@ -61,17 +61,45 @@ pub(super) fn resolve_virtual_field_id_collisions(fields: &mut [FieldInfo]) {
         .filter(|fi| !fi.is_virtual_cell_field)
         .map(|fi| fi.field.field_id)
         .collect();
+    // `probe_cursor`는 이전에 재배정으로 실제 소비한 마지막 후보값 바로
+    // 다음 지점을 기억한다. 이게 없으면(즉, 매번 자신의 제안 ID에서부터
+    // 다시 1씩 증가시키며 찾으면) 조작된 문서가 다수의 가상 셀 필드에
+    // *똑같은* 제안 ID를 갖게 만들 수 있고, 그러면 k번째로 처리되는
+    // 필드마다 이미 채워진 앞쪽 구간 전체(O(k))를 처음부터 다시 훑어야
+    // 해서 전체가 O(n^2)가 된다 (등록된 필드 수만큼 CPU를 태워 DoS로
+    // 이어질 수 있음). 커서를 마지막 성공 지점부터 이어서 검색하면 이미
+    // 채워진 구간을 다시 훑지 않으므로, 재배정이 필요한 필드 수에
+    // 대해 총 작업량이 O(n)으로 상한된다(각 후보값은 전체 실행에서
+    // 최대 한 번만 검사된다).
+    let mut probe_cursor: u32 = 0x8000_0000;
     for fi in fields.iter_mut().filter(|fi| fi.is_virtual_cell_field) {
         if used.insert(fi.field.field_id) {
             continue;
         }
-        let mut candidate = fi.field.field_id;
+        // 자신의 제안값과 커서 중 더 앞서 있지 않은(= 더 나중 지점인) 쪽에서
+        // 검색을 시작한다. 커서가 아직 이 필드의 제안값 뒤에 있지 않다면
+        // (즉, 이 충돌 그룹을 처음 처리하는 경우) 원래 제안값부터 이어서
+        // 검색해 결정론성과 기존 동작을 최대한 보존한다.
+        let mut candidate = if is_ahead_of(probe_cursor, fi.field.field_id) {
+            probe_cursor
+        } else {
+            fi.field.field_id
+        };
         loop {
             candidate = 0x8000_0000 | (candidate.wrapping_add(1) & 0x7FFF_FFFF);
             if used.insert(candidate) {
                 fi.field.field_id = candidate;
+                probe_cursor = candidate;
                 break;
             }
         }
     }
+}
+
+/// `a`가 31비트 후보 공간에서 `b`보다 뒤(또는 같은 지점 이후)에 있는지 반환한다.
+/// 31비트 공간을 한 바퀴 다 써버린 극단적인 경우 wrap-around로 오판할 수
+/// 있지만, 그 경우에도 결과는 (조금 느려질 뿐) 여전히 올바르게 종료한다 --
+/// `used`가 최종 유일성을 보장하는 것은 이 비교와 무관하다.
+fn is_ahead_of(a: u32, b: u32) -> bool {
+    (a.wrapping_sub(b) & 0x7FFF_FFFF) < 0x4000_0000
 }

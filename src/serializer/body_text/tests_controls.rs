@@ -33,7 +33,13 @@ use crate::parser::body_text::parse_body_text_section;
         };
 
         let para = Paragraph {
-            char_count: 4,
+            // char_count는 PARA_TEXT의 실제 UTF-16 code unit 총합이어야 한다:
+            // A(1) + SectionDef 확장 컨트롤(8) + B(1) + 문단 끝 마커 0x000D(1)
+            // = 11. (이 필드는 has_content가 true인 한 직렬화 시
+            // serialize_para_text 결과 길이로 재계산되어 실제로는 무시되지만,
+            // 값 자체가 4로 잘못되어 있으면 이 픽스처를 참고하는 다른 코드를
+            // 오도할 수 있어 구조에 맞는 값으로 바로잡는다.)
+            char_count: 11,
             text: "AB".to_string(),
             char_offsets: vec![0, 9], // 0~7 = secd 컨트롤, 8~8 gap? 아니, 0=A, 1~8=secd, 9=B
             char_shapes: vec![CharShapeRef {

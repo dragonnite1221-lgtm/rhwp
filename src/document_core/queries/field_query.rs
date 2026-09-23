@@ -28,6 +28,9 @@ pub enum NestedEntry {
 mod virtual_cell_id;
 use virtual_cell_id::{resolve_virtual_field_id_collisions, virtual_cell_field_id};
 
+mod field_removal_support;
+use field_removal_support::{find_field_ctrl_idx_in_para, remove_field_in_para, rebuild_char_offsets};
+
 /// 필드 검색 결과
 #[derive(Debug)]
 pub struct FieldInfo {
@@ -116,9 +119,26 @@ impl DocumentCore {
         let location = fi.location.clone();
         let fri = fi.field_range_index;
         let old_value = fi.value.clone();
+        let is_cell_field = fi.is_virtual_cell_field;
 
         let section_index = location.section_index;
-        self.set_field_text_at(&location, fri, value)?;
+        if is_cell_field {
+            // 가상 셀 필드: 이 위치에는 실제 FIELD_BEGIN/END로 만들어진
+            // field_ranges가 없다 (셀의 field_name에서 합성한 값일 뿐이다).
+            // 그런데도 아래처럼 일반 field_ranges 경로(set_field_text_at)로
+            // 처리하면, 우연히 이 문단(nested_path가 가리키는 셀 문단)에
+            // 존재하는 *다른* field_range를 field_range_index=0 으로 잘못
+            // 골라 그 필드를 덮어쓰거나, field_ranges가 아예 없으면
+            // "field_range 인덱스 초과" 오류로 실패한다. 셀의 첫 문단
+            // 텍스트를 직접 교체하는 set_cell_field_text를 써야 한다
+            // (set_field_value_by_name이 이미 이렇게 분기하고 있었다).
+            self.set_cell_field_text(&location, value)?;
+            if let Some(sec) = self.document.sections.get_mut(section_index) {
+                sec.raw_stream = None;
+            }
+        } else {
+            self.set_field_text_at(&location, fri, value)?;
+        }
         self.recompose_section(section_index);
 
         Ok(format!(
@@ -230,10 +250,11 @@ impl DocumentCore {
                     let cell = table.cells.get_mut(*cell_index)
                         .ok_or_else(|| HwpError::InvalidField(
                             format!("경로[{}]: 셀 인덱스 {} 초과", last_idx, cell_index)))?;
-                    if let Some(cell_para) = cell.paragraphs.first_mut() {
-                        cell_para.text = value.to_string();
-                        rebuild_char_offsets(cell_para);
-                    }
+                    let cell_para = cell.paragraphs.first_mut()
+                        .ok_or_else(|| HwpError::InvalidField(
+                            format!("경로[{}]: 셀 {}에 문단이 없어 값을 쓸 수 없음", last_idx, cell_index)))?;
+                    cell_para.text = value.to_string();
+                    rebuild_char_offsets(cell_para);
                     Ok(())
                 } else {
                     Err(HwpError::InvalidField(
@@ -246,10 +267,6 @@ impl DocumentCore {
 
     /// 필드 위치에서 텍스트를 교체한다.
     fn set_field_text_at(&mut self, location: &FieldLocation, field_range_index: usize, value: &str) -> Result<(), HwpError> {
-        // raw_stream 무효화: 직렬화 시 수정된 모델을 사용하도록 강제
-        if let Some(sec) = self.document.sections.get_mut(location.section_index) {
-            sec.raw_stream = None;
-        }
         let para = self.get_para_mut_at_location(location)?;
         let fr = para.field_ranges.get(field_range_index)
             .ok_or_else(|| HwpError::InvalidField("field_range 인덱스 초과".into()))?
@@ -257,6 +274,29 @@ impl DocumentCore {
 
         // 필드 범위 내 텍스트 교체
         let text_chars: Vec<char> = para.text.chars().collect();
+        // field_ranges는 파일에서 파싱된 값을 그대로 담고 있어 신뢰할 수 없다
+        // (손상되었거나 조작된 문서일 수 있다). start/end가 실제 텍스트 길이를
+        // 벗어나거나 start > end이면 아래 슬라이싱(`text_chars[..start]`,
+        // `text_chars[end..]`)이 범위를 벗어나 panic한다 -- 여기서 먼저
+        // 검증해 잘못된 입력을 명확한 오류로 바꾼다. 이 검증(그리고 위
+        // field_range 인덱스 조회)은 반드시 raw_stream을 지우기 *전에*
+        // 끝나야 한다: 여기서 실패해 Err를 반환하면 모델은 전혀 바뀌지
+        // 않는데, raw_stream만 먼저 지워버리면 다음 저장 시 (변경되지
+        // 않은) 모델에서 다시 직렬화하게 되어 원본 바이트가 아닌, 손실
+        // 가능성이 있는 재직렬화 결과로 대체되어 버린다.
+        if fr.start_char_idx > fr.end_char_idx || fr.end_char_idx > text_chars.len() {
+            return Err(HwpError::InvalidField(format!(
+                "field_range 범위가 유효하지 않음: start={}, end={}, 텍스트 길이={}",
+                fr.start_char_idx, fr.end_char_idx, text_chars.len()
+            )));
+        }
+
+        // raw_stream 무효화: 여기부터는 실제로 모델을 변경하므로, 직렬화 시
+        // 수정된 모델을 사용하도록 강제한다.
+        if let Some(sec) = self.document.sections.get_mut(location.section_index) {
+            sec.raw_stream = None;
+        }
+        let para = self.get_para_mut_at_location(location)?;
         let before: String = text_chars[..fr.start_char_idx].iter().collect();
         let after: String = text_chars[fr.end_char_idx..].iter().collect();
         para.text = format!("{}{}{}", before, value, after);
@@ -390,6 +430,12 @@ impl DocumentCore {
             .and_then(|s| s.paragraphs.get_mut(para_idx))
             .ok_or_else(|| HwpError::InvalidField("문단 위치 초과".into()))?;
         remove_field_in_para(para, char_offset)?;
+        // raw_stream 무효화: 원본 스트림이 남아있으면 serialize_section이
+        // 모델 변경을 무시하고 그 원본을 그대로 반환하므로, 여기서 지우지
+        // 않으면 방금 제거한 필드가 저장 시 다시 살아난다.
+        if let Some(sec) = self.document.sections.get_mut(section_idx) {
+            sec.raw_stream = None;
+        }
         self.recompose_section(section_idx);
         Ok(r#"{"ok":true}"#.to_string())
     }
@@ -434,6 +480,11 @@ impl DocumentCore {
             }
         };
         remove_field_in_para(para, char_offset)?;
+        // raw_stream 무효화: remove_field_at와 같은 이유로, 원본 스트림이
+        // 남아있으면 이 제거가 직렬화 시 유실된다.
+        if let Some(sec) = self.document.sections.get_mut(section_idx) {
+            sec.raw_stream = None;
+        }
         self.recompose_section(section_idx);
         Ok(r#"{"ok":true}"#.to_string())
     }
@@ -742,136 +793,7 @@ fn field_location_json(loc: &FieldLocation) -> String {
     }
 }
 
-impl DocumentCore {
-    /// 본문 문단에서 커서 위치의 필드 컨트롤 인덱스를 찾는다.
-    fn find_field_control_idx(
-        &self, section_idx: usize, para_idx: usize, char_offset: usize,
-        _cell_path: Option<(usize, usize, usize)>,
-    ) -> Option<usize> {
-        let para = self.document.sections.get(section_idx)?
-            .paragraphs.get(para_idx)?;
-        find_field_ctrl_idx_in_para(para, char_offset)
-    }
-
-    /// 셀/글상자 내 문단에서 커서 위치의 필드 컨트롤 인덱스를 찾는다.
-    fn find_field_control_idx_in_cell(
-        &self, section_idx: usize, parent_para_idx: usize, control_idx: usize,
-        cell_idx: usize, cell_para_idx: usize, char_offset: usize, is_textbox: bool,
-    ) -> Option<usize> {
-        let host = self.document.sections.get(section_idx)?
-            .paragraphs.get(parent_para_idx)?;
-        let ctrl = host.controls.get(control_idx)?;
-        let para = if is_textbox {
-            if let Control::Shape(shape) = ctrl {
-                let tb = shape.drawing()?.text_box.as_ref()?;
-                tb.paragraphs.get(cell_para_idx)?
-            } else { return None; }
-        } else {
-            if let Control::Table(table) = ctrl {
-                table.cells.get(cell_idx)?.paragraphs.get(cell_para_idx)?
-            } else { return None; }
-        };
-        find_field_ctrl_idx_in_para(para, char_offset)
-    }
-}
-
-/// 문단에서 커서 위치의 ClickHere 필드 컨트롤 인덱스를 반환한다.
-fn find_field_ctrl_idx_in_para(para: &Paragraph, char_offset: usize) -> Option<usize> {
-    for fr in &para.field_ranges {
-        if let Some(Control::Field(field)) = para.controls.get(fr.control_idx) {
-            if field.field_type != FieldType::ClickHere { continue; }
-            if char_offset >= fr.start_char_idx && char_offset <= fr.end_char_idx {
-                return Some(fr.control_idx);
-            }
-        }
-    }
-    None
-}
-
-/// 문단 내 커서 위치의 누름틀 필드를 제거한다 (FieldRange만 삭제, 텍스트 유지).
-fn remove_field_in_para(para: &mut Paragraph, char_offset: usize) -> Result<(), HwpError> {
-    let idx = para.field_ranges.iter().position(|fr| {
-        if let Some(Control::Field(field)) = para.controls.get(fr.control_idx) {
-            if field.field_type != FieldType::ClickHere {
-                return false;
-            }
-            char_offset >= fr.start_char_idx && char_offset <= fr.end_char_idx
-        } else {
-            false
-        }
-    });
-    match idx {
-        Some(i) => {
-            para.field_ranges.remove(i);
-            Ok(())
-        }
-        None => Err(HwpError::InvalidField("커서 위치에 누름틀 필드 없음".into())),
-    }
-}
-
 /// 문자열을 JSON 이스케이프한다.
-/// 문단의 char_offsets를 컨트롤/필드/텍스트 배치 순서에 맞게 재생성한다.
-///
-/// 원본 char_offsets에서 컨트롤 배치 패턴을 보존하면서,
-/// 텍스트 길이 변경(필드 값 삽입)에 맞게 오프셋을 재계산한다.
-fn rebuild_char_offsets(para: &mut Paragraph) {
-    let text_chars: Vec<char> = para.text.chars().collect();
-    let text_len = text_chars.len();
-
-    if text_len == 0 {
-        para.char_offsets = Vec::new();
-        return;
-    }
-
-    // 원본 char_offsets에서 첫 문자 이전 컨트롤 수 추정
-    // (원본 gap / 8 = 컨트롤 수)
-    let ctrls_before_text = if !para.char_offsets.is_empty() {
-        para.char_offsets[0] as usize / 8
-    } else {
-        para.controls.len()
-    };
-
-    // FIELD_BEGIN: control_idx >= ctrls_before_text이고 start > 0인 필드의 시작 위치에 갭 필요
-    let mut field_begin_at: Vec<usize> = vec![0; text_len + 1];
-    for fr in &para.field_ranges {
-        if fr.control_idx >= ctrls_before_text && fr.start_char_idx > 0 {
-            let idx = fr.start_char_idx.min(text_len);
-            field_begin_at[idx] += 1;
-        }
-    }
-
-    // FIELD_END 수: field_ranges에서 end가 텍스트 범위 내인 것
-    let mut field_end_at: Vec<usize> = vec![0; text_len + 1];
-    for fr in &para.field_ranges {
-        let idx = fr.end_char_idx.min(text_len);
-        field_end_at[idx] += 1;
-    }
-
-    let mut offset: u32 = ctrls_before_text as u32 * 8;
-    let mut new_offsets = Vec::with_capacity(text_len);
-
-    for (i, ch) in text_chars.iter().enumerate() {
-        // 이 문자 앞에 FIELD_BEGIN 컨트롤 갭 삽입
-        offset += field_begin_at[i] as u32 * 8;
-        // 이 문자 앞에 FIELD_END 마커 갭 삽입
-        offset += field_end_at[i] as u32 * 8;
-
-        new_offsets.push(offset);
-
-        let char_size = match *ch {
-            '\t' => 8,
-            '\n' | '\u{00A0}' => 1,
-            c => {
-                let mut buf = [0u16; 2];
-                c.encode_utf16(&mut buf).len() as u32
-            }
-        };
-        offset += char_size;
-    }
-
-    para.char_offsets = new_offsets;
-}
-
 fn json_escape(s: &str) -> String {
     let mut result = String::with_capacity(s.len() + 2);
     result.push('"');
@@ -898,3 +820,9 @@ mod tests;
 mod parent_range_tests;
 #[cfg(test)]
 mod virtual_cell_id_tests;
+#[cfg(test)]
+mod virtual_cell_id_tests_resolution;
+#[cfg(test)]
+mod regression_tests;
+#[cfg(test)]
+mod regression_tests_edge_cases;

@@ -71,6 +71,17 @@ fn serialize_paragraph_with_msb(
     } else {
         &para.char_shapes
     };
+    // PARA_HEADER는 각 엔트리 개수를 u16으로 기록한다. 65,535개를 초과하는
+    // 벡터를 그대로 `.len() as u16`으로 캐스팅하면 헤더에는 잘린(모듈로)
+    // 개수가 남는데 실제로 뒤따르는 PARA_CHAR_SHAPE/PARA_LINE_SEG/
+    // PARA_RANGE_TAG 레코드에는 원래 개수만큼의 바이트가 그대로 쓰여서,
+    // 헤더가 선언한 개수와 실제 데이터가 어긋난 채 파일이 저장된다(한컴이
+    // 손상 파일로 판단). 헤더 개수와 실제로 쓰는 데이터를 항상 같은
+    // 슬라이스 길이 기준으로 일치시키기 위해, 여기서 u16 표현 가능한
+    // 최대치로 함께 잘라낸다.
+    let effective_char_shapes = &effective_char_shapes[..effective_char_shapes.len().min(u16::MAX as usize)];
+    let effective_line_segs = &para.line_segs[..para.line_segs.len().min(u16::MAX as usize)];
+    let effective_range_tags = &para.range_tags[..para.range_tags.len().min(u16::MAX as usize)];
 
     // control_mask 재계산: 실제 controls에서 비트 마스크를 산출한다.
     // 모델의 control_mask가 controls와 불일치하면 한컴이 파일 손상으로 판단하므로,
@@ -102,6 +113,8 @@ fn serialize_paragraph_with_msb(
         data: serialize_para_header_with_mask(
             para,
             effective_char_shapes.len(),
+            effective_range_tags.len(),
+            effective_line_segs.len(),
             is_last,
             actual_control_mask,
             actual_char_count,
@@ -130,8 +143,8 @@ fn serialize_paragraph_with_msb(
     }
 
     // PARA_LINE_SEG
-    if !para.line_segs.is_empty() {
-        let data = serialize_para_line_seg(&para.line_segs);
+    if !effective_line_segs.is_empty() {
+        let data = serialize_para_line_seg(effective_line_segs);
         records.push(Record {
             tag_id: tags::HWPTAG_PARA_LINE_SEG,
             level: base_level + 1,
@@ -141,8 +154,8 @@ fn serialize_paragraph_with_msb(
     }
 
     // PARA_RANGE_TAG
-    if !para.range_tags.is_empty() {
-        let data = serialize_para_range_tag(&para.range_tags);
+    if !effective_range_tags.is_empty() {
+        let data = serialize_para_range_tag(effective_range_tags);
         records.push(Record {
             tag_id: tags::HWPTAG_PARA_RANGE_TAG,
             level: base_level + 1,
@@ -200,6 +213,8 @@ fn compute_control_mask(para: &Paragraph) -> u32 {
 fn serialize_para_header_with_mask(
     para: &Paragraph,
     num_char_shapes: usize,
+    num_range_tags: usize,
+    num_line_segs: usize,
     is_last: bool,
     control_mask: u32,
     char_count: u32,
@@ -226,10 +241,15 @@ fn serialize_para_header_with_mask(
     };
     w.write_u8(break_val);
 
-    // count 필드는 실제 데이터 기반으로 항상 재생성 (편집 후 불일치 방지)
+    // count 필드는 실제 데이터 기반으로 항상 재생성 (편집 후 불일치 방지).
+    // 세 값 모두 호출부에서 이미 u16::MAX로 잘라낸 슬라이스 길이를 그대로
+    // 전달받으므로, 여기서 다시 `.len()`을 u16으로 캐스팅하는 대신 그 값을
+    // 그대로 쓴다 -- 그래야 헤더가 선언하는 개수와 실제로 직렬화되는
+    // PARA_CHAR_SHAPE/PARA_RANGE_TAG/PARA_LINE_SEG 바이트 수가 항상 같은
+    // 기준(잘린 길이)으로 일치한다.
     w.write_u16(num_char_shapes as u16);
-    w.write_u16(para.range_tags.len() as u16);
-    w.write_u16(para.line_segs.len() as u16);
+    w.write_u16(num_range_tags as u16);
+    w.write_u16(num_line_segs as u16);
 
     // instanceId + 추가 바이트: raw_header_extra에서 복원
     // raw_header_extra[0..5] = numCharShapes(2) + numRangeTags(2) + numLineSegs(2) → 건너뜀
@@ -300,8 +320,17 @@ fn serialize_para_text(para: &Paragraph) -> Vec<u8> {
     let mut field_ends: BTreeMap<usize, VecDeque<(usize, u32)>> = BTreeMap::new();
     // trailing FIELD_END: control_idx → ctrl_id 매핑 (FIELD_BEGIN 직후에 삽입)
     let mut trailing_end_after_ctrl: HashMap<usize, Vec<u32>> = HashMap::new();
-    // trailing FIELD_END 중 FIELD_BEGIN이 이미 본문에 배치된 경우 (orphan)
-    let mut trailing_orphan_ends: Vec<u32> = Vec::new();
+    // `trailing_end_after_ctrl`을 채운 순서 그대로 control_idx 키를 기록한다.
+    // 이 순서는 `para.field_ranges` 배열 순서와 같고, 이 파일 다른 곳(예:
+    // set_field_text_at 주변 주석)에서 이미 확립한 대로 field_ranges의
+    // 배열 인덱스 = 실제 FIELD_END가 스택에서 pop된(닫힌) 순서다. 아래
+    // "orphan" 플러시에서 이 순서를 그대로 재사용해야, 본문 갭에서 이미
+    // 자신의 FIELD_BEGIN이 배치되어버린 여러 trailing 필드가 남아있을 때도
+    // HashMap 반복 순서(비결정적, 매 실행마다 달라질 수 있음)가 아니라
+    // 항상 이 결정론적 순서로 FIELD_END를 내보낸다. 순서가 뒤바뀌면 파서가
+    // 스택(LIFO)으로 FIELD_BEGIN/FIELD_END를 매칭하므로 중첩 필드의 종료
+    // 관계 자체가 깨질 수 있다.
+    let mut trailing_end_order: Vec<usize> = Vec::new();
 
     for fr in &para.field_ranges {
         let ctrl_id = if let Some(crate::model::control::Control::Field(f)) =
@@ -320,6 +349,7 @@ fn serialize_para_text(para: &Paragraph) -> Vec<u8> {
                 .entry(fr.control_idx)
                 .or_default()
                 .push(ctrl_id);
+            trailing_end_order.push(fr.control_idx);
         }
     }
 
@@ -383,14 +413,19 @@ fn serialize_para_text(para: &Paragraph) -> Vec<u8> {
         // 결과적으로 그 컨트롤이 원래 위치(다음 문자 뒤)보다 앞으로 잘못
         // 당겨진다. 그러므로 "남은 슬롯 수가 대기 항목 수 이하로 줄어들면"
         // 더 이상 비-필드 컨트롤에 양보하지 말고 즉시 드레인해야 한다.
-        while prev_end + 8 <= offset {
+        // `offset`/`prev_end`는 (신뢰할 수 없는) para.char_offsets에서
+        // 유래하므로, 여기서부터 아래 블록 전체의 +8/+1 산술은 모두
+        // saturating으로 처리한다 -- 그렇지 않으면 조작된 offset이
+        // u32::MAX 근처일 때 일반 덧셈이 오버플로로 panic하거나(디버그
+        // 빌드) 랩어라운드로 잘못된 위치를 만든다(릴리즈 빌드).
+        while prev_end.saturating_add(8) <= offset {
             let next_is_field_begin = para
                 .controls
                 .get(ctrl_idx)
                 .is_some_and(|c| matches!(c, Control::Field(_)));
             let no_more_controls = ctrl_idx >= para.controls.len();
             let pending_here = field_ends.get(&i).map_or(0, |ids| ids.len());
-            let remaining_slots = (offset - prev_end) / 8;
+            let remaining_slots = offset.saturating_sub(prev_end) / 8;
             let must_reserve_room = remaining_slots as usize <= pending_here;
             let front_is_due = field_ends
                 .get(&i)
@@ -400,12 +435,12 @@ fn serialize_para_text(para: &Paragraph) -> Vec<u8> {
             if front_is_due && (next_is_field_begin || no_more_controls || must_reserve_room) {
                 let (_, ctrl_id) = field_ends.get_mut(&i).unwrap().pop_front().unwrap();
                 push_extended_ctrl(&mut code_units, 0x0004, ctrl_id);
-                prev_end += 8;
+                prev_end = prev_end.saturating_add(8);
             } else if ctrl_idx < para.controls.len() {
                 let (ctrl_code, ctrl_id) = control_char_code_and_id(&para.controls[ctrl_idx]);
                 push_extended_ctrl(&mut code_units, ctrl_code, ctrl_id);
                 ctrl_idx += 1;
-                prev_end += 8;
+                prev_end = prev_end.saturating_add(8);
             } else {
                 break;
             }
@@ -418,7 +453,7 @@ fn serialize_para_text(para: &Paragraph) -> Vec<u8> {
         if let Some(ids) = field_ends.get(&i) {
             for &(_cidx, ctrl_id) in ids {
                 push_extended_ctrl(&mut code_units, 0x0004, ctrl_id);
-                prev_end += 8;
+                prev_end = prev_end.saturating_add(8);
             }
         }
 
@@ -437,11 +472,11 @@ fn serialize_para_text(para: &Paragraph) -> Vec<u8> {
                     }
                 }
                 tab_idx += 1;
-                prev_end = offset + 8;
+                prev_end = offset.saturating_add(8);
             }
             '\n' => {
                 code_units.push(0x000A);
-                prev_end = offset + 1;
+                prev_end = offset.saturating_add(1);
             }
             '\u{00A0}' => {
                 // HWP 5.0 표 7: 코드 24(0x0018)=하이픈, 코드 30(0x001E)=묶음 빈칸.
@@ -449,7 +484,7 @@ fn serialize_para_text(para: &Paragraph) -> Vec<u8> {
                 // 왕복 시 문자 내용이 보존된다 (이전에는 0x0018을 잘못 사용해
                 // 재파싱 시 하이픈으로 오염되었다).
                 code_units.push(0x001E);
-                prev_end = offset + 1;
+                prev_end = offset.saturating_add(1);
             }
             c => {
                 let mut buf = [0u16; 2];
@@ -457,7 +492,7 @@ fn serialize_para_text(para: &Paragraph) -> Vec<u8> {
                 for cu in encoded.iter() {
                     code_units.push(*cu);
                 }
-                prev_end = offset + encoded.len() as u32;
+                prev_end = offset.saturating_add(encoded.len() as u32);
             }
         }
     }
@@ -479,10 +514,17 @@ fn serialize_para_text(para: &Paragraph) -> Vec<u8> {
     }
 
     // orphan trailing FIELD_END: FIELD_BEGIN이 본문 갭에서 이미 배치된 경우
-    // (trailing_end_after_ctrl에 남아있는 항목 = ctrl_idx가 이미 소진된 컨트롤)
-    for end_ids in trailing_end_after_ctrl.values() {
-        for &eid in end_ids {
-            push_extended_ctrl(&mut code_units, 0x0004, eid);
+    // (trailing_end_after_ctrl에 남아있는 항목 = ctrl_idx가 이미 소진된 컨트롤).
+    // `HashMap::values()`의 반복 순서는 비결정적이라 그대로 쓰면 여러 개의
+    // orphan이 남아있을 때 FIELD_END 출력 순서가 실행마다 달라질 수 있고,
+    // 파서는 이를 스택(LIFO)으로 매칭하므로 중첩 필드의 종료 관계가 깨질
+    // 수 있다. 대신 field_ranges 원래 순서(`trailing_end_order`, 실제
+    // 닫힘 순서와 동일)를 그대로 따라가며 결정론적으로 드레인한다.
+    for control_idx in trailing_end_order {
+        if let Some(end_ids) = trailing_end_after_ctrl.remove(&control_idx) {
+            for eid in end_ids {
+                push_extended_ctrl(&mut code_units, 0x0004, eid);
+            }
         }
     }
 
@@ -585,3 +627,5 @@ mod tests;
 mod tests_more;
 #[cfg(test)]
 mod tests_controls;
+#[cfg(test)]
+mod regression_tests;
