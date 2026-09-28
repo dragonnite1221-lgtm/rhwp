@@ -116,3 +116,21 @@ fn resolve_virtual_field_id_collisions_stays_fast_under_adversarial_collisions()
          a naive restart-from-scratch probe would produce"
     );
 }
+
+#[test]
+fn alternating_distant_collision_groups_share_one_probe_cursor() {
+    const A: u32 = 0x8000_0000;
+    const B: u32 = 0xC000_0001;
+    let mut fields: Vec<FieldInfo> = (0..2000)
+        .map(|i| virtual_field(if i % 2 == 0 { A } else { B }, "cell"))
+        .collect();
+
+    resolve_virtual_field_id_collisions(&mut fields);
+
+    assert_eq!(fields[0].field.field_id, A);
+    assert_eq!(fields[1].field.field_id, B);
+    for (index, field) in fields[2..].iter().enumerate() {
+        assert_eq!(field.field.field_id, A + index as u32 + 1,
+            "collision #{index} must advance the shared cursor once");
+    }
+}
