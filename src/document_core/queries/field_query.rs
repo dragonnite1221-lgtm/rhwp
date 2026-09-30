@@ -29,6 +29,7 @@ mod virtual_cell_id;
 use virtual_cell_id::{resolve_virtual_field_id_collisions, virtual_cell_field_id};
 
 mod field_removal_support;
+mod field_marker_offsets;
 use field_removal_support::{find_field_ctrl_idx_in_para, remove_field_in_para, rebuild_char_offsets};
 
 /// 필드 검색 결과

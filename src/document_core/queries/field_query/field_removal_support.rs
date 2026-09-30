@@ -2,6 +2,7 @@
 //! 탐색, 문단 내 필드 제거, char_offsets 재계산 헬퍼. `field_query.rs`의
 //! 주 `impl DocumentCore` 블록에서만 호출되므로 가시성은 `pub(super)`.
 
+use super::field_marker_offsets::{field_marker_offsets, without_markers};
 use crate::document_core::DocumentCore;
 use crate::error::HwpError;
 use crate::model::control::{Control, FieldType};
@@ -53,7 +54,7 @@ pub(super) fn find_field_ctrl_idx_in_para(para: &Paragraph, char_offset: usize) 
     None
 }
 
-/// 문단 내 커서 위치의 누름틀 필드를 제거한다 (FieldRange만 삭제, 텍스트 유지).
+/// 문단 내 커서 위치의 누름틀 필드를 제거한다 (BEGIN/END와 컨트롤 삭제, 텍스트 유지).
 pub(super) fn remove_field_in_para(para: &mut Paragraph, char_offset: usize) -> Result<(), HwpError> {
     let idx = para.field_ranges.iter().position(|fr| {
         if let Some(Control::Field(field)) = para.controls.get(fr.control_idx) {
@@ -67,7 +68,29 @@ pub(super) fn remove_field_in_para(para: &mut Paragraph, char_offset: usize) -> 
     });
     match idx {
         Some(i) => {
+            let control_idx = para.field_ranges[i].control_idx;
+            let markers = field_marker_offsets(para, control_idx)
+                .ok_or_else(|| HwpError::InvalidField("필드 마커 쌍 없음".into()))?;
             para.field_ranges.remove(i);
+            para.controls.remove(control_idx);
+            if control_idx < para.ctrl_data_records.len() {
+                para.ctrl_data_records.remove(control_idx);
+            }
+            for range in &mut para.field_ranges {
+                if range.control_idx > control_idx { range.control_idx -= 1; }
+            }
+            for offset in &mut para.char_offsets { *offset = without_markers(*offset, markers); }
+            for shape in &mut para.char_shapes {
+                shape.start_pos = without_markers(shape.start_pos, markers);
+            }
+            for line in &mut para.line_segs {
+                line.text_start = without_markers(line.text_start, markers);
+            }
+            for tag in &mut para.range_tags {
+                tag.start = without_markers(tag.start, markers);
+                tag.end = without_markers(tag.end, markers);
+            }
+            para.char_count = para.char_count.saturating_sub(16);
             Ok(())
         }
         None => Err(HwpError::InvalidField("커서 위치에 누름틀 필드 없음".into())),
