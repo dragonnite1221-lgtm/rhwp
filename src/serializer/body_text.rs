@@ -297,7 +297,7 @@ pub fn test_serialize_para_text(para: &Paragraph) -> Vec<u8> {
     serialize_para_text(para)
 }
 
-fn serialize_para_text(para: &Paragraph) -> Vec<u8> {
+pub(crate) fn serialize_para_text(para: &Paragraph) -> Vec<u8> {
     let mut code_units: Vec<u16> = Vec::new();
     let text_chars: Vec<char> = para.text.chars().collect();
     let mut ctrl_idx = 0;
