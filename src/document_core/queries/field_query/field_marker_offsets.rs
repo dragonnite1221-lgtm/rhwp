@@ -16,6 +16,9 @@ pub(super) fn field_marker_offsets(para: &Paragraph, target: usize) -> Option<[u
     let mut pos = 0;
     while pos < units.len() {
         let code = units[pos];
+        if code == 13 {
+            break;
+        } // PARA_BREAK, matching the parser.
         if code == 3 {
             stack.push((control_idx, pos as u32));
         } else if code == 4 {
@@ -44,4 +47,68 @@ pub(super) fn without_markers(pos: u32, markers: [u32; 2]) -> u32 {
         .iter()
         .map(|&start| pos.saturating_sub(start).min(8))
         .sum::<u32>()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::model::control::{Control, Field};
+    use crate::model::paragraph::FieldRange;
+
+    #[test]
+    fn every_serialized_control_advances_exactly_one_control_slot() {
+        let controls = vec![
+            Control::SectionDef(Box::default()),
+            Control::ColumnDef(Default::default()),
+            Control::Table(Box::default()),
+            Control::Shape(Box::new(crate::model::shape::ShapeObject::Rectangle(
+                Default::default(),
+            ))),
+            Control::Picture(Box::default()),
+            Control::Header(Box::default()),
+            Control::Footer(Box::default()),
+            Control::Footnote(Box::default()),
+            Control::Endnote(Box::default()),
+            Control::AutoNumber(Default::default()),
+            Control::NewNumber(Default::default()),
+            Control::PageNumberPos(Default::default()),
+            Control::Bookmark(Default::default()),
+            Control::Hyperlink(Default::default()),
+            Control::Ruby(Default::default()),
+            Control::CharOverlap(Default::default()),
+            Control::PageHide(Default::default()),
+            Control::HiddenComment(Box::default()),
+            Control::Equation(Box::default()),
+            Control::Field(Field::default()),
+            Control::Form(Box::default()),
+            Control::Unknown(Default::default()),
+        ];
+        for control in controls {
+            let outer_field = matches!(control, Control::Field(_));
+            let mut para = Paragraph {
+                text: "A".into(),
+                char_offsets: vec![16],
+                controls: vec![control, Control::Field(Field::default())],
+                field_ranges: vec![FieldRange {
+                    start_char_idx: 0,
+                    end_char_idx: 1,
+                    control_idx: 1,
+                }],
+                ..Paragraph::default()
+            };
+            if outer_field {
+                para.field_ranges.push(FieldRange {
+                    start_char_idx: 0,
+                    end_char_idx: 1,
+                    control_idx: 0,
+                });
+            }
+            assert_eq!(
+                field_marker_offsets(&para, 1),
+                Some([8, 17]),
+                "{:?}",
+                para.controls[0]
+            );
+        }
+    }
 }
