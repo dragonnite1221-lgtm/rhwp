@@ -20,8 +20,18 @@ use super::header::serialize_file_header;
 use super::mini_cfb;
 use super::SerializeError;
 
+mod validate;
+use validate::validate_paragraphs;
+
 /// Document IR을 HWP 5.0 CFB 바이너리로 직렬화
 pub fn serialize_hwp(doc: &Document) -> Result<Vec<u8>, SerializeError> {
+    // A PARA_HEADER count is u16. Reject before serializing any section so
+    // the lower-level writer cannot silently truncate excess metadata.
+    for section in &doc.sections {
+        if section.raw_stream.is_none() {
+            validate_paragraphs(&section.paragraphs)?;
+        }
+    }
     // 1. FileHeader 직렬화
     let header_bytes = serialize_file_header(&doc.header);
 
@@ -175,3 +185,6 @@ fn find_bin_data_info_with_compress<'a>(
 
 #[cfg(test)]
 mod tests;
+
+#[cfg(test)]
+mod metadata_count_tests;
