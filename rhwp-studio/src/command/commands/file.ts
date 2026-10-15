@@ -142,6 +142,7 @@ export const fileCommands: CommandDef[] = [
           fileHandle: handle,
         });
       } catch (err) {
+        if (err instanceof DOMException && err.name === 'AbortError') return;
         const msg = err instanceof Error ? err.message : String(err);
         console.error('[file:open] 열기 실패:', msg);
         alert(`파일 열기에 실패했습니다:\n${msg}`);
@@ -157,6 +158,7 @@ export const fileCommands: CommandDef[] = [
     canExecute: (ctx) => ctx.hasDocument && ctx.sourceFormat !== 'hwpx',
     async execute(services) {
       try {
+        const session = services.wasm.documentSession;
         const saveName = services.wasm.fileName;
         const sourceFormat = services.wasm.getSourceFormat();
         const isHwpx = sourceFormat === 'hwpx';
@@ -174,6 +176,7 @@ export const fileCommands: CommandDef[] = [
             windowLike: window as FileSystemWindowLike,
           });
 
+          if (services.wasm.documentSession !== session) return;
           if (saveResult.method !== 'fallback') {
             services.wasm.currentFileHandle = saveResult.handle;
             services.wasm.fileName = saveResult.fileName;
@@ -188,12 +191,14 @@ export const fileCommands: CommandDef[] = [
           console.warn('[file:save] File System Access API 실패, 폴백:', e);
         }
 
+        if (services.wasm.documentSession !== session) return;
+
         // 2) 폴백: 새 문서인 경우 자체 파일이름 대화상자 표시
         let downloadName = saveName;
         if (services.wasm.isNewDocument) {
           const baseName = saveName.replace(/\.hwp$/i, '');
           const result = await showSaveAs(baseName);
-          if (!result) return;
+          if (!result || services.wasm.documentSession !== session) return;
           downloadName = result;
           services.wasm.fileName = downloadName;
         }
@@ -223,6 +228,7 @@ export const fileCommands: CommandDef[] = [
     canExecute: (ctx) => ctx.hasDocument && ctx.sourceFormat !== 'hwpx',
     async execute(services) {
       try {
+        const session = services.wasm.documentSession;
         const saveName = services.wasm.fileName;
         const sourceFormat = services.wasm.getSourceFormat();
         const isHwpx = sourceFormat === 'hwpx';
@@ -239,6 +245,7 @@ export const fileCommands: CommandDef[] = [
             windowLike: window as FileSystemWindowLike,
             forceSaveAs: true,
           });
+          if (services.wasm.documentSession !== session) return;
           if (saveResult.method !== 'fallback') {
             services.wasm.currentFileHandle = saveResult.handle;
             services.wasm.fileName = saveResult.fileName;
@@ -250,10 +257,12 @@ export const fileCommands: CommandDef[] = [
           console.warn('[file:save-as] File System Access API 실패, 폴백:', e);
         }
 
+        if (services.wasm.documentSession !== session) return;
+
         // 폴백: 파일명 입력 → blob download
         const baseName = saveName.replace(/\.hwp$/i, '');
         const result = await showSaveAs(baseName);
-        if (!result) return;
+        if (!result || services.wasm.documentSession !== session) return;
         const downloadName = result;
         services.wasm.fileName = downloadName;
 
