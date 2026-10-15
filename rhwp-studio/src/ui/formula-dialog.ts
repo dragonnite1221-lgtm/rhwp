@@ -183,15 +183,16 @@ export class FormulaDialog extends ModalDialog {
     }
 
     try {
-      let colCount = 1;
-      try {
-        const props = this.wasm.getTableProperties(this.ctx.sec, this.ctx.ppi, this.ctx.ci);
-        colCount = props.colCount || props.cols || 1;
-      } catch {
-        colCount = Math.max(1, this.ctx.cellIndex + 1);
+      const { row, col } = this.wasm.getCellInfo(
+        this.ctx.sec, this.ctx.ppi, this.ctx.ci, this.ctx.cellIndex,
+      );
+      const { rowCount, colCount } = this.wasm.getTableDimensions(
+        this.ctx.sec, this.ctx.ppi, this.ctx.ci,
+      );
+      if (!Number.isInteger(row) || !Number.isInteger(col)
+          || row < 0 || col < 0 || row >= rowCount || col >= colCount) {
+        throw new Error('셀 좌표가 표 범위를 벗어났습니다.');
       }
-      const row = Math.floor(this.ctx.cellIndex / colCount);
-      const col = this.ctx.cellIndex % colCount;
 
       // 먼저 검증 (write_result=false)
       const validateResult = this.wasm.evaluateTableFormula(

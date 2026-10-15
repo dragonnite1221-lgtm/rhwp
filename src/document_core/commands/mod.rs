@@ -7,3 +7,6 @@ mod clipboard;
 mod html_import;
 mod header_footer_ops;
 mod footnote_ops;
+mod table_formula;
+#[cfg(test)]
+mod table_formula_tests;
