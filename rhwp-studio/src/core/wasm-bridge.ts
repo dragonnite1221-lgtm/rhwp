@@ -47,6 +47,7 @@ function substituteCssFontFamily(cssFont: string): string {
 export class WasmBridge {
   private doc: HwpDocument | null = null;
   private initialized = false;
+  private _documentSession = 0;
   private _fileName = 'document.hwp';
   private _currentFileHandle: FileSystemFileHandleLike | null = null;
 
@@ -81,6 +82,7 @@ export class WasmBridge {
    * 비교 상세 창 등 보조 WasmBridge 인스턴스에서 반복 로드 시 메모리 누수를 줄이기 위해 사용한다.
    */
   releaseDocument(): void {
+    this._documentSession++;
     if (this.doc) {
       try {
         this.doc.free();
@@ -93,6 +95,7 @@ export class WasmBridge {
   }
 
   loadDocument(data: Uint8Array, fileName?: string): DocumentInfo {
+    this._documentSession++;
     if (this.doc) {
       this.doc.free();
     }
@@ -153,6 +156,7 @@ export class WasmBridge {
   }
 
   createNewDocument(): DocumentInfo {
+    this._documentSession++;
     if (!this.doc) {
       // 아직 WASM 객체가 없으면 더미로 생성 (createEmpty → 즉시 교체)
       this.doc = HwpDocument.createEmpty();
@@ -164,6 +168,11 @@ export class WasmBridge {
     this.doc.setFileName(this._fileName);
     console.log(`[WasmBridge] 새 문서 생성: ${info.pageCount}페이지`);
     return info;
+  }
+
+  /** Invalidates asynchronous saves even when the native document object is reused. */
+  get documentSession(): number {
+    return this._documentSession;
   }
 
   get fileName(): string {

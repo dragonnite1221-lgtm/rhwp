@@ -47,10 +47,6 @@ const HWP_PICKER_TYPES = [{
   accept: { 'application/x-hwp': ['.hwp', '.hwpx'] },
 }];
 
-function isAbortError(error: unknown): boolean {
-  return error instanceof DOMException && error.name === 'AbortError';
-}
-
 async function writeBlobToHandle(handle: FileSystemFileHandleLike, blob: Blob): Promise<void> {
   const writable = await handle.createWritable();
   await writable.write(blob);
@@ -60,17 +56,14 @@ async function writeBlobToHandle(handle: FileSystemFileHandleLike, blob: Blob): 
 export async function pickOpenFileHandle(windowLike: FileSystemWindowLike): Promise<FileSystemFileHandleLike | null> {
   if (!windowLike.showOpenFilePicker) return null;
 
-  try {
-    const handles = await windowLike.showOpenFilePicker({
-      excludeAcceptAllOption: true,
-      multiple: false,
-      types: HWP_PICKER_TYPES,
-    });
-    return handles[0] ?? null;
-  } catch (error) {
-    if (isAbortError(error)) return null;
-    throw error;
-  }
+  const handles = await windowLike.showOpenFilePicker({
+    excludeAcceptAllOption: true,
+    multiple: false,
+    types: HWP_PICKER_TYPES,
+  });
+  // null means unsupported; an empty selection is cancellation, not a fallback.
+  if (!handles[0]) throw new DOMException('No file selected', 'AbortError');
+  return handles[0];
 }
 
 export async function readFileFromHandle(handle: FileSystemFileHandleLike): Promise<FileHandleReadResult> {
